@@ -1,4 +1,4 @@
-# tg-roundtable
+# TelePantheon
 
 在 Telegram 群里和多个 AI 模型一起聊天。Claude、Codex、Grok、DeepSeek 等模型各有一个自己的 bot，能看到彼此的发言，可以互相接话、反驳、补充。一个总控决定每次由谁发言，并限制每个模型的发言次数。
 
