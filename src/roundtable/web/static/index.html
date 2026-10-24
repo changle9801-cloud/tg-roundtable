@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roundtable 管理</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◎</span>
+      <span>Roundtable</span>
+      <span id="tg-pill" class="pill">…</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="members" class="active">成员</button>
+      <button role="tab" data-tab="rules">群聊规则</button>
+      <button role="tab" data-tab="prompts">提示词</button>
+      <button role="tab" data-tab="stickers">表情包</button>
+      <button role="tab" data-tab="memory">记忆 <span id="memory-badge" class="badge" hidden></span></button>
+      <button role="tab" data-tab="status">状态</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tab-members" class="tab-panel active">
+      <div class="section-head">
+        <div>
+          <h1>成员</h1>
+          <p class="muted">群里的每个 AI。订阅 CLI 走你已登录的账号；API 按量计费。token 和 key 保存后只显示末四位。</p>
+        </div>
+        <div class="add-menu">
+          <button class="primary" id="add-member-btn">＋ 添加成员</button>
+          <div class="menu" id="add-member-menu" hidden></div>
+        </div>
+      </div>
+      <div id="members"></div>
+    </section>
+
+    <section id="tab-rules" class="tab-panel">
+      <h1>群聊规则</h1>
+      <div class="card">
+        <h2>Telegram</h2>
+        <label class="field">
+          <span>总控 bot <small>负责接收群里的消息，需要在 @BotFather 关闭 privacy mode</small></span>
+          <select id="controller-select"></select>
+        </label>
+        <div class="field" id="controller-token-field">
+          <span>总控 bot token</span>
+          <div class="secret" id="controller-token"></div>
+        </div>
+        <label class="field">
+          <span>允许的用户 ID <small>只有这些人的消息会触发对话，多个用逗号分隔（找 @userinfobot 获取）</small></span>
+          <input id="allowed-users" placeholder="例如 6107207848">
+        </label>
+        <label class="field">
+          <span>允许的群 ID <small>留空表示任何群；群 ID 可以在群里发 /status 查看</small></span>
+          <input id="allowed-chats" placeholder="留空 = 不限制">
+        </label>
+      </div>
+      <div class="card">
+        <h2>发言规则</h2>
+        <div class="grid3">
+          <label class="field">
+            <span>每轮发言上限 <small>你每说一句话，每个模型最多说几次</small></span>
+            <input id="max-turns" type="number" min="1" max="10">
+          </label>
+          <label class="field">
+            <span>单次调用超时（秒）</span>
+            <input id="call-timeout" type="number" min="10" max="1800">
+          </label>
+          <label class="field check">
+            <input id="pass-consumes" type="checkbox">
+            <span>回复 [PASS] 也算一次发言</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-prompts" class="tab-panel">
+      <h1>提示词</h1>
+      <p class="muted">所有成员共用的群聊规则。每个成员的个性化设定写在「成员」里的人设中，会附加在这段之后。</p>
+      <div class="card">
+        <div class="row-between">
+          <h2>群聊系统提示词</h2>
+          <button id="prompt-reset">恢复默认</button>
+        </div>
+        <textarea id="prompt-template" rows="16" spellcheck="false"></textarea>
+        <p class="muted small">可用占位符：<span id="placeholders"></span></p>
+      </div>
+      <div class="card">
+        <div class="row-between">
+          <h2>预览</h2>
+          <select id="preview-member"></select>
+        </div>
+        <pre id="prompt-preview" class="preview"></pre>
+      </div>
+    </section>
+
+    <section id="tab-stickers" class="tab-panel">
+      <h1>表情包</h1>
+      <p class="muted">模型在回复里写 <code>[表情:名称]</code>，就会用它自己的 bot 发出对应的表情。同名的表情有多张时随机挑一张。</p>
+      <div class="card">
+        <div class="grid3">
+          <label class="field check">
+            <input id="stickers-enabled" type="checkbox">
+            <span>允许模型发表情包</span>
+          </label>
+          <label class="field">
+            <span>每条消息最多几个表情</span>
+            <input id="stickers-max" type="number" min="1" max="3">
+          </label>
+          <div></div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>上传图片</h2>
+          <div id="dropzone" class="dropzone">
+            <p>把图片拖到这里，或 <button type="button" class="link" id="pick-files">选择文件</button></p>
+            <p class="muted small" id="sticker-exts"></p>
+            <input id="file-input" type="file" multiple hidden>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span>名称 <small>留空则使用文件名，如「狗头.png」→ 狗头</small></span>
+            <input id="upload-label" placeholder="例如：狗头">
+          </label>
+        </div>
+        <div class="card">
+          <h2>导入 Telegram 贴纸包</h2>
+          <label class="field">
+            <span>贴纸包链接或名称 <small>打开贴纸包 → 分享，得到 t.me/addstickers/…</small></span>
+            <input id="set-name" placeholder="https://t.me/addstickers/…">
+          </label>
+          <button id="import-set" class="primary">导入</button>
+          <p class="muted small" style="margin-top:10px">导入后每张贴纸以它的 emoji 命名，建议改成好懂的名字（如「无语」），模型才知道什么时候用。</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row-between">
+          <h2>表情库 <span class="muted small" id="sticker-count"></span></h2>
+          <input id="sticker-filter" placeholder="按名称筛选" style="max-width:220px">
+        </div>
+        <div id="sticker-grid" class="sticker-grid"></div>
+      </div>
+    </section>
+
+    <section id="tab-memory" class="tab-panel">
+      <h1>记忆</h1>
+      <p class="muted">长期记忆会写进模型的系统提示词，所有群都适用；群聊记录和上下文按群分开管理。</p>
+
+      <div class="card">
+        <h2>长期记忆</h2>
+        <div class="grid2">
+          <label class="field">
+            <span>模型自己提议记住的内容 <small>模型在回复里写 [记住:…]，群里看不到这个标记</small></span>
+            <select id="memory-learn">
+              <option value="review">需要我在这里确认（推荐）</option>
+              <option value="auto">自动记住</option>
+              <option value="off">关闭</option>
+            </select>
+          </label>
+          <div></div>
+        </div>
+        <div id="memory-pending"></div>
+        <div class="memory-add">
+          <input id="memory-text" placeholder="添加一条记忆，例如：阿明在杭州工作，不吃香菜">
+          <select id="memory-scope"></select>
+          <button id="memory-add" class="primary">添加</button>
+        </div>
+        <div id="memory-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="row-between">
+          <h2>群聊记录与上下文</h2>
+          <select id="chat-select"></select>
+        </div>
+        <div id="chat-detail"></div>
+      </div>
+    </section>
+
+    <section id="tab-status" class="tab-panel">
+      <h1>状态</h1>
+      <div id="notices"></div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Telegram</h2>
+          <div id="status-telegram"></div>
+        </div>
+        <div class="card">
+          <h2>成员</h2>
+          <div id="status-members"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>群聊</h2>
+        <div id="status-rooms"></div>
+      </div>
+      <div class="card">
+        <h2>最近日志</h2>
+        <pre id="status-logs" class="logs"></pre>
+      </div>
+    </section>
+  </main>
+
+  <div id="savebar" class="savebar" hidden>
+    <span>有未保存的更改</span>
+    <div>
+      <button id="discard-btn">放弃</button>
+      <button id="save-btn" class="primary">保存并生效</button>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
