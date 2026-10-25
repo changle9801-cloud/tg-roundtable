@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,27 @@ HELP = """\
 /status  查看状态和群 ID"""
 
 
+MAX_BUBBLES = 4  # paragraphs become separate messages, up to this many
+
+
+def bubbles(text: str) -> list[str]:
+    """Split a reply at blank lines into separate chat messages, like people send them."""
+    parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(parts) > MAX_BUBBLES:
+        parts = parts[: MAX_BUBBLES - 1] + ["\n\n".join(parts[MAX_BUBBLES - 1 :])]
+    return parts or [text]
+
+
+def typing_pause(text: str, first: bool) -> float:
+    """Seconds of "typing…" before a message: longer messages take longer to type.
+
+    The first message already waited for the model, so it gets a shorter pause.
+    """
+    if first:
+        return min(0.6 + len(text) / 30, 3.0)
+    return min(1.0 + len(text) / 12, 5.0)
+
+
 def split_text(text: str, limit: int = TG_LIMIT) -> list[str]:
     chunks = []
     while len(text) > limit:
@@ -53,6 +75,7 @@ class TelegramSink:
         self.runtime = runtime
         self.file_ids: dict[tuple[str, str], str] = {}  # (participant, sticker) -> Telegram file id
         self.activity_messages: dict[tuple[str, str], int] = {}  # (chat, participant) -> notice id
+        self.pacing = True  # human-like typing pauses between messages
 
     async def post(self, chat_key: str, participant: Participant, text: str) -> None:
         bot = self.runtime.bots.get(participant.id)
@@ -60,8 +83,12 @@ class TelegramSink:
             await self.notice(chat_key, f"{participant.name} 没有可用的 bot，发言没能发出去。")
             return
         try:
-            for chunk in split_text(text):
-                await bot.send_message(int(chat_key), chunk)
+            for i, bubble in enumerate(bubbles(text)):
+                for chunk in split_text(bubble):
+                    with suppress(TelegramAPIError):
+                        await bot.send_chat_action(int(chat_key), ChatAction.TYPING)
+                    await asyncio.sleep(typing_pause(chunk, first=i == 0) if self.pacing else 0)
+                    await bot.send_message(int(chat_key), chunk)
         except TelegramAPIError as e:
             log.warning("%s could not post: %s", participant.id, e)
             await self.notice(chat_key, f"{participant.name} 的 bot 发不出消息（{e}），请确认它已经被拉进这个群。")

@@ -21,7 +21,22 @@ DEFAULT_SYSTEM_PROMPT = """\
 - 想让某个成员接话时，可以用 @名字 点名，例如 @{example}。
 - 直接输出你要发到群里的话，不要在开头加"{name}:"之类的前缀。
 - 不要执行任何命令或操作文件；除非下面另有说明，也不要使用其他工具。
-- 用户用什么语言，你就用什么语言回复。"""
+- 用户用什么语言，你就用什么语言回复。
+
+{friend_rules}"""
+
+# The habits that make models sound like assistants rather than friends in a group.
+FRIEND_RULES = """\
+像朋友一样聊天，别像助手：
+- 不要打圆场、不要当和事佬、不要做总结，不要说"X 说得对""大家说得都有道理""好了好了"。
+- 不要说自己接下来会怎么做，比如"我收手""我不追了""按约定""等你出题"。
+- 一条消息只回一个人、只说一件事，不要挨个回应群里每个人。
+- 用户是朋友，不是出题人或考官；不要等他"出题"，也不要像汇报、交作业一样说话。
+- 可以只回一个词、一个表情、一声"哈"；斗嘴、吐槽不用收场，可以让它自然停下。
+- 口头禅、外号和 emoji 偶尔用，不要每条都带；同一个梗在一段对话里最多用一次。
+- 不要用文字、符号或方框拼图冒充图片。"""
+
+DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT.replace("{friend_rules}", FRIEND_RULES)
 
 NO_CODING_POLICY = """\
 话题范围：
@@ -194,9 +209,10 @@ def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activiti
     lines.append("[/群聊新消息]")
     for activity in activities:
         lines.append(f"（{activity}，结果还没出来。不要替它猜测会查到什么，可以先聊别的角度，或者回复 {PASS_TOKEN} 等它。）")
+    # No "your turn" and no remaining-turn count: those read as an assignment to say something.
     lines.append(
-        f"现在轮到你发言（本轮你还可以发言 {turns_left} 次）。"
-        f"如果没有要补充的，只回复 {PASS_TOKEN}。"
+        f"（你看到了群里的新消息。想接就接，像平时在群里那样随口说；没什么想说的就只回复 {PASS_TOKEN}。"
+        "群里大多数消息只有一两个人回。）"
     )
     return "\n".join(lines)
 

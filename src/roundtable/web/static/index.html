@@ -92,6 +92,17 @@
           </label>
           <div></div>
         </div>
+        <div class="grid3">
+          <label class="field">
+            <span>第二个人接话的概率（%） <small>每句话总有一个人回；之后还有没有人接，按这个概率</small></span>
+            <input id="follow-up-chance" type="number" min="0" max="100">
+          </label>
+          <label class="field">
+            <span>之后每多一个人，概率再乘（%） <small>例如 50% 后乘 40%，第三个人约 20%</small></span>
+            <input id="follow-up-decay" type="number" min="0" max="100">
+          </label>
+          <div class="muted small" style="align-self:center">被 @ 的人总会回话；都填 100 就是以前那种每人都说</div>
+        </div>
       </div>
     </section>
 

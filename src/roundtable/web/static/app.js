@@ -728,6 +728,11 @@ function renderRules() {
   };
   $("#proactive-chat-current").textContent = server.status.proactive?.chat
     ? `现在会发到：群 ${server.status.proactive.chat}` : "现在还不知道发到哪个群（先在群里聊一句）";
+  for (const [id, key] of [["#follow-up-chance", "follow_up_chance"], ["#follow-up-decay", "follow_up_decay"]]) {
+    const input = $(id);
+    input.value = Math.round(r[key] * 100);
+    input.oninput = (e) => { r[key] = Math.min(Math.max(Number(e.target.value) || 0, 0), 100) / 100; changed(); };
+  }
   const parallel = $("#max-parallel");
   parallel.value = r.max_parallel;
   parallel.oninput = (e) => { r.max_parallel = Number(e.target.value); changed(); };

@@ -199,11 +199,15 @@ def normalize_settings(raw: dict) -> dict:
             "call_timeout": float(rnd["call_timeout"]),
             "slow_after": float(rnd["slow_after"]),
             "max_parallel": int(rnd["max_parallel"]),
+            "follow_up_chance": float(rnd["follow_up_chance"]),
+            "follow_up_decay": float(rnd["follow_up_decay"]),
         }
     except (TypeError, ValueError):
         raise ConfigError("群聊规则里有不是数字的值") from None
     if not 1 <= rnd["slow_after"] <= 120:
         raise ConfigError("「等多久让别人先说」要在 1 到 120 秒之间")
+    if not (0 <= rnd["follow_up_chance"] <= 1 and 0 <= rnd["follow_up_decay"] <= 1):
+        raise ConfigError("接话概率和递减比例要在 0 到 1 之间")
     if not 1 <= rnd["max_parallel"] <= 4:
         raise ConfigError("同时发言的人数要在 1 到 4 之间")
     if not 1 <= rnd["max_turns_per_model"] <= 10:

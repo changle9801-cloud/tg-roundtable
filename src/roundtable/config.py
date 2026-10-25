@@ -27,6 +27,11 @@ class RoundConfig:
     slow_after: float = 8.0
     # ...as long as no more than this many are speaking at once (1 = strictly one by one).
     max_parallel: int = 2
+    # After the first reply to a message, the chance that someone else chimes in, and how
+    # much that chance shrinks for every further reply (0.5, then 0.5*0.4=0.2, ...).
+    # Being @-mentioned always gets an answer. 1.0 and 1.0 = everyone may speak.
+    follow_up_chance: float = 0.5
+    follow_up_decay: float = 0.4
 
 
 @dataclass

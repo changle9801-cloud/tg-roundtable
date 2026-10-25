@@ -74,4 +74,6 @@ def make(tmp_path, store):
 
 @pytest.fixture
 def round_cfg():
-    return RoundConfig(max_turns_per_model=3, pass_consumes_turn=False, call_timeout=5)
+    # Everyone may chime in, so tests of other behaviour are not subject to dice rolls.
+    return RoundConfig(max_turns_per_model=3, pass_consumes_turn=False, call_timeout=5,
+                       follow_up_chance=1.0, follow_up_decay=1.0)

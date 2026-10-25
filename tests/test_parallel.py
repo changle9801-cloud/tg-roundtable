@@ -20,7 +20,7 @@ class FirstMentioned(RuleModerator):
 
 
 def room_for(members, store, sink=None, **round_kw):
-    cfg = RoundConfig(max_turns_per_model=1, call_timeout=5, **round_kw)
+    cfg = RoundConfig(max_turns_per_model=1, call_timeout=5, follow_up_chance=1.0, follow_up_decay=1.0, **round_kw)
     sink = sink or FakeSink()
     return ChatRoom("chat", members, sink, cfg, store, FirstMentioned(random.Random(0))), sink
 

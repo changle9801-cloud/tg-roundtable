@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
@@ -44,6 +45,9 @@ class _RoundState:
     last_speaker: str | None = None
     passed: set[str] = field(default_factory=set)  # passed since the last real message
     failed: set[str] = field(default_factory=set)  # errored this round; not retried
+    started: int = 0  # replies started since the user last spoke
+    closed: bool = False  # the dice said nobody else joins in; only @-mentions now
+    granted: set[str] = field(default_factory=set)  # given an extra turn (e.g. to use a new sticker)
 
 
 class Sink(Protocol):
@@ -103,6 +107,8 @@ class ChatRoom:
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
         self.slow_after = round_cfg.slow_after
         self.max_parallel = round_cfg.max_parallel
+        self.follow_up_chance = round_cfg.follow_up_chance
+        self.follow_up_decay = round_cfg.follow_up_decay
         self.store = store
         self.stickers = stickers
         self.sticker_limit = sticker_limit  # 0: stickers off, tags are stripped
@@ -136,6 +142,8 @@ class ChatRoom:
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
         self.slow_after = round_cfg.slow_after
         self.max_parallel = round_cfg.max_parallel
+        self.follow_up_chance = round_cfg.follow_up_chance
+        self.follow_up_decay = round_cfg.follow_up_decay
         # Newcomers start from the beginning of the kept history (capped by MAX_UNSEEN).
         self.cursors = {p.id: self.cursors.get(p.id, 0) for p in self.participants}
 
@@ -214,6 +222,7 @@ class ChatRoom:
                 if self._extra_turns:  # e.g. a sticker was just delivered to someone
                     for pid, n in self._extra_turns.items():
                         state.turns[pid] = state.turns.get(pid, 0) + n
+                        state.granted.add(pid)
                     self._extra_turns.clear()
                 if self._restart:
                     self._restart = False
@@ -224,18 +233,26 @@ class ChatRoom:
                     last_start = float("-inf")
 
                 speaking = {t.speaker.id for t in pending.values()}
+                latest = focus or self.messages[-1]
+                forced = set(latest.mentions) | state.granted  # these always get to answer
                 candidates = [
                     p for p in self.participants
                     if state.turns.get(p.id, 0) > 0
                     and p.id not in state.passed
                     and p.id not in state.failed
                     and p.id not in speaking
+                    and (not state.closed or p.id in forced)
                     and self._unseen(p)
                 ]
                 room_for_more = bool(candidates) and len(pending) < self.max_parallel
                 if room_for_more and (not pending or loop.time() - last_start >= self.slow_after):
-                    speaker = self.moderator.pick(candidates, focus or self.messages[-1], state.last_speaker)
+                    speaker = self.moderator.pick(candidates, latest, state.last_speaker)
+                    if speaker.id not in forced and not self._joins_in(speaker, state.started):
+                        state.closed = True  # like a real group: most messages get one or two replies
+                        continue
                     focus = None
+                    state.started += 1
+                    state.granted.discard(speaker.id)
                     turn = self._start_turn(speaker, state.turns[speaker.id])
                     pending[turn.task] = turn
                     last_start = loop.time()
@@ -257,6 +274,17 @@ class ChatRoom:
                 await asyncio.gather(*pending, return_exceptions=True)
             for turn in pending.values():
                 await self._end_activity(turn.speaker)
+
+    ACTIVITY_FACTOR = {"low": 0.5, "normal": 1.0, "high": 1.5}
+
+    def _joins_in(self, speaker: Participant, already: int) -> bool:
+        """Whether one more member chimes in after ``already`` replies to the same message."""
+        if already == 0:
+            return True  # someone always answers the user
+        chance = self.follow_up_chance * self.follow_up_decay ** (already - 1)
+        chance *= self.ACTIVITY_FACTOR.get(getattr(speaker.cfg, "activity", "normal"), 1.0)
+        rng = getattr(self.moderator, "rng", random)
+        return rng.random() < min(chance, 1.0)
 
     def _fresh_turns(self) -> dict[str, int]:
         """Turns per member for a new round: its own limit, or the group's."""

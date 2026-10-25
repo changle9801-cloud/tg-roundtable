@@ -125,7 +125,7 @@ def test_proactive_prompt():
 
 def room_for(members, store, **round_kw):
     sink = FakeSink()
-    cfg = RoundConfig(max_turns_per_model=3, call_timeout=5, **round_kw)
+    cfg = RoundConfig(max_turns_per_model=3, call_timeout=5, follow_up_chance=1.0, follow_up_decay=1.0, **round_kw)
     return ChatRoom("chat", members, sink, cfg, store), sink
 
 
