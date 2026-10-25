@@ -255,6 +255,9 @@ def clean_reply(raw: str, name: str) -> str | None:
     text = raw.strip()
     # Models sometimes echo the transcript format and prefix their own name.
     text = re.sub(rf"^\s*{re.escape(name)}\s*[:：]\s*", "", text, flags=re.IGNORECASE).strip()
+    # ...or wrap the whole message in 【】 like a narration box.
+    if text.startswith("【") and text.endswith("】") and text.count("【") == 1 and text.count("】") == 1:
+        text = text[1:-1].strip()
     if not text or _PASS_RE.match(text):
         return None
     return text

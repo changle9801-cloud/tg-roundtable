@@ -20,6 +20,13 @@ def test_clean_reply_strips_own_name_prefix():
     assert clean_reply("我觉得 PASS 这个词挺好", "Claude") == "我觉得 PASS 这个词挺好"
 
 
+def test_clean_reply_unwraps_a_bracketed_message():
+    assert clean_reply("【不想承认这四个字已经承认了。\n\n🌻】", "Claude") == "不想承认这四个字已经承认了。\n\n🌻"
+    assert clean_reply("Claude：【好】", "Claude") == "好"
+    assert clean_reply("【重点】先吃饭【完】", "Claude") == "【重点】先吃饭【完】"  # brackets inside are kept
+    assert clean_reply("【PASS】", "Claude") is None
+
+
 def test_parse_claude_output():
     out = json.dumps({"type": "result", "is_error": False, "result": "hi", "session_id": "s1"})
     assert parse_output(out) == ("hi", "s1")
