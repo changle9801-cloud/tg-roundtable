@@ -728,6 +728,15 @@ function renderRules() {
     draft.proactive.chat_id = v ? Number(v) : 0;
     changed();
   };
+  const vision = $("#vision-member");
+  const viewers = draft.participants.filter((p) => p.kind === "codex_cli");
+  vision.replaceChildren(
+    h("option", { value: "auto", selected: draft.vision.member === "auto" },
+      viewers.length ? `自动（${viewers[0].name || viewers[0].id}）` : "自动（需要一个 Codex 订阅成员）"),
+    ...viewers.map((p) => h("option", { value: p.id, selected: draft.vision.member === p.id }, p.name || p.id)),
+    h("option", { value: "off", selected: draft.vision.member === "off" }, "关闭：模型只知道发了一张图"),
+  );
+  vision.onchange = (e) => { draft.vision.member = e.target.value; changed(); };
   $("#proactive-chat-current").textContent = server.status.proactive?.chat
     ? `现在会发到：群 ${server.status.proactive.chat}` : "现在还不知道发到哪个群（先在群里聊一句）";
   for (const [id, key] of [["#follow-up-chance", "follow_up_chance"], ["#follow-up-decay", "follow_up_decay"]]) {

@@ -86,6 +86,7 @@ def default_settings() -> dict:
         "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True},
         "memory": {"learn": "review"},
         "proactive": {"chat_id": 0},
+        "vision": {"member": "auto"},
         "web": {"port": DEFAULT_PORT},
         "participants": [],
     }
@@ -237,6 +238,7 @@ def normalize_settings(raw: dict) -> dict:
         proactive = {"chat_id": int((raw.get("proactive") or {}).get("chat_id") or 0)}
     except (TypeError, ValueError):
         raise ConfigError("主动发言的目标群 ID 必须是数字") from None
+    vision = {"member": str((raw.get("vision") or {}).get("member") or "auto").strip() or "auto"}
     web = {**base["web"], **(raw.get("web") or {})}
     web = {"port": int(web.get("port") or DEFAULT_PORT)}
 
@@ -246,6 +248,8 @@ def normalize_settings(raw: dict) -> dict:
         raise ConfigError("成员 ID 不能重复")
     if tg["controller_participant"] and tg["controller_participant"] not in ids:
         tg["controller_participant"] = ""
+    if vision["member"] not in ("auto", "off") and vision["member"] not in ids:
+        vision["member"] = "auto"
 
     return {
         "telegram": tg,
@@ -254,6 +258,7 @@ def normalize_settings(raw: dict) -> dict:
         "stickers": stickers,
         "memory": memory,
         "proactive": proactive,
+        "vision": vision,
         "web": web,
         "participants": participants,
     }
@@ -348,6 +353,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         scene=settings["prompts"]["scene"],
         no_coding=settings["prompts"]["no_coding"],
         proactive_chat_id=settings["proactive"]["chat_id"],
+        vision_member=settings["vision"]["member"],
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
         kaomoji_enabled=settings["stickers"]["kaomoji"],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
@@ -134,7 +135,8 @@ class TelegramSink:
             return
         key = (chat_key, participant.id)
         previous = self.activity_messages.get(key)
-        shown = f"{'🎨' if '画' in text else '🔍'} {text}"
+        icon = "🎨" if "画" in text else "👀" if "看图" in text else "🔍"
+        shown = f"{icon} {text}"
         with suppress(TelegramAPIError):
             if previous is not None:  # a second search in the same turn: update the notice
                 await bot.edit_message_text(shown, chat_id=int(chat_key), message_id=previous)
@@ -186,10 +188,26 @@ def parse_collect_args(args: str) -> tuple[str, str]:
     return parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
 
 
-def describe(msg: TgMessage, stickers: StickerLibrary | None = None) -> str:
+LOOK_MAX_SIDE = 1280  # a smaller copy is plenty for a description
+
+
+def to_look_at(msg: TgMessage, stickers: StickerLibrary | None = None) -> tuple[tuple[str, str, str], str] | None:
+    """The picture to describe for the models: a photo, or a still sticker not in the library."""
+    if msg.photo:
+        fitting = [p for p in msg.photo if max(p.width, p.height) <= LOOK_MAX_SIDE]
+        p = fitting[-1] if fitting else msg.photo[0]
+        return (p.file_id, p.file_unique_id, ".jpg"), "图片"
+    st = msg.sticker
+    if st and not st.is_animated and not st.is_video and (stickers is None or stickers.find_tg(st.file_unique_id) is None):
+        return (st.file_id, st.file_unique_id, ".webp"), "表情"
+    return None
+
+
+def describe(msg: TgMessage, stickers: StickerLibrary | None = None, seen: str | None = None) -> str:
     """Text the models see for a user message; media is described, not passed on.
 
-    A sticker, GIF or picture that is in the library is named, so the models know what was meant.
+    A sticker, GIF or picture that is in the library is named, so the models know what was meant;
+    ``seen`` is what the viewer saw in a picture or sticker that is not.
     """
     if msg.text:
         return msg.text
@@ -199,12 +217,13 @@ def describe(msg: TgMessage, stickers: StickerLibrary | None = None) -> str:
     if known is not None:
         hint = f"（{known.description[:30]}）" if known.description else ""
         return f"[发送了表情：{known.label}{hint}]{caption}"
+    seen = f"：{seen}" if seen else ""
     if msg.sticker:
-        return f"[发送了一个表情 {msg.sticker.emoji or ''}]".replace(" ]", "]")
+        return f"[发送了一个表情 {msg.sticker.emoji or ''}{seen}]".replace(" ]", "]").replace(" ：", "：")
     if msg.animation:
         return f"[发送了一个动图]{caption}"
     if msg.photo:
-        return f"[发送了一张图片]{caption}"
+        return f"[发送了一张图片{seen}]{caption}"
     return ""
 
 
@@ -212,6 +231,9 @@ def build_router(runtime: Runtime) -> Router:
     """Handlers for the controller bot. Settings are read live from the runtime."""
     r = Router()
     group = F.chat.type.in_(GROUP_TYPES)
+    # Updates are handled concurrently; while a picture is being looked at, later messages
+    # from the same group wait, so the models still read them in the order they were sent.
+    in_order: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def allowed(msg: TgMessage) -> bool:
         tg = runtime.config.telegram
@@ -292,17 +314,23 @@ def build_router(runtime: Runtime) -> Router:
     async def chat(msg: TgMessage):
         if not allowed(msg):
             return
-        text = describe(msg, runtime.stickers)
-        if not text or text.startswith("/"):
-            return
-        if runtime.config.no_coding and looks_like_code(text):
-            # Pasted code never reaches the models; this group is for everyday chat.
-            await msg.reply("⚙️ 这个群只用来日常闲聊，代码相关的就不在这儿处理啦。")
-            return
-        reply_to = None
-        replied = msg.reply_to_message
-        if replied and replied.from_user:
-            reply_to = runtime.bot_user_ids.get(replied.from_user.id)
-        runtime.room(msg.chat.id).add_user_message(msg.from_user.first_name, text, reply_to)
+        async with in_order[msg.chat.id]:
+            seen = None
+            target = to_look_at(msg, runtime.stickers)
+            if target is not None:
+                media, what = target
+                seen = await runtime.look_at(msg.bot, str(msg.chat.id), media, what, msg.caption or "")
+            text = describe(msg, runtime.stickers, seen)
+            if not text or text.startswith("/"):
+                return
+            if runtime.config.no_coding and looks_like_code(text):
+                # Pasted code never reaches the models; this group is for everyday chat.
+                await msg.reply("⚙️ 这个群只用来日常闲聊，代码相关的就不在这儿处理啦。")
+                return
+            reply_to = None
+            replied = msg.reply_to_message
+            if replied and replied.from_user:
+                reply_to = runtime.bot_user_ids.get(replied.from_user.id)
+            runtime.room(msg.chat.id).add_user_message(msg.from_user.first_name, text, reply_to)
 
     return r

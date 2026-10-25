@@ -46,6 +46,7 @@ from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .kaomoji import KaomojiLibrary
+from .vision import SeenCache, look_prompt, supports_vision
 from .stickers import MAX_FILE_BYTES as MAX_STICKER_BYTES, StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
 from .transcript import USER, Message
@@ -100,6 +101,7 @@ class Runtime:
 
         self.stickers = StickerLibrary(store.data_dir)
         self.kaomoji = KaomojiLibrary(store.data_dir)
+        self.seen = SeenCache()
         self.memory = MemoryStore(store.data_dir)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
@@ -386,6 +388,41 @@ class Runtime:
         self.stickers_changed()
         log.info("导入贴纸包 %s：%d 个", name, added)
         return added
+
+    def viewer(self) -> Participant | None:
+        """The member who looks at pictures for everyone, if any."""
+        choice = self.config.vision_member
+        if choice == "off":
+            return None
+        return next((p for p in self.participants if supports_vision(p.cfg) and choice in ("auto", p.id)), None)
+
+    async def look_at(self, bot, chat_key: str, media: tuple[str, str, str], what: str, caption: str) -> str | None:
+        """A short description of a picture sent in the group; ``None`` if nobody can look."""
+        file_id, unique_id, ext = media
+        cached = self.seen.get(unique_id)
+        if cached is not None:
+            return cached
+        viewer = self.viewer()
+        if viewer is None:
+            return None
+        folder = self.config.data_dir / "vision"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{unique_id}{ext}"
+        await self.sink.activity(chat_key, viewer, "正在看图")
+        try:
+            file = await bot.get_file(file_id)
+            data = await bot.download_file(file.file_path)
+            path.write_bytes(data.read())
+            text = await viewer.describe_image(path, look_prompt(what, caption))
+        except Exception as e:  # the message still goes through, just without a description
+            log.warning("%s 看图失败：%s", viewer.name, e)
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+            await self.sink.clear_activity(chat_key, viewer)
+        self.seen.put(unique_id, text)
+        log.info("%s 看图：%s", viewer.name, text)
+        return text
 
     async def collect_sticker(self, bot, media: tuple[str, str, str], label: str, description: str) -> str:
         """Save a sticker, GIF or picture someone sent in the group; returns the reply for the group."""

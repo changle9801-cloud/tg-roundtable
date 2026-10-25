@@ -93,6 +93,7 @@ class Config:
     scene: str = ""  # shared setting for the whole group, e.g. "you are housemates"
     no_coding: bool = True  # everyday chat only: decline programming help
     proactive_chat_id: int = 0  # group for proactive posts; 0 = the most recently active one
+    vision_member: str = "auto"  # who looks at pictures for everyone: auto (first Codex), off, or a member id
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
     kaomoji_enabled: bool = True
