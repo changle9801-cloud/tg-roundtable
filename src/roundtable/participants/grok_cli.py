@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 
-from .base import Participant, ParticipantError, resolve_command, run_cli
+from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
 # Every built-in tool, removed so Grok can only chat. Unknown names only cause a warning.
 DISALLOWED_TOOLS = ",".join([
@@ -30,14 +30,16 @@ class GrokCLI(Participant):
             *self.command,
             "--prompt-file", prompt_file,
             "--verbatim",
-            "--output-format", "json",
+            "--output-format", "streaming-json",  # tool events show when a search starts
             "--disallowed-tools", DISALLOWED_TOOLS,
-            "--disable-web-search",
             "--no-subagents",
             "--no-plan",
             "--permission-mode", "default",
             "--system-prompt-override", self.system_prompt,
         ]
+        if not self.cfg.web_search:
+            # With search on, Grok keeps its built-in web and X search; everything else stays off.
+            cmd.append("--disable-web-search")
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
         if self.cfg.effort:
@@ -46,13 +48,23 @@ class GrokCLI(Participant):
             cmd += ["--resume", session_id]
         return cmd
 
-    async def reply(self, chat_key: str, prompt: str) -> str:
+    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
         # Grok does not read prompts from stdin; rooms may call concurrently, so use a unique file.
         prompt_path = self.work_dir / f"prompt-{uuid.uuid4().hex}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
+        announced: set[str] = set()
+
+        def watch(line: str) -> None:
+            if on_activity is None or '"tool_call"' not in line:
+                return
+            activity = describe_tool(json.loads(line))
+            if activity and activity not in announced:  # one notice per kind of search
+                announced.add(activity)
+                on_activity(activity)
+
         try:
             cmd = self.build_command(str(prompt_path), self.store.get(chat_key, self.id))
-            out = await run_cli(cmd, "", self.work_dir, self.timeout, env=self.env)
+            out = await run_cli(cmd, "", self.work_dir, self.timeout, env=self.env, on_line=watch)
         finally:
             prompt_path.unlink(missing_ok=True)
         text, session_id = parse_output(out)
@@ -60,22 +72,41 @@ class GrokCLI(Participant):
         return text
 
 
+def describe_tool(event: dict) -> str:
+    if event.get("type") != "tool_call":
+        return ""
+    name = str(event.get("toolName") or event.get("title") or "")
+    variant = str((event.get("rawInput") or {}).get("variant", ""))
+    if "XSearch" in variant or name.lower().startswith("x search"):
+        return "正在 X 上搜索"
+    if "search" in name.lower() or "web" in name.lower():
+        return "正在联网搜索"
+    return ""
+
+
 def parse_output(out: str) -> tuple[str, str]:
-    # The result is a (pretty-printed) JSON object, possibly after notices; parse from the
-    # last line that opens an object at column 0.
-    data = None
-    lines = out.strip().splitlines()
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].startswith("{"):
-            try:
-                data = json.loads("\n".join(lines[i:]))
-                break
-            except ValueError:
-                continue
-    if data is None:
-        raise ParticipantError(f"无法解析 Grok 输出：{out[:200]}")
-    if data.get("type") == "error":
-        raise ParticipantError(str(data.get("message", "未知错误")))
-    if not data.get("sessionId"):
+    """Read a streaming-json run: the reply is the text after the last tool call."""
+    segments = [[]]
+    session_id = None
+    for line in out.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        kind = event.get("type")
+        if kind == "text":
+            segments[-1].append(str(event.get("data", "")))
+        elif kind == "tool_call":
+            # Text before a search is usually "let me look that up"; keep the answer after it.
+            segments.append([])
+        elif kind == "end":
+            session_id = event.get("sessionId")
+        elif kind == "error":
+            raise ParticipantError(str(event.get("message", "未知错误")))
+    if not session_id:
         raise ParticipantError(f"Grok 输出缺少 sessionId：{out[:200]}")
-    return str(data.get("text", "")), str(data["sessionId"])
+    texts = ["".join(s).strip() for s in segments]
+    answer = next((t for t in reversed(texts) if t), "")
+    return answer, str(session_id)

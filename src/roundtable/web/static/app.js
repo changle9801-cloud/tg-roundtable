@@ -81,7 +81,7 @@ const PROVIDER_LABELS = {
 function blankMember(id) {
   return {
     id, name: "", kind: "api", enabled: true, model: "", effort: "", aliases: [], persona: "",
-    command: [], provider: "", base_url: "", api_key_env: "", params: {}, max_history: 40,
+    command: [], provider: "", base_url: "", api_key_env: "", params: {}, max_history: 40, web_search: false,
   };
 }
 
@@ -286,6 +286,19 @@ function memberBody(m, isNew) {
     );
   }
 
+  const canSearch = ["claude_cli", "codex_cli", "grok_cli"].includes(m.kind) || (m.kind === "api" && m.provider === "anthropic");
+  rows.push(h("label", { class: "field check" },
+    h("input", {
+      type: "checkbox",
+      checked: canSearch && m.web_search,
+      disabled: !canSearch,
+      onchange: (e) => { m.web_search = e.target.checked; changed(); renderPreview(); },
+    }),
+    h("span", {}, "联网搜索",
+      h("small", {}, canSearch
+        ? (m.kind === "grok_cli" ? "用 Grok 自带的搜索查网页和 X（推特），只读，不能操作你的电脑" : "用模型自带的搜索查网页，只读，不能操作你的电脑")
+        : "这类成员暂不支持（等插件功能）"))));
+
   rows.push(
     field("Bot token", secretField("bots", m.id), "这个成员在 Telegram 里发言用的 bot，在 @BotFather 创建"),
     field("人设", h("textarea", {
@@ -455,6 +468,12 @@ function renderRules() {
   const pass = $("#pass-consumes");
   pass.checked = r.pass_consumes_turn;
   pass.onchange = (e) => { r.pass_consumes_turn = e.target.checked; changed(); };
+  const slow = $("#slow-after");
+  slow.value = r.slow_after;
+  slow.oninput = (e) => { r.slow_after = Number(e.target.value); changed(); };
+  const parallel = $("#max-parallel");
+  parallel.value = r.max_parallel;
+  parallel.oninput = (e) => { r.max_parallel = Number(e.target.value); changed(); };
 }
 
 // ---------- prompts ----------
@@ -469,6 +488,11 @@ function buildPrompt(member) {
     example: others[0] || member.name,
   };
   let text = template.replace(/\{(name|others|pass_token|example)\}/g, (_, k) => values[k]);
+  const canSearch = ["claude_cli", "codex_cli", "grok_cli"].includes(member.kind) || (member.kind === "api" && member.provider === "anthropic");
+  if (member.web_search && canSearch) {
+    const scope = member.kind === "grok_cli" ? "网页和 X（推特）上的帖子" : "网页";
+    text += `\n\n联网搜索：\n- 你可以用自带的搜索工具查${scope}。只在需要最新信息、核实事实或用户要求时使用，闲聊不需要。\n- 用到搜索结果时，简要附上来源链接。`;
+  }
   const mem = memorySection(member.id);
   if (mem) text += "\n\n" + mem;
   if (draft.stickers.enabled && server.meta.sticker_prompt) text += "\n\n" + server.meta.sticker_prompt;

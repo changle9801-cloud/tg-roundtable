@@ -49,10 +49,35 @@ def test_parse_codex_failure():
         parse_events(out)
 
 
+def grok_stream(*events):
+    return "update available\n" + "\n".join(json.dumps(e, ensure_ascii=False) for e in events)
+
+
 def test_parse_grok_output():
-    data = {"text": "你好", "stopReason": "end_turn", "sessionId": "g1"}
-    assert parse_grok("update available\n" + json.dumps(data)) == ("你好", "g1")
-    assert parse_grok(json.dumps(data, ensure_ascii=False, indent=2)) == ("你好", "g1")
+    out = grok_stream(
+        {"type": "text", "data": "你"}, {"type": "text", "data": "好"},
+        {"type": "end", "stopReason": "end_turn", "sessionId": "g1"},
+    )
+    assert parse_grok(out) == ("你好", "g1")
+
+
+def test_parse_grok_keeps_the_answer_after_a_search():
+    out = grok_stream(
+        {"type": "text", "data": "我去查一下。"},
+        {"type": "tool_call", "toolName": "X search: {}", "rawInput": {"variant": "XSearch"}},
+        {"type": "tool_call_update", "status": "completed"},
+        {"type": "text", "data": "最新一条是……"},
+        {"type": "end", "sessionId": "g2"},
+    )
+    assert parse_grok(out) == ("最新一条是……", "g2")
+
+
+def test_grok_search_events():
+    from roundtable.participants.grok_cli import describe_tool
+
+    assert describe_tool({"type": "tool_call", "toolName": "X search: {}", "rawInput": {"variant": "XSearch"}}) == "正在 X 上搜索"
+    assert describe_tool({"type": "tool_call", "toolName": "web_search"}) == "正在联网搜索"
+    assert describe_tool({"type": "text", "data": "x"}) == ""
 
 
 def test_parse_grok_error():

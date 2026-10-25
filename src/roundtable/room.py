@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
@@ -14,6 +15,7 @@ from .config import RoundConfig
 from .memory import extract_memories
 from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
+from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
@@ -26,6 +28,21 @@ MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
 MemoryHook = Callable[[Participant, list[str]], None]
 
 
+@dataclass
+class _Turn:
+    speaker: Participant
+    task: asyncio.Task
+    prev_cursor: int  # restored if the call fails, so the messages count as unseen again
+
+
+@dataclass
+class _RoundState:
+    turns: dict[str, int]  # turns left per member
+    last_speaker: str | None = None
+    passed: set[str] = field(default_factory=set)  # passed since the last real message
+    failed: set[str] = field(default_factory=set)  # errored this round; not retried
+
+
 class Sink(Protocol):
     """Where the room's output goes (Telegram, console, tests)."""
 
@@ -36,6 +53,12 @@ class Sink(Protocol):
     def typing(self, chat_key: str, participant: Participant) -> AbstractAsyncContextManager: ...
 
     async def post_sticker(self, chat_key: str, participant: Participant, sticker: Sticker) -> None: ...
+
+    async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
+        """Show what a slow model is doing, e.g. "正在 X 上搜索"."""
+
+    async def clear_activity(self, chat_key: str, participant: Participant) -> None:
+        """The model finished; remove the activity notice if the sink can."""
 
 
 def setup_system_prompts(
@@ -69,6 +92,8 @@ class ChatRoom:
         self.sink = sink
         self.max_turns = round_cfg.max_turns_per_model
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
+        self.slow_after = round_cfg.slow_after
+        self.max_parallel = round_cfg.max_parallel
         self.store = store
         self.stickers = stickers
         self.sticker_limit = sticker_limit  # 0: stickers off, tags are stripped
@@ -80,6 +105,9 @@ class ChatRoom:
         self.cursors = {p.id: len(self.messages) for p in self.participants}
         self._task: asyncio.Task | None = None
         self._restart = False
+        self._wake = asyncio.Event()  # set when the user speaks during a round
+        self._activities: dict[str, str] = {}  # member id -> what it is doing right now
+        self._background: set[asyncio.Task] = set()
 
     @property
     def busy(self) -> bool:
@@ -91,6 +119,8 @@ class ChatRoom:
         self.sticker_limit = sticker_limit
         self.max_turns = round_cfg.max_turns_per_model
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
+        self.slow_after = round_cfg.slow_after
+        self.max_parallel = round_cfg.max_parallel
         # Newcomers start from the beginning of the kept history (capped by MAX_UNSEEN).
         self.cursors = {p.id: self.cursors.get(p.id, 0) for p in self.participants}
 
@@ -101,8 +131,10 @@ class ChatRoom:
         self._append(Message(USER, user_name, text, tuple(mentions), time.time()))
         log.info("[%s] %s: %s", self.key, user_name, _preview(text))
         if self.busy:
-            # The model currently thinking finishes its turn, then quotas start over.
+            # Models already thinking finish their turn; quotas start over and, if there is
+            # room, someone answers the new message right away.
             self._restart = True
+            self._wake.set()
         else:
             self._task = asyncio.create_task(self._run_round())
 
@@ -147,93 +179,152 @@ class ChatRoom:
             await self.sink.notice(self.key, "总控出错了，本轮对话已中止。")
 
     async def _round_loop(self) -> None:
-        turns = {p.id: self.max_turns for p in self.participants}
-        passed: set[str] = set()  # passed since the last real message
-        failed: set[str] = set()  # errored this round; not retried
-        last_speaker: str | None = None
+        """Pick speakers until nobody has anything to add.
+
+        Normally one model speaks at a time. If a model takes longer than ``slow_after``
+        seconds (searching, thinking hard), another may start meanwhile, up to
+        ``max_parallel`` at once; the slow one's reply is posted whenever it arrives.
+        """
+        loop = asyncio.get_running_loop()
+        state = _RoundState({p.id: self.max_turns for p in self.participants})
+        pending: dict[asyncio.Task, _Turn] = {}
+        last_start = float("-inf")
         focus: Message | None = None  # message whose mentions decide the next pick
 
-        while True:
-            if self._restart:
-                self._restart = False
-                turns = {p.id: self.max_turns for p in self.participants}
-                passed.clear()
-                failed.clear()
-                # A model may have posted after the user's new message; still honour
-                # whoever the user addressed.
-                focus = next((m for m in reversed(self.messages) if m.from_user), None)
+        try:
+            while True:
+                self._wake.clear()
+                if self._restart:
+                    self._restart = False
+                    state = _RoundState({p.id: self.max_turns for p in self.participants}, state.last_speaker)
+                    # A model may have posted after the user's new message; still honour
+                    # whoever the user addressed, and answer the new message right away.
+                    focus = next((m for m in reversed(self.messages) if m.from_user), None)
+                    last_start = float("-inf")
 
-            candidates = [
-                p
-                for p in self.participants
-                if turns[p.id] > 0
-                and p.id not in passed
-                and p.id not in failed
-                and self._unseen(p)
-            ]
-            speaker = self.moderator.pick(candidates, focus or self.messages[-1], last_speaker)
-            focus = None
-            if speaker is None:
-                return
+                speaking = {t.speaker.id for t in pending.values()}
+                candidates = [
+                    p for p in self.participants
+                    if state.turns.get(p.id, 0) > 0
+                    and p.id not in state.passed
+                    and p.id not in state.failed
+                    and p.id not in speaking
+                    and self._unseen(p)
+                ]
+                room_for_more = bool(candidates) and len(pending) < self.max_parallel
+                if room_for_more and (not pending or loop.time() - last_start >= self.slow_after):
+                    speaker = self.moderator.pick(candidates, focus or self.messages[-1], state.last_speaker)
+                    focus = None
+                    turn = self._start_turn(speaker, state.turns[speaker.id])
+                    pending[turn.task] = turn
+                    last_start = loop.time()
+                    continue
+                if not pending:
+                    return
 
-            prev_cursor = self.cursors[speaker.id]
-            prompt = build_turn_prompt(self._unseen(speaker)[-MAX_UNSEEN:], turns[speaker.id])
-            self.cursors[speaker.id] = len(self.messages)
-            try:
-                async with self.sink.typing(self.key, speaker):
-                    raw = await self._ask(speaker, prompt, turns[speaker.id])
-            except ParticipantError as e:
-                log.warning("%s failed: %s", speaker.id, e)
-                self.cursors[speaker.id] = prev_cursor
-                failed.add(speaker.id)
-                await self.sink.notice(self.key, f"{speaker.name} 出错了：{e}")
-                continue
+                timeout = max(0.0, last_start + self.slow_after - loop.time()) if room_for_more else None
+                waker = asyncio.ensure_future(self._wake.wait())  # a new user message
+                done, _ = await asyncio.wait([*pending, waker], timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                waker.cancel()
+                for task in done:
+                    if task is not waker:
+                        await self._finish_turn(pending.pop(task), state)
+        finally:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            for turn in pending.values():
+                await self._end_activity(turn.speaker)
 
-            text = clean_reply(raw, speaker.name)
-            if text is not None:
-                text, facts = extract_memories(text)
-                if facts and self.on_memory is not None:
-                    self.on_memory(speaker, facts)
-                if self.stickers is not None:
-                    text, stickers, transcript = self.stickers.extract(text, self.sticker_limit)
-                else:
-                    text, stickers, transcript = strip_tags(text)
-            if text is None or not transcript:
-                log.info("[%s] %s: [PASS]", self.key, speaker.name)
-                passed.add(speaker.id)
-                if self.pass_consumes_turn:
-                    turns[speaker.id] -= 1
-                continue
+    def _start_turn(self, speaker: Participant, turns_left: int) -> _Turn:
+        prev_cursor = self.cursors[speaker.id]
+        prompt = build_turn_prompt(self._unseen(speaker)[-MAX_UNSEEN:], turns_left, self._activity_notes())
+        self.cursors[speaker.id] = len(self.messages)
 
-            mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id]
-            # The cursor stays where it was before the call: messages that arrived while
-            # the model was thinking are still unseen, and _unseen() skips its own post.
-            self._append(Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time()))
-            log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
-            turns[speaker.id] -= 1
-            passed.clear()  # new content: those who passed may want to respond now
-            last_speaker = speaker.id
-            if text:
-                await self.sink.post(self.key, speaker, text)
-            for sticker in stickers:
-                await self.sink.post_sticker(self.key, speaker, sticker)
+        def on_activity(text: str) -> None:
+            self._activities[speaker.id] = text
+            self._spawn(self.sink.activity(self.key, speaker, text))
 
-    async def _ask(self, speaker: Participant, prompt: str, turns_left: int) -> str:
+        async def speak() -> str:
+            async with self.sink.typing(self.key, speaker):
+                return await self._ask(speaker, prompt, turns_left, on_activity)
+
+        return _Turn(speaker, asyncio.create_task(speak()), prev_cursor)
+
+    async def _finish_turn(self, turn: _Turn, state: _RoundState) -> None:
+        speaker = turn.speaker
+        await self._end_activity(speaker)
+        try:
+            raw = turn.task.result()
+        except ParticipantError as e:
+            log.warning("%s failed: %s", speaker.id, e)
+            self.cursors[speaker.id] = min(turn.prev_cursor, len(self.messages))
+            state.failed.add(speaker.id)
+            await self.sink.notice(self.key, f"{speaker.name} 出错了：{e}")
+            return
+
+        text = clean_reply(raw, speaker.name)
+        if text is not None:
+            text, facts = extract_memories(text)
+            if facts and self.on_memory is not None:
+                self.on_memory(speaker, facts)
+            if self.stickers is not None:
+                text, stickers, transcript = self.stickers.extract(text, self.sticker_limit)
+            else:
+                text, stickers, transcript = strip_tags(text)
+        if text is None or not transcript:
+            log.info("[%s] %s: [PASS]", self.key, speaker.name)
+            state.passed.add(speaker.id)
+            if self.pass_consumes_turn:
+                state.turns[speaker.id] -= 1
+            return
+
+        mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id]
+        # The cursor stays where it was before the call: messages that arrived while
+        # the model was thinking are still unseen, and _unseen() skips its own post.
+        self._append(Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time()))
+        log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
+        state.turns[speaker.id] = state.turns.get(speaker.id, 1) - 1
+        state.passed.clear()  # new content: those who passed may want to respond now
+        state.last_speaker = speaker.id
+        if text:
+            await self.sink.post(self.key, speaker, text)
+        for sticker in stickers:
+            await self.sink.post_sticker(self.key, speaker, sticker)
+
+    def _activity_notes(self) -> list[str]:
+        names = {p.id: p.name for p in self.participants}
+        return [f"{names.get(pid, pid)} {text}" for pid, text in self._activities.items()]
+
+    async def _end_activity(self, speaker: Participant) -> None:
+        if self._activities.pop(speaker.id, None) is not None:
+            await self.sink.clear_activity(self.key, speaker)
+
+    def _spawn(self, coro) -> None:
+        """Fire-and-forget, keeping a reference so the task is not garbage collected."""
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _ask(
+        self, speaker: Participant, prompt: str, turns_left: int, on_activity: ActivityHook | None = None
+    ) -> str:
         """Get a model's turn, starting a new session if its saved one cannot be resumed.
 
         CLI sessions can disappear (the CLI was reinstalled, or the data folder moved and
         with it the CLI's working folder). The new session gets the recent transcript.
         """
         try:
-            return await speaker.reply(self.key, prompt)
+            return await speaker.reply(self.key, prompt, on_activity)
         except ParticipantError:
             session = self.store.get(self.key, speaker.id)
             if not session:
                 raise
             self.store.clear_one(self.key, speaker.id)
-            fresh = build_turn_prompt(self.messages[-MAX_UNSEEN:], turns_left)
+            fresh = build_turn_prompt(self.messages[-MAX_UNSEEN:], turns_left, self._activity_notes())
             try:
-                text = await speaker.reply(self.key, fresh)
+                text = await speaker.reply(self.key, fresh, on_activity)
             except ParticipantError:
                 self.store.set(self.key, speaker.id, session)  # not a session problem after all
                 raise

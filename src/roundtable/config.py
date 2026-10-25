@@ -23,6 +23,10 @@ class RoundConfig:
     max_turns_per_model: int = 3
     pass_consumes_turn: bool = False
     call_timeout: float = 180.0
+    # When a model takes longer than this, another may start speaking meanwhile...
+    slow_after: float = 8.0
+    # ...as long as no more than this many are speaking at once (1 = strictly one by one).
+    max_parallel: int = 2
 
 
 @dataclass
@@ -36,6 +40,8 @@ class ParticipantConfig:
     effort: str = ""
     aliases: list[str] = field(default_factory=list)
     persona: str = ""
+    # Read-only web search with the model's own built-in tool (Grok's also covers X).
+    web_search: bool = False
     # Explicit command prefix, e.g. ["C:/tools/claude.exe"]; resolved from PATH when empty.
     command: list[str] = field(default_factory=list)
     # kind = "api" only

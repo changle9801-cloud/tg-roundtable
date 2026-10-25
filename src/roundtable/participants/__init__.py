@@ -25,6 +25,11 @@ def participant_class(pc: ParticipantConfig) -> type[Participant]:
     return cls
 
 
+def supports_web_search(pc: ParticipantConfig) -> bool:
+    """Members whose model has a built-in, read-only search tool we can switch on."""
+    return pc.kind in ("claude_cli", "codex_cli", "grok_cli") or (pc.kind == "api" and pc.provider == "anthropic")
+
+
 def build_participants(cfg: Config, store: SessionStore) -> list[Participant]:
     result = []
     for p in cfg.enabled_participants:
@@ -40,4 +45,5 @@ __all__ = [
     "SessionStore",
     "build_participants",
     "participant_class",
+    "supports_web_search",
 ]

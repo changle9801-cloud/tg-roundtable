@@ -12,6 +12,8 @@ from .base import ParticipantError
 log = logging.getLogger(__name__)
 
 MAX_TOKENS = 16000
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
+MAX_CONTINUATIONS = 3  # server tools may pause a long turn; resume it this many times
 # Models whose safety classifiers may decline a request; with "default" fallbacks the API
 # re-runs a declined request on Anthropic's recommended model instead of refusing.
 FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
@@ -42,6 +44,8 @@ class AnthropicAPI(HistoryParticipant):
         }
         if self.cfg.effort:
             request["output_config"] = {"effort": self.cfg.effort}
+        if self.cfg.web_search:
+            request["tools"] = [WEB_SEARCH_TOOL]  # runs on Anthropic's side; read-only
         if self.cfg.params:
             request["extra_body"] = dict(self.cfg.params)
         return request
@@ -50,12 +54,13 @@ class AnthropicAPI(HistoryParticipant):
         request = self.build_request(history)
         try:
             async with self._client() as client:
-                if self.uses_fallbacks():
-                    response = await client.beta.messages.create(
-                        betas=[FALLBACK_BETA], fallbacks="default", **request
-                    )
-                else:
-                    response = await client.messages.create(**request)
+                response = await self._create(client, request)
+                for _ in range(MAX_CONTINUATIONS):
+                    if response.stop_reason != "pause_turn":
+                        break
+                    # A paused server-tool turn resumes by sending its content back as-is.
+                    request["messages"] = [*request["messages"], {"role": "assistant", "content": response.content}]
+                    response = await self._create(client, request)
         except anthropic.AuthenticationError:
             raise ParticipantError("API key 无效") from None
         except anthropic.PermissionDeniedError as e:
@@ -79,6 +84,11 @@ class AnthropicAPI(HistoryParticipant):
             reason = (details.explanation or details.category) if details else None
             raise ParticipantError(f"Claude 拒绝回答：{reason or '未说明原因'}")
         return "".join(block.text for block in response.content if block.type == "text")
+
+    async def _create(self, client: anthropic.AsyncAnthropic, request: dict):
+        if self.uses_fallbacks():
+            return await client.beta.messages.create(betas=[FALLBACK_BETA], fallbacks="default", **request)
+        return await client.messages.create(**request)
 
     async def list_models(self) -> list[str]:
         try:

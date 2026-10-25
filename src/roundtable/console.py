@@ -29,6 +29,12 @@ class ConsoleSink:
     async def post_sticker(self, chat_key: str, participant: Participant, sticker: Sticker) -> None:
         print(f"\n[{participant.name}] 〔表情：{sticker.label}〕\n", flush=True)
 
+    async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
+        print(f"（🔍 {participant.name} {text}）", flush=True)
+
+    async def clear_activity(self, chat_key: str, participant: Participant) -> None:
+        pass
+
 
 async def run_console(cfg: Config, user_name: str = "我") -> None:
     # Models love emoji; a GBK console would crash on them.

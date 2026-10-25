@@ -12,15 +12,18 @@ from roundtable.participants import Participant, SessionStore
 class FakeParticipant(Participant):
     """Replies from a script; records every prompt it receives."""
 
-    def __init__(self, pid: str, replies, store, work_dir, delay: float = 0.0, aliases=()):
+    def __init__(self, pid: str, replies, store, work_dir, delay: float = 0.0, aliases=(), activity: str = ""):
         cfg = ParticipantConfig(id=pid, name=pid.capitalize(), kind="fake", aliases=list(aliases))
         super().__init__(cfg, store, work_dir, timeout=5)
         self.replies = list(replies)
         self.prompts: list[str] = []
         self.delay = delay
+        self.activity = activity  # reported (like a search starting) before each delay
 
-    async def reply(self, chat_key: str, prompt: str) -> str:
+    async def reply(self, chat_key: str, prompt: str, on_activity=None) -> str:
         self.prompts.append(prompt)
+        if self.activity and on_activity is not None:
+            on_activity(self.activity)
         if self.delay:
             await asyncio.sleep(self.delay)
         reply = self.replies.pop(0) if self.replies else "[PASS]"
@@ -34,6 +37,13 @@ class FakeSink:
         self.posts: list[tuple[str, str]] = []
         self.stickers: list[tuple[str, str]] = []
         self.notices: list[str] = []
+        self.activities: list[tuple[str, str, str]] = []  # (event, member, text)
+
+    async def activity(self, chat_key, participant, text):
+        self.activities.append(("show", participant.id, text))
+
+    async def clear_activity(self, chat_key, participant):
+        self.activities.append(("clear", participant.id, ""))
 
     async def post_sticker(self, chat_key, participant, sticker):
         self.stickers.append((participant.id, sticker.label))

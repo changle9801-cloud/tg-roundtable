@@ -14,8 +14,15 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from .config import ConfigError, telegram_problems
-from .participants import HistoryParticipant, Participant, ParticipantError, SessionStore, participant_class
-from .prompts import build_system_prompt, build_turn_prompt
+from .participants import (
+    HistoryParticipant,
+    Participant,
+    ParticipantError,
+    SessionStore,
+    participant_class,
+    supports_web_search,
+)
+from .prompts import build_system_prompt, build_turn_prompt, search_instructions
 from .room import ChatRoom, setup_system_prompts
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
 from .memory import MemoryStore
@@ -87,8 +94,12 @@ class Runtime:
         return self.stickers.prompt_section(self.sticker_limit)
 
     def extra_prompt(self, member_id: str) -> str:
-        """Memory and sticker sections appended to a member's system prompt."""
-        parts = [self.memory.prompt_section(member_id, self.config.memory_learn), self.sticker_prompt()]
+        """Search, memory and sticker sections appended to a member's system prompt."""
+        pc = next((p for p in self.config.participants if p.id == member_id), None)
+        search = ""
+        if pc is not None and pc.web_search and supports_web_search(pc):
+            search = search_instructions(covers_x=pc.kind == "grok_cli")
+        parts = [search, self.memory.prompt_section(member_id, self.config.memory_learn), self.sticker_prompt()]
         return "\n\n".join(p for p in parts if p)
 
     def _rebuild_participants(self) -> None:

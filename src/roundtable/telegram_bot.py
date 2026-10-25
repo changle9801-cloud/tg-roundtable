@@ -51,6 +51,7 @@ class TelegramSink:
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
         self.file_ids: dict[tuple[str, str], str] = {}  # (participant, sticker) -> Telegram file id
+        self.activity_messages: dict[tuple[str, str], int] = {}  # (chat, participant) -> notice id
 
     async def post(self, chat_key: str, participant: Participant, text: str) -> None:
         bot = self.runtime.bots.get(participant.id)
@@ -93,6 +94,26 @@ class TelegramSink:
             if media is not None:
                 self.file_ids[key] = media.file_id
             return
+
+    async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
+        bot = self.runtime.bots.get(participant.id)
+        if bot is None:
+            return
+        key = (chat_key, participant.id)
+        previous = self.activity_messages.get(key)
+        with suppress(TelegramAPIError):
+            if previous is not None:  # a second search in the same turn: update the notice
+                await bot.edit_message_text(f"🔍 {text}", chat_id=int(chat_key), message_id=previous)
+            else:
+                msg = await bot.send_message(int(chat_key), f"🔍 {text}", disable_notification=True)
+                self.activity_messages[key] = msg.message_id
+
+    async def clear_activity(self, chat_key: str, participant: Participant) -> None:
+        message_id = self.activity_messages.pop((chat_key, participant.id), None)
+        bot = self.runtime.bots.get(participant.id)
+        if message_id is not None and bot is not None:
+            with suppress(TelegramAPIError):
+                await bot.delete_message(int(chat_key), message_id)
 
     @asynccontextmanager
     async def typing(self, chat_key: str, participant: Participant):

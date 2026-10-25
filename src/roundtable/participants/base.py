@@ -10,7 +10,9 @@ import re
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from pathlib import Path
+from typing import Callable
 
 from ..config import ConfigError, ParticipantConfig
 
@@ -60,6 +62,9 @@ class SessionStore:
         tmp.replace(self._path)
 
 
+ActivityHook = Callable[[str], None]
+
+
 class Participant(ABC):
     """One AI member of the group chat."""
 
@@ -82,8 +87,12 @@ class Participant(ABC):
         """Forget the conversation; the session store is cleared by the room."""
 
     @abstractmethod
-    async def reply(self, chat_key: str, prompt: str) -> str:
-        """Send one turn to the model and return its raw text answer."""
+    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+        """Send one turn to the model and return its raw text answer.
+
+        ``on_activity`` is called with a short description (e.g. "正在 X 上搜索") when the
+        model starts using a tool, so the group can see what is taking so long.
+        """
 
 
 # On Windows, npm installs .cmd shims. Passing free text through cmd.exe is fragile,
@@ -119,9 +128,17 @@ def resolve_command(name: str, override: list[str]) -> list[str]:
 
 
 async def run_cli(
-    cmd: list[str], stdin_text: str, cwd: Path, timeout: float, env: dict[str, str] | None = None
+    cmd: list[str],
+    stdin_text: str,
+    cwd: Path,
+    timeout: float,
+    env: dict[str, str] | None = None,
+    on_line: Callable[[str], None] | None = None,
 ) -> str:
-    """Run a CLI with the prompt on stdin and return stdout; kills the process tree on timeout/cancel."""
+    """Run a CLI with the prompt on stdin and return stdout; kills the process tree on timeout/cancel.
+
+    ``on_line`` sees each stdout line as it arrives (for progress events in JSON streams).
+    """
     log.debug("run: %s", cmd)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -130,16 +147,36 @@ async def run_cli(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=16 * 1024 * 1024,  # JSON result lines can be long
     )
+
+    async def feed() -> None:
+        proc.stdin.write(stdin_text.encode("utf-8"))
+        with suppress(ConnectionError):
+            await proc.stdin.drain()
+        proc.stdin.close()
+
+    async def read_stdout() -> str:
+        lines = []
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace")
+            lines.append(line)
+            if on_line is not None:
+                try:
+                    on_line(line)
+                except Exception:
+                    log.exception("progress handler failed")
+        return "".join(lines)
+
     try:
-        out, err = await asyncio.wait_for(proc.communicate(stdin_text.encode("utf-8")), timeout)
+        stdout, err, _ = await asyncio.wait_for(asyncio.gather(read_stdout(), proc.stderr.read(), feed()), timeout)
+        await proc.wait()
     except asyncio.TimeoutError:
         await _kill_tree(proc)
         raise ParticipantError(f"超过 {timeout:.0f} 秒没有回应") from None
     except asyncio.CancelledError:
         await _kill_tree(proc)
         raise
-    stdout = out.decode("utf-8", "replace")
     if proc.returncode != 0:
         detail = err.decode("utf-8", "replace").strip() or stdout.strip()
         raise ParticipantError(f"进程退出码 {proc.returncode}：{_tail(detail)}")

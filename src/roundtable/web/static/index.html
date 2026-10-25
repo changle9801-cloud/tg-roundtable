@@ -75,6 +75,17 @@
             <span>回复 [PASS] 也算一次发言</span>
           </label>
         </div>
+        <div class="grid3">
+          <label class="field">
+            <span>等多久让别人先说（秒） <small>某个模型超过这个时间还没回复（比如在搜索），就先让其他模型发言</small></span>
+            <input id="slow-after" type="number" min="1" max="120">
+          </label>
+          <label class="field">
+            <span>最多几个同时在说 <small>填 1 就是严格排队、一个说完下一个才开始</small></span>
+            <input id="max-parallel" type="number" min="1" max="4">
+          </label>
+          <div></div>
+        </div>
       </div>
     </section>
 

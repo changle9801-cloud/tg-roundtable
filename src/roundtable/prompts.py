@@ -19,7 +19,7 @@ DEFAULT_SYSTEM_PROMPT = """\
 - 如果你没有新的、有价值的内容要说，只回复 {pass_token}，不要附加任何其他文字。这很正常，不必每次都发言。
 - 想让某个成员接话时，可以用 @名字 点名，例如 @{example}。
 - 直接输出你要发到群里的话，不要在开头加"{name}:"之类的前缀。
-- 不要调用任何工具或执行任何命令，只用文字聊天。
+- 不要执行任何命令或操作文件；除非下面另有说明，也不要使用其他工具。
 - 用户用什么语言，你就用什么语言回复。"""
 
 
@@ -32,6 +32,15 @@ PLACEHOLDERS = {
     "example": "另一个成员的名字（用于举例）",
 }
 _PLACEHOLDER_RE = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
+
+
+def search_instructions(covers_x: bool) -> str:
+    scope = "网页和 X（推特）上的帖子" if covers_x else "网页"
+    return (
+        "联网搜索：\n"
+        f"- 你可以用自带的搜索工具查{scope}。只在需要最新信息、核实事实或用户要求时使用，闲聊不需要。\n"
+        "- 用到搜索结果时，简要附上来源链接。"
+    )
 
 
 def build_system_prompt(
@@ -51,12 +60,14 @@ def build_system_prompt(
     return prompt
 
 
-def build_turn_prompt(new_messages: Sequence[Message], turns_left: int) -> str:
+def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = ()) -> str:
     lines = ["[群聊新消息]"]
     for m in new_messages:
         who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
         lines.append(f"{who}: {m.text}")
     lines.append("[/群聊新消息]")
+    for activity in activities:
+        lines.append(f"（{activity}，结果还没出来。不要替它猜测会查到什么，可以先聊别的角度，或者回复 {PASS_TOKEN} 等它。）")
     lines.append(
         f"现在轮到你发言（本轮你还可以发言 {turns_left} 次）。"
         f"如果没有要补充的，只回复 {PASS_TOKEN}。"

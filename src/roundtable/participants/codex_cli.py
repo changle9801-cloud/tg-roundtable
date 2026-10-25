@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from .base import Participant, ParticipantError, resolve_command, run_cli
+from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
 
 # Chat only: remove every tool, not just sandbox it, so no prompt can talk Codex into
@@ -36,7 +36,7 @@ class CodexCLI(Participant):
             "--ignore-user-config",
             "--ignore-rules",
             "-c", 'sandbox_mode="read-only"',
-            "-c", 'web_search="disabled"',
+            "-c", 'web_search="live"' if self.cfg.web_search else 'web_search="disabled"',
             "-c", f"developer_instructions={_toml_str(self.system_prompt)}",
         ]
         for feature in DISABLED_FEATURES:
@@ -50,9 +50,15 @@ class CodexCLI(Participant):
         cmd.append("-")  # prompt from stdin
         return cmd
 
-    async def reply(self, chat_key: str, prompt: str) -> str:
+    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
         session_id = self.store.get(chat_key, self.id)
-        out = await run_cli(self.build_command(session_id), prompt, self.work_dir, self.timeout)
+
+        def watch(line: str) -> None:
+            # The query is only known once the search completes; announce the start.
+            if on_activity is not None and '"web_search"' in line and '"item.started"' in line:
+                on_activity("正在联网搜索")
+
+        out = await run_cli(self.build_command(session_id), prompt, self.work_dir, self.timeout, on_line=watch)
         text, thread_id = parse_events(out)
         if thread_id:
             self.store.set(chat_key, self.id, thread_id)

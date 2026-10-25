@@ -127,7 +127,7 @@ def normalize_participant(raw: dict) -> dict:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
         if f.name in ("name", "model", "effort", "persona", "provider", "base_url", "api_key_env"):
             value = str(value or "").strip()
-        if f.name == "enabled":
+        if f.name in ("enabled", "web_search"):
             value = bool(value)
         out[f.name] = value
     return out
@@ -146,9 +146,15 @@ def normalize_settings(raw: dict) -> dict:
             "max_turns_per_model": int(rnd["max_turns_per_model"]),
             "pass_consumes_turn": bool(rnd["pass_consumes_turn"]),
             "call_timeout": float(rnd["call_timeout"]),
+            "slow_after": float(rnd["slow_after"]),
+            "max_parallel": int(rnd["max_parallel"]),
         }
     except (TypeError, ValueError):
         raise ConfigError("群聊规则里有不是数字的值") from None
+    if not 1 <= rnd["slow_after"] <= 120:
+        raise ConfigError("「等多久让别人先说」要在 1 到 120 秒之间")
+    if not 1 <= rnd["max_parallel"] <= 4:
+        raise ConfigError("同时发言的人数要在 1 到 4 之间")
     if not 1 <= rnd["max_turns_per_model"] <= 10:
         raise ConfigError("每轮发言次数要在 1 到 10 之间")
     if not 10 <= rnd["call_timeout"] <= 1800:

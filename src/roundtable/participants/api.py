@@ -15,7 +15,7 @@ from pathlib import Path
 import aiohttp
 
 from ..config import ConfigError
-from .base import Participant, ParticipantError
+from .base import ActivityHook, Participant, ParticipantError
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class HistoryParticipant(Participant):
     def reset(self, chat_key: str) -> None:
         self._history_path(chat_key).unlink(missing_ok=True)
 
-    async def reply(self, chat_key: str, prompt: str) -> str:
+    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
         history = self.load_history(chat_key)
         history.append({"role": "user", "content": prompt})
         text = await self.complete(history)
