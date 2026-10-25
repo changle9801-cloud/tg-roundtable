@@ -49,6 +49,13 @@ class ParticipantConfig:
     max_turns: int = 0  # turns per round; 0 = the group's default
     # Read-only web search with the model's own built-in tool (Grok's also covers X).
     web_search: bool = False
+    # Proactive posts: now and then share something (or start a topic) unprompted.
+    proactive: bool = False
+    proactive_topics: str = ""  # what to look for, e.g. "AI 圈八卦、离谱新闻"
+    proactive_per_day: int = 3  # at most this many posts a day
+    proactive_hours: str = "10-23"  # local hours it may post in (start-end)
+    proactive_idle_minutes: int = 60  # only after the group has been quiet this long
+    proactive_replies: int = 1  # turns each other member gets to react
     # Explicit command prefix, e.g. ["C:/tools/claude.exe"]; resolved from PATH when empty.
     command: list[str] = field(default_factory=list)
     # kind = "api" only
@@ -69,6 +76,7 @@ class Config:
     system_template: str = ""  # empty: use the built-in group chat prompt
     scene: str = ""  # shared setting for the whole group, e.g. "you are housemates"
     no_coding: bool = True  # everyday chat only: decline programming help
+    proactive_chat_id: int = 0  # group for proactive posts; 0 = the most recently active one
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
     memory_learn: str = "review"  # off / review / auto: what happens to [记住:…] from models

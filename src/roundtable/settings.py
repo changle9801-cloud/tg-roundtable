@@ -31,6 +31,22 @@ DEFAULT_PORT = 8787
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 ACTIVITY_LEVELS = ("low", "normal", "high")
+PROACTIVE_RANGES = {
+    "proactive_per_day": (1, 12, "每天主动发言次数"),
+    "proactive_idle_minutes": (0, 1440, "冷场分钟数"),
+    "proactive_replies": (0, 3, "其他人接话句数"),
+}
+
+
+def parse_hours(value: str) -> tuple[int, int] | None:
+    """'10-23' -> (10, 23); the window may wrap past midnight ('22-2')."""
+    m = re.fullmatch(r"\s*(\d{1,2})\s*[-–~～]\s*(\d{1,2})\s*", value or "")
+    if not m:
+        return None
+    start, end = int(m.group(1)), int(m.group(2))
+    if not (0 <= start <= 23 and 1 <= end <= 24) or start == end:
+        return None
+    return start, end
 SECRET_FIELDS = ("bot_token", "api_key")
 PARTICIPANT_FIELDS = [f for f in fields(ParticipantConfig) if f.name not in SECRET_FIELDS]
 
@@ -65,6 +81,7 @@ def default_settings() -> dict:
         "prompts": {"system_template": "", "scene": "", "no_coding": True},
         "stickers": {"enabled": True, "max_per_message": 1},
         "memory": {"learn": "review"},
+        "proactive": {"chat_id": 0},
         "web": {"port": DEFAULT_PORT},
         "participants": [],
     }
@@ -127,10 +144,19 @@ def normalize_participant(raw: dict) -> dict:
             if value < 2:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
         if f.name in ("name", "model", "effort", "provider", "base_url", "api_key_env",
-                      "tagline", "persona", "style", "relationships", "examples"):
+                      "tagline", "persona", "style", "relationships", "examples",
+                      "proactive_topics", "proactive_hours"):
             value = str(value or "").strip()
-        if f.name in ("enabled", "web_search"):
+        if f.name in ("enabled", "web_search", "proactive"):
             value = bool(value)
+        if f.name in PROACTIVE_RANGES:
+            low, high, label = PROACTIVE_RANGES[f.name]
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                raise ConfigError(f"成员 {pid} 的{label}必须是数字") from None
+            if not low <= value <= high:
+                raise ConfigError(f"成员 {pid} 的{label}要在 {low} 到 {high} 之间")
         if f.name == "activity" and value not in ACTIVITY_LEVELS:
             value = "normal"
         if f.name == "max_turns":
@@ -141,6 +167,8 @@ def normalize_participant(raw: dict) -> dict:
             if not 0 <= value <= 10:
                 raise ConfigError(f"成员 {pid} 的每轮发言上限要在 0 到 10 之间（0 表示跟随群设置）")
         out[f.name] = value
+    if parse_hours(out["proactive_hours"]) is None:
+        raise ConfigError(f"成员 {pid} 的主动发言时间段格式不对，应该像「10-23」")
     if len(out["tagline"]) > 120:
         raise ConfigError(f"成员 {pid} 的一句话介绍最多 120 个字（Telegram 的限制）")
     if len(out["name"]) > 64:
@@ -192,6 +220,10 @@ def normalize_settings(raw: dict) -> dict:
     if learn not in LEARN_MODES:
         raise ConfigError(f"自动记忆的模式只能是 {'、'.join(LEARN_MODES)}")
     memory = {"learn": learn}
+    try:
+        proactive = {"chat_id": int((raw.get("proactive") or {}).get("chat_id") or 0)}
+    except (TypeError, ValueError):
+        raise ConfigError("主动发言的目标群 ID 必须是数字") from None
     web = {**base["web"], **(raw.get("web") or {})}
     web = {"port": int(web.get("port") or DEFAULT_PORT)}
 
@@ -208,6 +240,7 @@ def normalize_settings(raw: dict) -> dict:
         "prompts": prompts,
         "stickers": stickers,
         "memory": memory,
+        "proactive": proactive,
         "web": web,
         "participants": participants,
     }
@@ -301,6 +334,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         system_template=settings["prompts"]["system_template"],
         scene=settings["prompts"]["scene"],
         no_coding=settings["prompts"]["no_coding"],
+        proactive_chat_id=settings["proactive"]["chat_id"],
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
         memory_learn=settings["memory"]["learn"],

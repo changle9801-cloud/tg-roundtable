@@ -135,6 +135,8 @@ function blankMember(id) {
     id, name: "", kind: "api", enabled: true, model: "", effort: "", aliases: [], persona: "",
     command: [], provider: "", base_url: "", api_key_env: "", params: {}, max_history: 40, web_search: false,
     tagline: "", style: "", relationships: "", examples: "", activity: "normal", max_turns: 0,
+    proactive: false, proactive_topics: "", proactive_per_day: 3, proactive_hours: "10-23",
+    proactive_idle_minutes: 60, proactive_replies: 1,
   };
 }
 
@@ -346,6 +348,8 @@ function memberBody(m, isNew) {
       field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
         "叫到这些名字会优先回话")),
 
+    ...proactiveSection(m),
+
     h("h3", { class: "section-title" }, "技术设置"),
     h("div", { class: "grid3" },
       field("ID", idInput, "小写字母、数字、- 和 _"),
@@ -411,6 +415,70 @@ function memberBody(m, isNew) {
     h("button", { class: "danger", onclick: () => deleteMember(m) }, "删除成员"));
 
   return h("div", { class: "member-body" }, ...rows, resultEl, actions);
+}
+
+function proactiveSection(m) {
+  const canSearch = (["claude_cli", "codex_cli", "grok_cli"].includes(m.kind) || (m.kind === "api" && m.provider === "anthropic")) && m.web_search;
+  const num = (key, min, max) => h("input", {
+    type: "number", min, max, value: m[key],
+    oninput: (e) => { m[key] = Number(e.target.value); changed(); },
+  });
+  const info = (server.status.proactive?.members || {})[m.id];
+  let statusText = "";
+  if (m.proactive && info) {
+    const next = info.next_at ? new Date(info.next_at * 1000) : null;
+    const when = next ? `${next.getHours()}:${String(next.getMinutes()).padStart(2, "0")}` : "—";
+    statusText = info.done_for_today ? `今天已发 ${info.posts_today} 次，今天到此为止`
+      : !info.in_hours ? `今天已发 ${info.posts_today} 次，现在不在发言时间段`
+      : `今天已发 ${info.posts_today} 次，下次大约 ${when} 看看（群里冷场才会发）`;
+  }
+  const tryBtn = h("button", { onclick: () => tryProactive(m, tryBtn) }, "立即试一次");
+
+  const fields = m.proactive ? [
+    field("关注什么", h("textarea", {
+      rows: 2,
+      placeholder: canSearch ? "例如：AI 圈八卦、太空和宇宙的新发现、离谱新闻、好笑的推文" : "例如：吃的、天气、周末去哪玩",
+      oninput: (e) => { m.proactive_topics = e.target.value; changed(); },
+    }, m.proactive_topics || ""),
+      canSearch ? (m.kind === "grok_cli" ? "它会去 X 和网上找相关的新内容，附上链接" : "它会去网上找相关的新内容，附上链接")
+        : "没开联网搜索，它只会随口开个话题，不会分享新闻"),
+    h("div", { class: "grid3" },
+      field("每天最多几次", num("proactive_per_day", 1, 12)),
+      field("时间段", textInput(m.proactive_hours, (v) => (m.proactive_hours = v), { placeholder: "10-23" }), "只在这几点之间发"),
+      field("冷场多久才发（分钟）", num("proactive_idle_minutes", 0, 1440), "不打断正在进行的聊天")),
+    h("div", { class: "grid3" },
+      field("别人接几句", num("proactive_replies", 0, 3), "它发完后其他角色每人最多接几句"),
+      h("div", {}), h("div", {})),
+    h("div", { class: "row-between", style: "margin-bottom:12px" },
+      h("span", { class: "muted small" }, statusText || "保存后开始安排"), tryBtn),
+  ] : [];
+
+  return [
+    h("h3", { class: "section-title" }, "主动发言"),
+    h("label", { class: "field check" },
+      h("input", { type: "checkbox", checked: m.proactive, onchange: (e) => { m.proactive = e.target.checked; changed(); renderMembers(); } }),
+      h("span", {}, "群里冷场时，偶尔主动分享点东西",
+        h("small", {}, "找不到有意思的就不发；发过的链接不会重复"))),
+    ...fields,
+  ];
+}
+
+async function tryProactive(m, btn) {
+  if (settingsDirty() || hasPendingSecrets()) {
+    toast("请先保存更改再试", true);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "正在找…";
+  try {
+    const r = await api("POST", `/api/members/${encodeURIComponent(m.id)}/proactive`);
+    results[m.id] = r.posted
+      ? { text: `已发到群 ${r.chat}：\n${r.posted}` }
+      : { text: "这次没找到值得发的，没有发言（这很正常，宁缺毋滥）。" };
+  } catch (e) {
+    results[m.id] = { text: e.message, err: true };
+  }
+  renderMembers();
 }
 
 function paramsInput(m) {
@@ -556,6 +624,19 @@ function renderRules() {
   const slow = $("#slow-after");
   slow.value = r.slow_after;
   slow.oninput = (e) => { r.slow_after = Number(e.target.value); changed(); };
+  const pchat = $("#proactive-chat");
+  pchat.value = draft.proactive.chat_id || "";
+  pchat.oninput = (e) => {
+    const v = e.target.value.trim();
+    const ok = v === "" || /^-?\d+$/.test(v);
+    pchat.style.borderColor = ok ? "" : "var(--err)";
+    if (!ok) { invalid.add("pchat"); return; }
+    invalid.delete("pchat");
+    draft.proactive.chat_id = v ? Number(v) : 0;
+    changed();
+  };
+  $("#proactive-chat-current").textContent = server.status.proactive?.chat
+    ? `现在会发到：群 ${server.status.proactive.chat}` : "现在还不知道发到哪个群（先在群里聊一句）";
   const parallel = $("#max-parallel");
   parallel.value = r.max_parallel;
   parallel.oninput = (e) => { r.max_parallel = Number(e.target.value); changed(); };

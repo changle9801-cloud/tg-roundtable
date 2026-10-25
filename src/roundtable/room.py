@@ -187,15 +187,17 @@ class ChatRoom:
             log.exception("round failed in %s", self.key)
             await self.sink.notice(self.key, "总控出错了，本轮对话已中止。")
 
-    async def _round_loop(self) -> None:
+    async def _round_loop(self, turns: dict[str, int] | None = None, last_speaker: str | None = None) -> None:
         """Pick speakers until nobody has anything to add.
 
         Normally one model speaks at a time. If a model takes longer than ``slow_after``
         seconds (searching, thinking hard), another may start meanwhile, up to
         ``max_parallel`` at once; the slow one's reply is posted whenever it arrives.
+        ``turns`` overrides the quotas (a short reaction round after a proactive post);
+        a new user message always starts over with the normal quotas.
         """
         loop = asyncio.get_running_loop()
-        state = _RoundState(self._fresh_turns())
+        state = _RoundState(turns or self._fresh_turns(), last_speaker)
         pending: dict[asyncio.Task, _Turn] = {}
         last_start = float("-inf")
         focus: Message | None = None  # message whose mentions decide the next pick
@@ -277,6 +279,17 @@ class ChatRoom:
             await self.sink.notice(self.key, f"{speaker.name} 出错了：{e}")
             return
 
+        if await self._publish(speaker, raw) is None:
+            state.passed.add(speaker.id)
+            if self.pass_consumes_turn:
+                state.turns[speaker.id] -= 1
+            return
+        state.turns[speaker.id] = state.turns.get(speaker.id, 1) - 1
+        state.passed.clear()  # new content: those who passed may want to respond now
+        state.last_speaker = speaker.id
+
+    async def _publish(self, speaker: Participant, raw: str) -> str | None:
+        """Clean a reply and post it. Returns the transcript text, or None if nothing was posted."""
         text = clean_reply(raw, speaker.name)
         if text is not None:
             text, facts = extract_memories(text)
@@ -292,23 +305,66 @@ class ChatRoom:
             text = None
         if text is None or not transcript:
             log.info("[%s] %s: [PASS]", self.key, speaker.name)
-            state.passed.add(speaker.id)
-            if self.pass_consumes_turn:
-                state.turns[speaker.id] -= 1
-            return
+            return None
 
         mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id]
         # The cursor stays where it was before the call: messages that arrived while
         # the model was thinking are still unseen, and _unseen() skips its own post.
         self._append(Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time()))
         log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
-        state.turns[speaker.id] = state.turns.get(speaker.id, 1) - 1
-        state.passed.clear()  # new content: those who passed may want to respond now
-        state.last_speaker = speaker.id
         if text:
             await self.sink.post(self.key, speaker, text)
         for sticker in stickers:
             await self.sink.post_sticker(self.key, speaker, sticker)
+        return transcript
+
+    # ---- proactive posts ----
+
+    @property
+    def last_activity(self) -> float:
+        """Time of the latest message (0 if none is known)."""
+        return self.messages[-1].ts if self.messages else 0.0
+
+    def start_proactive(
+        self, speaker: Participant, make_prompt: Callable[[list[Message]], str], reply_turns: int
+    ) -> asyncio.Future | None:
+        """Let a member speak unprompted, then give the others ``reply_turns`` each to react.
+
+        Returns a future with the posted text (None if the member passed), or None if a
+        round is already running.
+        """
+        if self.busy:
+            return None
+        result = asyncio.get_running_loop().create_future()
+        self._task = asyncio.create_task(self._run_proactive(speaker, make_prompt, reply_turns, result))
+        return result
+
+    async def _run_proactive(self, speaker, make_prompt, reply_turns: int, result: asyncio.Future) -> None:
+        try:
+            prompt = make_prompt(self._unseen(speaker)[-MAX_UNSEEN:])
+            self.cursors[speaker.id] = len(self.messages)
+            try:
+                # No typing indicator: most checks end in a quiet [PASS].
+                raw = await self._ask(speaker, prompt, 1)
+            except ParticipantError as e:
+                log.warning("[%s] %s 主动发言失败：%s", self.key, speaker.id, e)
+                result.set_result(None)
+                return
+            posted = await self._publish(speaker, raw)
+            result.set_result(posted)
+            if posted is None or reply_turns < 1:
+                return
+            turns = {p.id: reply_turns for p in self.participants}
+            turns[speaker.id] = 1  # may answer what the others say about its post
+            await self._round_loop(turns, last_speaker=speaker.id)
+        except asyncio.CancelledError:
+            if not result.done():
+                result.cancel()
+            raise
+        except Exception as e:
+            log.exception("proactive post failed in %s", self.key)
+            if not result.done():
+                result.set_exception(e)
 
     def _activity_notes(self) -> list[str]:
         names = {p.id: p.name for p in self.participants}

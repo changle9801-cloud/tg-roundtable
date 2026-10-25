@@ -22,10 +22,11 @@ from .participants import (
     participant_class,
     supports_web_search,
 )
-from .prompts import build_system_prompt, build_turn_prompt, render_role, search_instructions
+from .prompts import build_proactive_prompt, build_system_prompt, build_turn_prompt, render_role, search_instructions
 from .room import ChatRoom
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
 from .memory import MemoryStore
+from .proactive import ProactiveScheduler, seconds_quiet
 from .stickers import StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
 from .transcript import USER, Message
@@ -80,6 +81,7 @@ class Runtime:
 
         self.stickers = StickerLibrary(store.data_dir)
         self.memory = MemoryStore(store.data_dir)
+        self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.sink = TelegramSink(self)
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -353,6 +355,77 @@ class Runtime:
         assert isinstance(p, HistoryParticipant)
         return await p.list_models()
 
+    # ---- proactive posts ----
+
+    def proactive_chat(self) -> str | None:
+        """The configured group, else the only allowed one, else the most recently active."""
+        if self.config.proactive_chat_id:
+            return str(self.config.proactive_chat_id)
+        if len(self.config.telegram.allowed_chat_ids) == 1:
+            return str(self.config.telegram.allowed_chat_ids[0])
+        groups = [c for c in self.chat_overview() if c["key"].startswith("-") and c["last_ts"]]
+        return groups[0]["key"] if groups else None
+
+    async def proactive_loop(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await self._proactive_tick()
+            except Exception:
+                log.exception("主动发言检查出错")
+
+    async def _proactive_tick(self) -> None:
+        if self.controller is None:  # Telegram not running: nowhere to post
+            return
+        for p in list(self.participants):
+            if not self.proactive.due(p.cfg):
+                continue
+            chat = self.proactive_chat()
+            room = self.room(chat) if chat else None
+            quiet = seconds_quiet(room.last_activity) if room else 0
+            if room is None or room.busy or quiet < p.cfg.proactive_idle_minutes * 60:
+                self.proactive.postpone(p.cfg)  # not now; look again in a few minutes
+                continue
+            await self._proactive_attempt(p, room)
+
+    async def _proactive_attempt(self, p: Participant, room: ChatRoom) -> str | None:
+        pc = p.cfg
+        can_search = pc.web_search and supports_web_search(pc)
+
+        def make_prompt(unseen):
+            return build_proactive_prompt(
+                unseen, pc.proactive_topics, can_search, pc.kind == "grok_cli", self.proactive.recent_urls(pc)
+            )
+
+        future = room.start_proactive(p, make_prompt, pc.proactive_replies)
+        if future is None:
+            self.proactive.postpone(pc)
+            return None
+        log.info("[%s] %s 主动发言中……", room.key, p.name)
+        try:
+            posted = await asyncio.wait_for(future, self.config.round.call_timeout + 60)
+        except Exception as e:
+            log.warning("%s 主动发言没有完成：%s", p.id, e)
+            posted = None
+        self.proactive.record(pc, posted)
+        return posted
+
+    async def try_proactive(self, pid: str) -> dict:
+        """Admin "try now": ignores hours, daily cap and quiet time, but not a running round."""
+        p = next((x for x in self.participants if x.id == pid), None)
+        if p is None:
+            raise ConfigError("这个成员没有启用，或者启动失败了")
+        if self.controller is None:
+            raise ConfigError("Telegram 还没连上，发不出去")
+        chat = self.proactive_chat()
+        if chat is None:
+            raise ConfigError("还不知道要发到哪个群：先在群里聊一句，或在「群聊规则」里填主动发言的群 ID")
+        room = self.room(chat)
+        if room.busy:
+            raise ConfigError("群里正在聊，等这一轮结束再试")
+        posted = await self._proactive_attempt(p, room)
+        return {"chat": chat, "posted": posted}
+
     async def set_max_turns(self, n: int) -> None:
         settings = {**self.settings, "round": {**self.settings["round"], "max_turns_per_model": n}}
         await self.apply(settings)
@@ -395,6 +468,12 @@ class Runtime:
             "members": members,
             "rooms": rooms,
             "pending_memory": self.memory.pending_count(),
+            "proactive": {
+                "chat": self.proactive_chat(),
+                "members": {
+                    p.id: self.proactive.describe(p.cfg) for p in self.participants if p.cfg.proactive
+                },
+            },
             "notices": self.notices,
             "logs": list(self.log_buffer.lines)[-150:] if self.log_buffer else [],
         }

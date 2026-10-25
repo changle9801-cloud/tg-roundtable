@@ -129,6 +129,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         body = await request.json()
         return web.json_response({"prompt": runtime.preview_prompt(body.get("settings") or {}, str(body.get("member", "")))})
 
+    async def try_proactive(request):
+        return web.json_response(await runtime.try_proactive(request.match_info["pid"]))
+
     async def test_member(request):
         return web.json_response(await runtime.test_participant(request.match_info["pid"]))
 
@@ -236,6 +239,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_put("/api/secrets", put_secrets)
     app.router.add_post("/api/preview", preview)
     app.router.add_post("/api/members/{pid}/test", test_member)
+    app.router.add_post("/api/members/{pid}/proactive", try_proactive)
     app.router.add_get("/api/members/{pid}/models", member_models)
     app.router.add_post("/api/rooms/{key}/{action:stop|reset}", room_action)
     app.router.add_post("/api/stickers", upload_stickers)

@@ -112,7 +112,7 @@ async def serve(store: SettingsStore, port: int | None, open_browser: bool, log_
         webbrowser.open(url)
     try:
         await runtime.start()
-        await runtime.telegram_loop()
+        await asyncio.gather(runtime.telegram_loop(), runtime.proactive_loop())
     finally:
         await runtime.shutdown()
         await runner.cleanup()

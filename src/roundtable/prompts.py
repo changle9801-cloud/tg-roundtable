@@ -104,6 +104,41 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
+def build_proactive_prompt(
+    new_messages: Sequence[Message], topics: str, can_search: bool, covers_x: bool, shared_urls: Sequence[str]
+) -> str:
+    """A turn nobody asked for: share something found online, or open a light topic."""
+    lines = []
+    if new_messages:
+        lines.append("[你上次发言之后的群聊消息]")
+        for m in new_messages:
+            who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
+            lines.append(f"{who}: {m.text}")
+        lines.append("[/群聊消息]")
+    lines.append("（群里安静了一阵，这是你主动发言的机会，没有人在等你回复。）")
+    topic_line = f"你关注的方向：{topics}" if topics else "方向你自己按角色的兴趣来定。"
+    if can_search:
+        where = "在 X（推特）或网上" if covers_x else "在网上"
+        lines += [
+            f"请用搜索工具{where}找一条最近的、你觉得群里会感兴趣的内容。{topic_line}",
+            "要求：",
+            "- 只分享你真的搜到的内容，附上原帖或原文链接，不要编造。",
+            "- 避开政治、色情、血腥、谣言和容易引战的话题。",
+            "- 用你角色的口吻，一两句话说说这是什么、你怎么看，就像随手转发到群里。",
+            f"- 如果没找到真正有意思的，只回复 {PASS_TOKEN}，宁缺毋滥。",
+        ]
+        if shared_urls:
+            lines.append("- 下面这些链接最近已经分享过，不要再发：")
+            lines += [f"  {u}" for u in shared_urls]
+    else:
+        lines += [
+            f"用你角色的口吻，随口开一个轻松的日常话题。{topic_line}",
+            "一两句话就好，可以问问大家。不要假装看到了什么新闻。",
+            f"如果现在不想说话，只回复 {PASS_TOKEN}。",
+        ]
+    return "\n".join(lines)
+
+
 def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = ()) -> str:
     lines = ["[群聊新消息]"]
     for m in new_messages:

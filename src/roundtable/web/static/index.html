@@ -58,6 +58,11 @@
           <span>允许的群 ID <small>留空表示任何群；群 ID 可以在群里发 /status 查看</small></span>
           <input id="allowed-chats" placeholder="留空 = 不限制">
         </label>
+        <label class="field">
+          <span>主动发言发到哪个群 <small>留空 = 自动（只允许一个群时用它，否则用最近聊过的群）</small></span>
+          <input id="proactive-chat" placeholder="留空 = 自动">
+        </label>
+        <p class="muted small" id="proactive-chat-current" style="margin-top:-6px"></p>
       </div>
       <div class="card">
         <h2>发言规则</h2>
