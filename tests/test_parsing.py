@@ -61,6 +61,19 @@ def test_parse_grok_error():
         parse_grok(out)
 
 
+def test_codex_runs_without_tools(tmp_path, store):
+    from roundtable.config import ParticipantConfig
+    from roundtable.participants.codex_cli import CodexCLI
+
+    pc = ParticipantConfig(id="codex", name="Codex", kind="codex_cli", command=["codex"])
+    codex = CodexCLI(pc, store, tmp_path, timeout=5)
+    for session in (None, "thread-1"):
+        cmd = codex.build_command(session)
+        disabled = {cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--disable"}
+        assert {"shell_tool", "unified_exec", "computer_use", "browser_use"} <= disabled
+        assert 'sandbox_mode="read-only"' in cmd and 'web_search="disabled"' in cmd
+
+
 def test_split_text():
     text = "a" * 3000 + "\n" + "b" * 3000
     assert split_text(text) == ["a" * 3000, "b" * 3000]

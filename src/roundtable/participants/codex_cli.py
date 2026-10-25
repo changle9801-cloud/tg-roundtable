@@ -7,6 +7,14 @@ import json
 from .base import Participant, ParticipantError, resolve_command, run_cli
 
 
+# Chat only: remove every tool, not just sandbox it, so no prompt can talk Codex into
+# running a command or reading a file. Unknown names in a future Codex are ignored.
+DISABLED_FEATURES = [
+    "shell_tool", "unified_exec", "code_mode_host", "view_image", "image_generation",
+    "browser_use", "browser_use_external", "in_app_browser", "computer_use", "apps",
+]
+
+
 def _toml_str(value: str) -> str:
     # JSON string escapes are valid TOML basic-string escapes.
     return json.dumps(value, ensure_ascii=False)
@@ -28,8 +36,11 @@ class CodexCLI(Participant):
             "--ignore-user-config",
             "--ignore-rules",
             "-c", 'sandbox_mode="read-only"',
+            "-c", 'web_search="disabled"',
             "-c", f"developer_instructions={_toml_str(self.system_prompt)}",
         ]
+        for feature in DISABLED_FEATURES:
+            cmd += ["--disable", feature]
         if self.cfg.model:
             cmd += ["-m", self.cfg.model]
         if self.cfg.effort:
