@@ -15,9 +15,10 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import FSInputFile
 from aiogram.types import Message as TgMessage
 
+from .config import ConfigError
 from .participants import Participant
 from .prompts import looks_like_code
-from .stickers import Sticker
+from .stickers import Sticker, StickerLibrary
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -34,7 +35,9 @@ HELP = """\
 /stop  中止当前这一轮
 /reset  清空所有模型的记忆，重新开始
 /turns N  设置每个模型每轮最多发言几次
-/status  查看状态和群 ID"""
+/status  查看状态和群 ID
+/收藏 名称  回复一个贴纸、动图或图片，把它存进表情库，模型以后也能发
+            （也可以写 /save；名称后面加「| 什么时候用」更好）"""
 
 
 MAX_BUBBLES = 4  # paragraphs become separate messages, up to this many
@@ -121,6 +124,8 @@ class TelegramSink:
             media = msg.sticker or msg.animation or msg.document or (msg.photo[-1] if msg.photo else None)
             if media is not None:
                 self.file_ids[key] = media.file_id
+                # So it is recognised by name when someone sends it back.
+                self.runtime.stickers.remember_tg(sticker, media.file_unique_id)
             return
 
     async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
@@ -161,11 +166,39 @@ class TelegramSink:
             task.cancel()
 
 
-def describe(msg: TgMessage) -> str:
-    """Text the models see for a user message; media is described, not passed on."""
+def media_of(msg: TgMessage) -> tuple[str, str, str] | None:
+    """(file id, unique id, file extension) of the sticker, GIF or picture in a message."""
+    if msg.sticker:
+        st = msg.sticker
+        return st.file_id, st.file_unique_id, ".tgs" if st.is_animated else ".webm" if st.is_video else ".webp"
+    if msg.animation:
+        a = msg.animation
+        return a.file_id, a.file_unique_id, ".gif" if a.mime_type == "image/gif" else ".mp4"  # GIFs usually arrive as MP4
+    if msg.photo:
+        p = msg.photo[-1]
+        return p.file_id, p.file_unique_id, ".jpg"
+    return None
+
+
+def parse_collect_args(args: str) -> tuple[str, str]:
+    """``名称 | 什么时候用`` -> (name, description)."""
+    parts = re.split(r"[|｜]", args or "", maxsplit=1)
+    return parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
+
+
+def describe(msg: TgMessage, stickers: StickerLibrary | None = None) -> str:
+    """Text the models see for a user message; media is described, not passed on.
+
+    A sticker, GIF or picture that is in the library is named, so the models know what was meant.
+    """
     if msg.text:
         return msg.text
     caption = f" {msg.caption}" if msg.caption else ""
+    media = media_of(msg)
+    known = stickers.find_tg(media[1]) if media and stickers is not None else None
+    if known is not None:
+        hint = f"（{known.description[:30]}）" if known.description else ""
+        return f"[发送了表情：{known.label}{hint}]{caption}"
     if msg.sticker:
         return f"[发送了一个表情 {msg.sticker.emoji or ''}]".replace(" ]", "]")
     if msg.animation:
@@ -237,11 +270,29 @@ def build_router(runtime: Runtime) -> Router:
         await runtime.set_max_turns(n)
         await msg.answer(f"之后每个模型每轮最多发言 {n} 次。")
 
+    @r.message(group, Command("save", "收藏"))
+    async def collect(msg: TgMessage, command: CommandObject):
+        if not allowed(msg):
+            return
+        target = msg.reply_to_message
+        media = media_of(target) if target else None
+        if media is None:
+            await msg.reply("用法：回复一个贴纸、动图或图片，发 /收藏 名称（后面可以加「| 什么时候用」）")
+            return
+        label, description = parse_collect_args(command.args or "")
+        if not label:
+            label = (target.sticker.emoji if target.sticker else "") or ("动图" if target.animation else "图片")
+        try:
+            text = await runtime.collect_sticker(msg.bot, media, label, description)
+        except (ConfigError, TelegramAPIError) as e:
+            text = f"收藏失败：{e}"
+        await msg.reply(text)
+
     @r.message(group)
     async def chat(msg: TgMessage):
         if not allowed(msg):
             return
-        text = describe(msg)
+        text = describe(msg, runtime.stickers)
         if not text or text.startswith("/"):
             return
         if runtime.config.no_coding and looks_like_code(text):

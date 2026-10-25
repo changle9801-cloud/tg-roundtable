@@ -46,7 +46,7 @@ from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .kaomoji import KaomojiLibrary
-from .stickers import StickerLibrary, parse_set_name
+from .stickers import MAX_FILE_BYTES as MAX_STICKER_BYTES, StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
 from .transcript import USER, Message
 
@@ -380,11 +380,27 @@ class Runtime:
             file = await bot.get_file(st.file_id)
             data = await bot.download_file(file.file_path)
             ext = "." + file.file_path.rsplit(".", 1)[-1] if "." in file.file_path else ".webp"
-            self.stickers.add(f"sticker{ext}", data.read(), st.emoji or "表情", f"来自贴纸包 {sticker_set.title}")
+            self.stickers.add(f"sticker{ext}", data.read(), st.emoji or "表情", f"来自贴纸包 {sticker_set.title}",
+                              tg_id=st.file_unique_id)
             added += 1
         self.stickers_changed()
         log.info("导入贴纸包 %s：%d 个", name, added)
         return added
+
+    async def collect_sticker(self, bot, media: tuple[str, str, str], label: str, description: str) -> str:
+        """Save a sticker, GIF or picture someone sent in the group; returns the reply for the group."""
+        file_id, unique_id, ext = media
+        known = self.stickers.find_tg(unique_id)
+        if known is not None:
+            return f"这个表情已经在表情库里了，叫「{known.label}」。"
+        file = await bot.get_file(file_id)
+        if file.file_size and file.file_size > MAX_STICKER_BYTES:
+            raise ConfigError("文件超过 10 MB")
+        data = await bot.download_file(file.file_path)
+        s = self.stickers.add(f"collected{ext}", data.read(), label, description, tg_id=unique_id)
+        self.stickers_changed()
+        log.info("收藏表情「%s」", s.label)
+        return f"⭐ 已收藏为「{s.label}」，所有人都能用。可以在管理页面的「表情」里改名、补说明，或只分给某几个成员。"
 
     async def list_models(self, pid: str) -> list[str]:
         pc = self._participant_config(pid)

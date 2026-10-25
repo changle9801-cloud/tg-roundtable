@@ -39,6 +39,7 @@ class Sticker:
     description: str = ""
     enabled: bool = True
     members: list[str] = field(default_factory=list)  # who may send it; empty = everyone
+    tg_ids: list[str] = field(default_factory=list)  # Telegram file_unique_ids, to recognise it when someone sends it
     path: Path = field(default=Path(), repr=False, compare=False)
 
     def allowed(self, member_id: str | None) -> bool:
@@ -106,7 +107,7 @@ class StickerLibrary:
             log.warning("表情库索引 %s 损坏，已忽略", self.index_path)
             return
         for entry in raw.get("stickers", []):
-            s = Sticker(**{k: entry[k] for k in ("id", "file", "label", "description", "enabled", "members") if k in entry})
+            s = Sticker(**{k: entry[k] for k in ("id", "file", "label", "description", "enabled", "members", "tg_ids") if k in entry})
             s.path = self.dir / s.file
             if s.path.exists():
                 self.items.append(s)
@@ -126,11 +127,12 @@ class StickerLibrary:
             raise ConfigError("没有这个表情")
         return s
 
-    def add(self, filename: str, data: bytes, label: str, description: str = "", members: list[str] | None = None) -> Sticker:
+    def add(self, filename: str, data: bytes, label: str, description: str = "",
+            members: list[str] | None = None, tg_id: str = "") -> Sticker:
         ext = check_file(filename, data)
         sid = uuid.uuid4().hex[:12]
         s = Sticker(id=sid, file=sid + ext, label=clean_label(label), description=description.strip(),
-                    members=clean_members(members or []))
+                    members=clean_members(members or []), tg_ids=[tg_id] if tg_id else [])
         self.dir.mkdir(parents=True, exist_ok=True)
         s.path = self.dir / s.file
         s.path.write_bytes(data)
@@ -168,6 +170,7 @@ class StickerLibrary:
         s.file = f"{s.id}-{uuid.uuid4().hex[:6]}{ext}"  # a new name, so cached Telegram file ids are not reused
         s.path = self.dir / s.file
         s.path.write_bytes(data)
+        s.tg_ids = []  # the old image's ids no longer match
         old.unlink(missing_ok=True)
         self.save()
         return s
@@ -177,6 +180,16 @@ class StickerLibrary:
         self.items.remove(s)
         s.path.unlink(missing_ok=True)
         self.save()
+
+    # ---- recognising stickers sent in Telegram ----
+
+    def find_tg(self, unique_id: str) -> Sticker | None:
+        return next((s for s in self.items if unique_id and unique_id in s.tg_ids), None)
+
+    def remember_tg(self, sticker: Sticker, unique_id: str) -> None:
+        if unique_id and unique_id not in sticker.tg_ids and sticker in self.items:
+            sticker.tg_ids.append(unique_id)
+            self.save()
 
     # ---- use in chat ----
 
