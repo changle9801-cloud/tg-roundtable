@@ -23,6 +23,7 @@ from ..participants.api import PROVIDERS
 from ..prompts import DEFAULT_SYSTEM_PROMPT, PLACEHOLDERS
 from ..settings import apply_secret_changes, masked_secrets
 from ..memory import LEARN_INSTRUCTIONS
+from ..kaomoji import STARTER as KAOMOJI_STARTER, parse_lines
 from ..stickers import KINDS as STICKER_KINDS
 
 if TYPE_CHECKING:
@@ -84,6 +85,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     def stickers() -> list[dict]:
         return [s.public() for s in runtime.stickers.items]
 
+    def kaomoji() -> list[dict]:
+        return [asdict(k) for k in runtime.kaomoji.items]
+
     def memory() -> list[dict]:
         return [asdict(f) for f in runtime.memory.items]
 
@@ -93,6 +97,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             "secrets": masked_secrets(runtime.secrets),
             "status": runtime.status(),
             "stickers": stickers(),
+            "kaomoji": kaomoji(),
             "memory": memory(),
             "meta": {
                 "memory_instructions": LEARN_INSTRUCTIONS,
@@ -169,32 +174,50 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             await room.reset()
         return web.json_response(runtime.status())
 
+    def stickers_response(**extra):
+        runtime.stickers_changed()
+        return web.json_response({**extra, "stickers": stickers(), "sticker_prompt": runtime.sticker_prompt()})
+
+    def members_field(text: str) -> list:
+        try:
+            return json.loads(text) if text.strip() else []
+        except json.JSONDecodeError:
+            raise ConfigError("成员列表格式不对") from None
+
     async def upload_stickers(request):
         reader = await request.multipart()
-        label = ""
+        label, members = "", []
         added = 0
         async for part in reader:
             if part.name == "label":
                 label = (await part.text()).strip()
+            elif part.name == "members":  # sent before the files
+                members = members_field(await part.text())
             elif part.name == "file" and part.filename:
                 filename = unquote(part.filename)  # some clients percent-encode non-ASCII names
                 data = await part.read(decode=False)
-                runtime.stickers.add(filename, bytes(data), label or Path(filename).stem)
+                runtime.stickers.add(filename, bytes(data), label or Path(filename).stem, members=members)
                 added += 1
         if not added:
             raise ConfigError("没有收到文件")
-        runtime.stickers_changed()
-        return web.json_response({"added": added, "stickers": stickers(), "sticker_prompt": runtime.sticker_prompt()})
+        return stickers_response(added=added)
+
+    async def replace_sticker_file(request):
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == "file" and part.filename:
+                data = await part.read(decode=False)
+                runtime.stickers.replace_file(request.match_info["sid"], unquote(part.filename), bytes(data))
+                return stickers_response()
+        raise ConfigError("没有收到文件")
 
     async def update_sticker(request):
         runtime.stickers.update(request.match_info["sid"], await request.json())
-        runtime.stickers_changed()
-        return web.json_response({"stickers": stickers(), "sticker_prompt": runtime.sticker_prompt()})
+        return stickers_response()
 
     async def delete_sticker(request):
         runtime.stickers.delete(request.match_info["sid"])
-        runtime.stickers_changed()
-        return web.json_response({"stickers": stickers(), "sticker_prompt": runtime.sticker_prompt()})
+        return stickers_response()
 
     async def import_set(request):
         body = await request.json()
@@ -204,6 +227,29 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def sticker_file(request):
         s = runtime.stickers.get(request.match_info["sid"])
         return web.FileResponse(s.path, headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400"})
+
+    def kaomoji_response(**extra):
+        runtime.refresh_prompts()
+        return web.json_response({**extra, "kaomoji": kaomoji()})
+
+    async def add_kaomoji(request):
+        """One face ({text, mood}), several pasted lines ({lines}), or the starter set ({starter: true})."""
+        body = await request.json()
+        members = body.get("members") or []
+        if body.get("starter"):
+            return kaomoji_response(added=runtime.kaomoji.add_many(KAOMOJI_STARTER, members))
+        if "lines" in body:
+            return kaomoji_response(added=runtime.kaomoji.add_many(parse_lines(str(body["lines"])), members))
+        runtime.kaomoji.add(str(body.get("text", "")), str(body.get("mood", "")), members)
+        return kaomoji_response(added=1)
+
+    async def update_kaomoji(request):
+        runtime.kaomoji.update(request.match_info["kid"], await request.json())
+        return kaomoji_response()
+
+    async def delete_kaomoji(request):
+        runtime.kaomoji.delete(request.match_info["kid"])
+        return kaomoji_response()
 
     def memory_response():
         runtime.refresh_prompts()
@@ -271,6 +317,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_put("/api/stickers/{sid}", update_sticker)
     app.router.add_delete("/api/stickers/{sid}", delete_sticker)
     app.router.add_get("/api/stickers/{sid}/file", sticker_file)
+    app.router.add_put("/api/stickers/{sid}/file", replace_sticker_file)
+    app.router.add_post("/api/kaomoji", add_kaomoji)
+    app.router.add_put("/api/kaomoji/{kid}", update_kaomoji)
+    app.router.add_delete("/api/kaomoji/{kid}", delete_kaomoji)
     return app
 
 

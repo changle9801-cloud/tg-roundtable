@@ -105,7 +105,7 @@ class TelegramSink:
         bot = self.runtime.bots.get(participant.id)
         if bot is None:
             return
-        key = (participant.id, sticker.id)  # file ids are per bot
+        key = (participant.id, sticker.file)  # file ids are per bot; a replaced image has a new file name
         send = {"sticker": bot.send_sticker, "animation": bot.send_animation}.get(sticker.kind, bot.send_photo)
         for attempt in (self.file_ids.get(key), FSInputFile(sticker.path)):
             if attempt is None:

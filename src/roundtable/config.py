@@ -95,6 +95,7 @@ class Config:
     proactive_chat_id: int = 0  # group for proactive posts; 0 = the most recently active one
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
+    kaomoji_enabled: bool = True
     memory_learn: str = "review"  # off / review / auto: what happens to [记住:…] from models
 
     @property

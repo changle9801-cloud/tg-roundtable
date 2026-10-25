@@ -1,6 +1,6 @@
 """Sticker library: images the models can send by writing [表情:名称] in a reply.
 
-    <data_dir>/stickers.json   index (label, description, enabled per file)
+    <data_dir>/stickers.json   index (label, description, members, enabled per file)
     <data_dir>/stickers/       the files
 """
 
@@ -38,7 +38,11 @@ class Sticker:
     label: str
     description: str = ""
     enabled: bool = True
+    members: list[str] = field(default_factory=list)  # who may send it; empty = everyone
     path: Path = field(default=Path(), repr=False, compare=False)
+
+    def allowed(self, member_id: str | None) -> bool:
+        return member_id is None or not self.members or member_id in self.members
 
     @property
     def kind(self) -> str:
@@ -50,8 +54,10 @@ class Sticker:
             "label": self.label,
             "description": self.description,
             "enabled": self.enabled,
+            "members": self.members,
             "kind": self.kind,
             "ext": Path(self.file).suffix.lower(),
+            "file": self.file,  # changes when the image is replaced, so previews refresh
         }
 
 
@@ -62,6 +68,24 @@ def clean_label(label: str) -> str:
     if len(label) > 30:
         raise ConfigError("表情名称最多 30 个字")
     return label
+
+
+def clean_members(value) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(m, str) for m in value):
+        raise ConfigError("成员列表格式不对")
+    return sorted({m.strip() for m in value if m.strip()})
+
+
+def check_file(filename: str, data: bytes) -> str:
+    """The file's extension, once it is known to be a usable sticker."""
+    ext = Path(filename).suffix.lower()
+    if ext not in KINDS:
+        raise ConfigError(f"不支持 {ext or '无扩展名'} 文件，可用：{'、'.join(sorted(KINDS))}")
+    if not data:
+        raise ConfigError("文件是空的")
+    if len(data) > MAX_FILE_BYTES:
+        raise ConfigError("文件超过 10 MB")
+    return ext
 
 
 class StickerLibrary:
@@ -82,7 +106,7 @@ class StickerLibrary:
             log.warning("表情库索引 %s 损坏，已忽略", self.index_path)
             return
         for entry in raw.get("stickers", []):
-            s = Sticker(**{k: entry[k] for k in ("id", "file", "label", "description", "enabled") if k in entry})
+            s = Sticker(**{k: entry[k] for k in ("id", "file", "label", "description", "enabled", "members") if k in entry})
             s.path = self.dir / s.file
             if s.path.exists():
                 self.items.append(s)
@@ -102,16 +126,11 @@ class StickerLibrary:
             raise ConfigError("没有这个表情")
         return s
 
-    def add(self, filename: str, data: bytes, label: str, description: str = "") -> Sticker:
-        ext = Path(filename).suffix.lower()
-        if ext not in KINDS:
-            raise ConfigError(f"不支持 {ext or '无扩展名'} 文件，可用：{'、'.join(sorted(KINDS))}")
-        if not data:
-            raise ConfigError("文件是空的")
-        if len(data) > MAX_FILE_BYTES:
-            raise ConfigError("文件超过 10 MB")
+    def add(self, filename: str, data: bytes, label: str, description: str = "", members: list[str] | None = None) -> Sticker:
+        ext = check_file(filename, data)
         sid = uuid.uuid4().hex[:12]
-        s = Sticker(id=sid, file=sid + ext, label=clean_label(label), description=description.strip())
+        s = Sticker(id=sid, file=sid + ext, label=clean_label(label), description=description.strip(),
+                    members=clean_members(members or []))
         self.dir.mkdir(parents=True, exist_ok=True)
         s.path = self.dir / s.file
         s.path.write_bytes(data)
@@ -136,6 +155,20 @@ class StickerLibrary:
             s.description = str(changes["description"] or "").strip()
         if "enabled" in changes:
             s.enabled = bool(changes["enabled"])
+        if "members" in changes:
+            s.members = clean_members(changes["members"])
+        self.save()
+        return s
+
+    def replace_file(self, sticker_id: str, filename: str, data: bytes) -> Sticker:
+        """Swap the image, keeping the name, description and members."""
+        s = self.get(sticker_id)
+        ext = check_file(filename, data)
+        old = s.path
+        s.file = f"{s.id}-{uuid.uuid4().hex[:6]}{ext}"  # a new name, so cached Telegram file ids are not reused
+        s.path = self.dir / s.file
+        s.path.write_bytes(data)
+        old.unlink(missing_ok=True)
         self.save()
         return s
 
@@ -147,21 +180,21 @@ class StickerLibrary:
 
     # ---- use in chat ----
 
-    def labels(self) -> dict[str, list[Sticker]]:
+    def labels(self, member_id: str | None = None) -> dict[str, list[Sticker]]:
         out: dict[str, list[Sticker]] = {}
         for s in self.items:
-            if s.enabled:
+            if s.enabled and s.allowed(member_id):
                 out.setdefault(s.label, []).append(s)
         return out
 
-    def pick(self, label: str) -> Sticker | None:
+    def pick(self, label: str, member_id: str | None = None) -> Sticker | None:
         wanted = label.strip().lower()
-        matches = [s for s in self.items if s.enabled and s.label.lower() == wanted]
+        matches = [s for s in self.items if s.enabled and s.allowed(member_id) and s.label.lower() == wanted]
         return self.rng.choice(matches) if matches else None
 
-    def prompt_section(self, limit: int) -> str:
-        """Instructions appended to the system prompt; empty when there is nothing to send."""
-        labels = self.labels()
+    def prompt_section(self, limit: int, member_id: str | None = None) -> str:
+        """Instructions appended to a member's system prompt; empty when it has nothing to send."""
+        labels = self.labels(member_id)
         if not labels or limit < 1:
             return ""
         names = []
@@ -175,16 +208,16 @@ class StickerLibrary:
             f"- 可用的表情：{'、'.join(names)}"
         )
 
-    def extract(self, text: str, limit: int) -> tuple[str, list[Sticker], str]:
+    def extract(self, text: str, limit: int, member_id: str | None = None) -> tuple[str, list[Sticker], str]:
         """Split a reply into (text to post, stickers to send, text for the transcript).
 
-        Unknown labels and anything beyond ``limit`` are dropped.
+        Unknown labels, stickers not given to ``member_id`` and anything beyond ``limit`` are dropped.
         """
         picked: list[tuple[str, Sticker]] = []
 
         def take(m: re.Match) -> str:
             if len(picked) < limit:
-                s = self.pick(m.group(1))
+                s = self.pick(m.group(1), member_id)
                 if s is not None:
                     picked.append((s.label, s))
             return " "

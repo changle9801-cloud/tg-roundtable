@@ -83,7 +83,7 @@ def default_settings() -> dict:
         "telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""},
         "round": asdict(RoundConfig()),
         "prompts": {"system_template": "", "scene": "", "no_coding": True},
-        "stickers": {"enabled": True, "max_per_message": 1},
+        "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True},
         "memory": {"learn": "review"},
         "proactive": {"chat_id": 0},
         "web": {"port": DEFAULT_PORT},
@@ -223,7 +223,8 @@ def normalize_settings(raw: dict) -> dict:
     }
     stickers = {**base["stickers"], **(raw.get("stickers") or {})}
     try:
-        stickers = {"enabled": bool(stickers["enabled"]), "max_per_message": int(stickers["max_per_message"])}
+        stickers = {"enabled": bool(stickers["enabled"]), "max_per_message": int(stickers["max_per_message"]),
+                    "kaomoji": bool(stickers["kaomoji"])}
     except (TypeError, ValueError):
         raise ConfigError("每条消息的表情数必须是数字") from None
     if not 1 <= stickers["max_per_message"] <= 3:
@@ -349,6 +350,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         proactive_chat_id=settings["proactive"]["chat_id"],
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
+        kaomoji_enabled=settings["stickers"]["kaomoji"],
         memory_learn=settings["memory"]["learn"],
     )
 

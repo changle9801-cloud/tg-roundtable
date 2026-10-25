@@ -45,6 +45,7 @@ from .drawing import (
 from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
+from .kaomoji import KaomojiLibrary
 from .stickers import StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
 from .transcript import USER, Message
@@ -98,6 +99,7 @@ class Runtime:
         self.telegram_state = "未启动"
 
         self.stickers = StickerLibrary(store.data_dir)
+        self.kaomoji = KaomojiLibrary(store.data_dir)
         self.memory = MemoryStore(store.data_dir)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
@@ -132,7 +134,7 @@ class Runtime:
         )
 
     def _extra_prompt(self, pc, config) -> str:
-        """Search, memory and sticker sections appended to a member's system prompt."""
+        """Search, memory, sticker and kaomoji sections appended to a member's system prompt."""
         search = ""
         if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
@@ -149,7 +151,8 @@ class Runtime:
             drawing,
             self.journal.prompt_section(pc.id),
             self.memory.prompt_section(pc.id, config.memory_learn),
-            self.stickers.prompt_section(limit),
+            self.stickers.prompt_section(limit, pc.id),
+            self.kaomoji.prompt_section(pc.id) if config.kaomoji_enabled else "",
         ]
         return "\n\n".join(p for p in parts if p)
 

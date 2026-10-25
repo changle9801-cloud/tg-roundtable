@@ -338,7 +338,7 @@ class ChatRoom:
             if draws and not text:
                 text = "行，等我一会儿。"  # it only wrote the tag; still acknowledge the request
             if self.stickers is not None:
-                text, stickers, transcript = self.stickers.extract(text, self.sticker_limit)
+                text, stickers, transcript = self.stickers.extract(text, self.sticker_limit, speaker.id)
             else:
                 text, stickers, transcript = strip_tags(text)
         if text and self.block_code and looks_like_code(text):

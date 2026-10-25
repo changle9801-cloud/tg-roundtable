@@ -194,6 +194,8 @@ function renderAll() {
   renderPrompts();
   renderStickerSettings();
   renderStickers();
+  renderKaomoji();
+  renderByMember();
   renderMemory();
   renderStatus(server.status);
 }
@@ -795,7 +797,44 @@ async function renderPreview() {
   }
 }
 
-// ---------- stickers ----------
+// ---------- expressions: stickers, kaomoji, who gets which ----------
+
+const memberIds = () => draft.participants.map((p) => p.id);
+const allows = (item, id) => !item.members.length || item.members.includes(id);
+
+function whoTag(members) {
+  if (!members.length) return h("span", { class: "who-tag" }, "所有人");
+  const known = members.filter((id) => draft.participants.some((p) => p.id === id));
+  if (!known.length) return h("span", { class: "who-tag none" }, "没有人能用");
+  return h("span", { class: "who-tag" }, known.map(memberName).join("、"));
+}
+
+// The members list after switching one member on or off. Everyone ticked again means "everyone".
+function toggledMembers(members, id, on) {
+  const all = memberIds();
+  let next = members.length ? [...members] : [...all];
+  next = on ? [...new Set([...next, id])] : next.filter((x) => x !== id);
+  return all.every((x) => next.includes(x)) ? [] : next.filter((x) => all.includes(x));
+}
+
+// Chips: 所有人, then each member. ``onChange`` gets the new list ([] = everyone).
+function memberPicker(members, onChange) {
+  const everyone = !members.length;
+  return h("div", { class: "who" },
+    h("label", {}, h("input", { type: "checkbox", checked: everyone, onchange: (e) => onChange(e.target.checked ? [] : memberIds()) }), "所有人"),
+    draft.participants.map((p) => h("label", {},
+      h("input", { type: "checkbox", checked: everyone || members.includes(p.id), disabled: everyone,
+        onchange: (e) => onChange(toggledMembers(members, p.id, e.target.checked)) }),
+      p.name || p.id)));
+}
+
+function showSubtab(name) {
+  for (const b of document.querySelectorAll("#sticker-subtabs button")) b.classList.toggle("active", b.dataset.sub === name);
+  for (const p of document.querySelectorAll("[data-subpanel]")) p.hidden = p.dataset.subpanel !== name;
+  if (name === "by-member") renderByMember();
+}
+
+// ---- stickers ----
 
 function renderStickerSettings() {
   const st = draft.stickers;
@@ -805,11 +844,14 @@ function renderStickerSettings() {
   const max = $("#stickers-max");
   max.value = st.max_per_message;
   max.oninput = (e) => { st.max_per_message = Number(e.target.value); changed(); };
+  const kao = $("#kaomoji-enabled");
+  kao.checked = st.kaomoji;
+  kao.onchange = (e) => { st.kaomoji = e.target.checked; changed(); renderPreview(); };
   $("#sticker-exts").textContent = "支持 " + server.meta.sticker_exts.join(" ") + "，单个文件不超过 10 MB";
 }
 
 function stickerThumb(s) {
-  const url = `/api/stickers/${s.id}/file`;
+  const url = `/api/stickers/${s.id}/file?v=${encodeURIComponent(s.file)}`;
   if (s.ext === ".tgs") return h("span", {}, "TGS 动画贴纸\n（无法预览）");
   if (s.ext === ".webm" || s.ext === ".mp4") return h("video", { src: url, autoplay: true, loop: true, muted: true, playsinline: true });
   return h("img", { src: url, alt: s.label, loading: "lazy" });
@@ -818,71 +860,58 @@ function stickerThumb(s) {
 function renderStickers() {
   const list = server.stickers || [];
   const filter = $("#sticker-filter").value.trim().toLowerCase();
-  const shown = filter ? list.filter((s) => s.label.toLowerCase().includes(filter)) : list;
+  const shown = filter ? list.filter((s) => s.label.toLowerCase().includes(filter) || s.description.toLowerCase().includes(filter)) : list;
   const labels = new Set(list.filter((s) => s.enabled).map((s) => s.label));
   $("#sticker-count").textContent = list.length ? `${list.length} 张 · ${labels.size} 个名称可用` : "";
+  $("#sub-count-stickers").textContent = list.length || "";
   const grid = $("#sticker-grid");
   if (!list.length) {
     grid.replaceChildren(h("div", { class: "empty", style: "grid-column:1/-1" }, "表情库还是空的，上传几张图片或导入一个贴纸包吧。"));
     return;
   }
-  grid.replaceChildren(...shown.map((s) => {
-    const label = h("input", { value: s.label, title: "表情名称：模型写 [表情:名称] 来发送" });
-    const desc = h("input", { value: s.description, placeholder: "什么时候用（可选）" });
-    const commit = () => {
-      if (label.value.trim() !== s.label || desc.value.trim() !== s.description) {
-        stickerUpdate(s.id, { label: label.value, description: desc.value });
-      }
-    };
-    for (const el of [label, desc]) {
-      el.addEventListener("change", commit);
-      el.addEventListener("keydown", (e) => e.key === "Enter" && el.blur());
-    }
-    return h("div", { class: "sticker" + (s.enabled ? "" : " off") },
+  grid.replaceChildren(...shown.map((s) =>
+    h("div", { class: "sticker" + (s.enabled ? "" : " off"), title: "点击编辑", onclick: () => openStickerDialog(s.id) },
       h("div", { class: "thumb" }, stickerThumb(s)),
-      label,
-      desc,
-      h("div", { class: "row" },
-        h("label", {}, h("input", { type: "checkbox", checked: s.enabled, onchange: (e) => stickerUpdate(s.id, { enabled: e.target.checked }) }), "启用"),
-        h("button", { class: "danger", onclick: () => stickerDelete(s) }, "删除")));
-  }));
+      h("div", { class: "name" }, s.label),
+      h("div", { class: "desc" }, s.description || (s.enabled ? "" : "已停用")),
+      whoTag(s.members))));
 }
 
 function applyStickerResponse(r) {
   server.stickers = r.stickers;
   server.meta.sticker_prompt = r.sticker_prompt;
   renderStickers();
+  renderByMember();
   renderPreview();
 }
 
 async function stickerUpdate(id, changes) {
   try {
     applyStickerResponse(await api("PUT", `/api/stickers/${id}`, changes));
+    return true;
   } catch (e) {
     toast(e.message, true);
     renderStickers();
+    renderByMember();
+    return false;
   }
 }
 
-async function stickerDelete(s) {
-  if (!confirm(`删除表情「${s.label}」？`)) return;
-  try {
-    applyStickerResponse(await api("DELETE", `/api/stickers/${s.id}`));
-  } catch (e) {
-    toast(e.message, true);
-  }
+async function postFiles(method, url, files, fields = {}) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  for (const f of files) form.append("file", f, f.name);
+  const res = await fetch(url, { method, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `上传失败（HTTP ${res.status}）`);
+  return data;
 }
 
 async function uploadStickers(files) {
   if (!files.length) return;
-  const form = new FormData();
-  form.append("label", $("#upload-label").value.trim());
-  for (const f of files) form.append("file", f, f.name);
   toast(`正在上传 ${files.length} 个文件…`);
   try {
-    const res = await fetch("/api/stickers", { method: "POST", body: form });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `上传失败（HTTP ${res.status}）`);
+    const data = await postFiles("POST", "/api/stickers", files, { label: $("#upload-label").value.trim() });
     applyStickerResponse(data);
     $("#upload-label").value = "";
     toast(`已添加 ${data.added} 个表情`);
@@ -910,6 +939,183 @@ async function importStickerSet() {
   }
 }
 
+// ---- sticker editor ----
+
+let editing = null; // {id, members}
+
+function openStickerDialog(id) {
+  const s = server.stickers.find((s) => s.id === id);
+  if (!s) return;
+  editing = { id, members: [...s.members] };
+  $("#sd-label").value = s.label;
+  $("#sd-desc").value = s.description;
+  $("#sd-enabled").checked = s.enabled;
+  renderStickerDialog(s);
+  $("#sticker-dialog").showModal();
+}
+
+function renderStickerDialog(s) {
+  $("#sd-preview").replaceChildren(stickerThumb(s));
+  $("#sd-kind").textContent = { sticker: "以贴纸发送", animation: "以动图发送", photo: "以图片发送" }[s.kind] + `（${s.ext}）`;
+  const draw = () => $("#sd-members").replaceChildren(memberPicker(editing.members, (next) => { editing.members = next; draw(); }));
+  draw();
+}
+
+function setupStickerDialog() {
+  const dlg = $("#sticker-dialog");
+  $("#sd-cancel").onclick = () => dlg.close();
+  $("#sticker-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const ok = await stickerUpdate(editing.id, {
+      label: $("#sd-label").value, description: $("#sd-desc").value,
+      enabled: $("#sd-enabled").checked, members: editing.members,
+    });
+    if (ok) { dlg.close(); toast("已保存"); }
+  });
+  $("#sd-delete").onclick = async () => {
+    const s = server.stickers.find((s) => s.id === editing.id);
+    if (!s || !confirm(`删除表情「${s.label}」？`)) return;
+    try {
+      applyStickerResponse(await api("DELETE", `/api/stickers/${s.id}`));
+      dlg.close();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+  const file = $("#sd-file");
+  $("#sd-replace").onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files[0];
+    file.value = "";
+    if (!f) return;
+    try {
+      applyStickerResponse(await postFiles("PUT", `/api/stickers/${editing.id}/file`, [f]));
+      renderStickerDialog(server.stickers.find((s) => s.id === editing.id));
+      toast("图片已替换");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+}
+
+// ---- kaomoji ----
+
+let kaoNewMembers = [];
+
+function renderKaomoji() {
+  const list = server.kaomoji || [];
+  $("#sub-count-kaomoji").textContent = list.length || "";
+  const drawNew = () => $("#kao-members").replaceChildren(memberPicker(kaoNewMembers, (next) => { kaoNewMembers = next; drawNew(); }));
+  drawNew();
+
+  const sel = $("#kao-filter");
+  const current = sel.value;
+  sel.replaceChildren(h("option", { value: "" }, "全部"),
+    ...draft.participants.map((p) => h("option", { value: p.id, selected: p.id === current }, `${p.name || p.id} 能用的`)));
+  const shown = sel.value ? list.filter((k) => allows(k, sel.value)) : list;
+
+  const box = $("#kao-list");
+  if (!list.length) {
+    box.replaceChildren(h("div", { class: "empty" }, "还没有颜文字。可以先点「添加一组推荐的」，再按成员分配。"));
+    return;
+  }
+  box.replaceChildren(...shown.map((k) => {
+    const face = h("input", { class: "face", value: k.text, title: "颜文字" });
+    const mood = h("input", { value: k.mood, placeholder: "什么时候用（可选）" });
+    const commit = () => {
+      if (face.value.trim() !== k.text || mood.value.trim() !== k.mood) kaoUpdate(k.id, { text: face.value, mood: mood.value });
+    };
+    for (const el of [face, mood]) {
+      el.addEventListener("change", commit);
+      el.addEventListener("keydown", (e) => e.key === "Enter" && el.blur());
+    }
+    return h("div", { class: "kao-row" + (k.enabled ? "" : " off") },
+      face, mood,
+      memberPicker(k.members, (next) => kaoUpdate(k.id, { members: next })),
+      h("label", {}, h("input", { type: "checkbox", checked: k.enabled, onchange: (e) => kaoUpdate(k.id, { enabled: e.target.checked }) }), "启用"),
+      h("button", { class: "danger", onclick: () => kaoDelete(k) }, "删除"));
+  }));
+}
+
+function applyKaomojiResponse(r) {
+  server.kaomoji = r.kaomoji;
+  renderKaomoji();
+  renderByMember();
+  renderPreview();
+}
+
+async function kaoUpdate(id, changes) {
+  try {
+    applyKaomojiResponse(await api("PUT", `/api/kaomoji/${id}`, changes));
+  } catch (e) {
+    toast(e.message, true);
+    renderKaomoji();
+    renderByMember();
+  }
+}
+
+async function kaoDelete(k) {
+  if (!confirm(`删除颜文字 ${k.text}？`)) return;
+  try {
+    applyKaomojiResponse(await api("DELETE", `/api/kaomoji/${k.id}`));
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function kaoAdd(body, after) {
+  try {
+    const r = await api("POST", "/api/kaomoji", body);
+    applyKaomojiResponse(r);
+    if (after) after();
+    toast(r.added ? `已添加 ${r.added} 个颜文字` : "都已经在列表里了");
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// ---- by member ----
+
+async function renderByMember() {
+  const sel = $("#bm-member");
+  if (!sel || $("[data-subpanel='by-member']").hidden) return;
+  const current = sel.value;
+  sel.replaceChildren(...draft.participants.map((p) => h("option", { value: p.id, selected: p.id === current }, p.name || p.id)));
+  const id = sel.value;
+  if (!id) {
+    $("#bm-summary").textContent = "还没有成员";
+    return;
+  }
+  const stickers = server.stickers || [];
+  const kaomoji = server.kaomoji || [];
+  const nS = stickers.filter((s) => s.enabled && allows(s, id)).length;
+  const nK = kaomoji.filter((k) => k.enabled && allows(k, id)).length;
+  $("#bm-summary").textContent = `${memberName(id)} 能用 ${nS} 张表情包、${nK} 个颜文字`;
+
+  $("#bm-stickers").replaceChildren(...(stickers.length ? stickers.map((s) => {
+    const on = allows(s, id);
+    return h("div", { class: "sticker " + (on ? "picked" : "unpicked") + (s.enabled ? "" : " off"),
+      title: on ? "点击取消" : "点击分给它", onclick: () => stickerUpdate(s.id, { members: toggledMembers(s.members, id, !on) }) },
+      h("div", { class: "thumb" }, stickerThumb(s)),
+      h("div", { class: "name" }, s.label),
+      h("div", { class: "tick" }, on ? "✓ 能用" : "不能用", s.enabled ? "" : "（已停用）"));
+  }) : [h("div", { class: "empty", style: "grid-column:1/-1" }, "表情库是空的")]));
+
+  $("#bm-kaomoji").replaceChildren(...(kaomoji.length ? kaomoji.map((k) => h("label", { title: k.enabled ? "" : "已停用" },
+    h("input", { type: "checkbox", checked: allows(k, id), onchange: (e) => kaoUpdate(k.id, { members: toggledMembers(k.members, id, e.target.checked) }) }),
+    h("span", { class: "face" }, k.text),
+    k.mood ? h("span", { class: "mood" }, k.mood) : null)) : [h("div", { class: "empty" }, "还没有颜文字")]));
+
+  const out = $("#bm-preview");
+  try {
+    const r = await api("POST", "/api/preview", { settings: draft, member: id });
+    const parts = r.prompt.split(/\n{2,}/).filter((p) => p.startsWith("表情包：") || p.startsWith("颜文字："));
+    out.textContent = parts.join("\n\n") || "（它现在没有可用的表情包和颜文字，提示词里不会提到）";
+  } catch (e) {
+    out.textContent = "预览失败：" + e.message;
+  }
+}
+
 function setupStickerInputs() {
   const input = $("#file-input");
   const zone = $("#dropzone");
@@ -924,6 +1130,18 @@ function setupStickerInputs() {
   });
   $("#import-set").onclick = importStickerSet;
   $("#sticker-filter").oninput = renderStickers;
+  for (const b of document.querySelectorAll("#sticker-subtabs button")) b.onclick = () => showSubtab(b.dataset.sub);
+  setupStickerDialog();
+
+  $("#kao-add").onclick = () => kaoAdd({ text: $("#kao-text").value, mood: $("#kao-mood").value, members: kaoNewMembers }, () => {
+    $("#kao-text").value = "";
+    $("#kao-mood").value = "";
+  });
+  $("#kao-text").addEventListener("keydown", (e) => e.key === "Enter" && $("#kao-add").click());
+  $("#kao-add-lines").onclick = () => kaoAdd({ lines: $("#kao-lines").value }, () => ($("#kao-lines").value = ""));
+  $("#kao-starter").onclick = () => kaoAdd({ starter: true });
+  $("#kao-filter").onchange = renderKaomoji;
+  $("#bm-member").onchange = renderByMember;
 }
 
 // ---------- memory ----------

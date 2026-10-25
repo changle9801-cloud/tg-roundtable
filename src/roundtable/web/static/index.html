@@ -17,7 +17,7 @@
       <button role="tab" data-tab="members" class="active">成员</button>
       <button role="tab" data-tab="rules">群聊规则</button>
       <button role="tab" data-tab="prompts">提示词</button>
-      <button role="tab" data-tab="stickers">表情包</button>
+      <button role="tab" data-tab="stickers">表情</button>
       <button role="tab" data-tab="memory">记忆 <span id="memory-badge" class="badge" hidden></span></button>
       <button role="tab" data-tab="journal">见闻</button>
       <button role="tab" data-tab="status">状态</button>
@@ -136,8 +136,16 @@
     </section>
 
     <section id="tab-stickers" class="tab-panel">
-      <h1>表情包</h1>
-      <p class="muted">模型在回复里写 <code>[表情:名称]</code>，就会用它自己的 bot 发出对应的表情。同名的表情有多张时随机挑一张。</p>
+      <h1>表情</h1>
+      <p class="muted">表情包和颜文字都可以分给不同的成员：每个成员的提示词里只列出它能用的那些，所以每个人的表情习惯不一样。</p>
+      <nav class="subtabs" id="sticker-subtabs">
+        <button data-sub="stickers" class="active">表情包 <span class="muted small" id="sub-count-stickers"></span></button>
+        <button data-sub="kaomoji">颜文字 <span class="muted small" id="sub-count-kaomoji"></span></button>
+        <button data-sub="by-member">按成员分配</button>
+      </nav>
+
+      <div data-subpanel="stickers">
+      <p class="muted">模型在回复里写 <code>[表情:名称]</code>，就会用它自己的 bot 发出对应的表情。同名的表情有多张时随机挑一张。点一张表情可以预览、改名、换图和设置谁能用。</p>
       <div class="card">
         <div class="grid3">
           <label class="field check">
@@ -181,7 +189,102 @@
         </div>
         <div id="sticker-grid" class="sticker-grid"></div>
       </div>
+      </div>
+
+      <div data-subpanel="kaomoji" hidden>
+        <p class="muted">颜文字是一行文字，比如 (｡•́︿•̀｡)，模型会偶尔把它写在话里，不会单独发。给每个成员分几个它"常用的"，比让所有人共用一堆更像真人。</p>
+        <div class="card">
+          <label class="field check">
+            <input id="kaomoji-enabled" type="checkbox">
+            <span>允许模型用颜文字 <small>改完要点「保存并生效」</small></span>
+          </label>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>添加一个</h2>
+            <label class="field">
+              <span>颜文字</span>
+              <input id="kao-text" class="kao-input" placeholder="(｡•́︿•̀｡)">
+            </label>
+            <label class="field">
+              <span>什么时候用 <small>可选，写给模型看的</small></span>
+              <input id="kao-mood" placeholder="例如：委屈、被冤枉">
+            </label>
+            <div class="field"><span>给谁用</span><div id="kao-members"></div></div>
+            <button id="kao-add" class="primary">添加</button>
+          </div>
+          <div class="card">
+            <h2>一次添加多个</h2>
+            <label class="field">
+              <span>每行一个 <small>可以写成「颜文字 | 什么时候用」</small></span>
+              <textarea id="kao-lines" rows="5" placeholder="(つд⊂) | 哭唧唧&#10;(￣▽￣) | 看戏"></textarea>
+            </label>
+            <div class="row-gap">
+              <button id="kao-add-lines" class="primary">全部添加</button>
+              <button id="kao-starter">添加一组推荐的</button>
+            </div>
+            <p class="muted small" style="margin-top:10px">一次添加的颜文字默认所有人都能用，添加后再在下面或「按成员分配」里调整。重复的会自动跳过。</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row-between">
+            <h2>颜文字列表</h2>
+            <select id="kao-filter"></select>
+          </div>
+          <div id="kao-list"></div>
+        </div>
+      </div>
+
+      <div data-subpanel="by-member" hidden>
+        <p class="muted">选一个成员，勾选它能用的表情包和颜文字。改动马上生效，从它下一次发言开始。</p>
+        <div class="card">
+          <div class="row-between">
+            <h2 id="bm-summary">成员</h2>
+            <select id="bm-member"></select>
+          </div>
+          <h2 style="margin-top:4px">表情包</h2>
+          <div id="bm-stickers" class="sticker-grid compact"></div>
+          <h2 style="margin-top:18px">颜文字</h2>
+          <div id="bm-kaomoji" class="kao-chips"></div>
+        </div>
+        <div class="card">
+          <h2>它的提示词里会写 <small class="muted">（只显示表情包和颜文字这两段）</small></h2>
+          <pre id="bm-preview" class="preview"></pre>
+        </div>
+      </div>
     </section>
+
+    <dialog id="sticker-dialog" class="editor-dialog">
+      <form method="dialog" id="sticker-form">
+        <div class="dialog-preview" id="sd-preview"></div>
+        <div class="dialog-body">
+          <label class="field">
+            <span>名称 <small>模型写 [表情:名称] 来发送，同名的随机挑一张</small></span>
+            <input id="sd-label">
+          </label>
+          <label class="field">
+            <span>什么时候用 <small>可选，写给模型看的</small></span>
+            <input id="sd-desc" placeholder="例如：被夸的时候">
+          </label>
+          <div class="field"><span>给谁用</span><div id="sd-members"></div></div>
+          <label class="field check">
+            <input id="sd-enabled" type="checkbox">
+            <span>启用</span>
+          </label>
+          <div class="row-gap">
+            <button type="button" id="sd-replace">替换图片…</button>
+            <input type="file" id="sd-file" hidden>
+            <span class="muted small" id="sd-kind"></span>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="danger" id="sd-delete">删除</button>
+          <span style="flex:1"></span>
+          <button type="button" id="sd-cancel">取消</button>
+          <button type="submit" class="primary" id="sd-save">保存</button>
+        </div>
+      </form>
+    </dialog>
 
     <section id="tab-memory" class="tab-panel">
       <h1>记忆</h1>
