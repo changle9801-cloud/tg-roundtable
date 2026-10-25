@@ -40,6 +40,10 @@ class CodexCLI(Participant):
             "-c", f"developer_instructions={_toml_str(self.system_prompt)}",
         ]
         for feature in DISABLED_FEATURES:
+            # Web search runs through the code-mode host. With the shell and exec tools off
+            # it has no file or command tool to reach, so keep it when search is on.
+            if feature == "code_mode_host" and self.cfg.web_search:
+                continue
             cmd += ["--disable", feature]
         if self.cfg.model:
             cmd += ["-m", self.cfg.model]

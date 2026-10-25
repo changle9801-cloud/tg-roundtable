@@ -40,15 +40,24 @@ class Plan:
 
 
 class ProactiveScheduler:
+    """Schedules one kind of unprompted activity per member.
+
+    ``prefix`` names the member settings it follows: "proactive" (posting in the group)
+    reads ``proactive``, ``proactive_hours`` and ``proactive_per_day``; "browse" reads
+    the ``browse_*`` ones.
+    """
+
     def __init__(
         self,
         path: Path,
         rng: random.Random | None = None,
         now: Callable[[], datetime] = datetime.now,
+        prefix: str = "proactive",
     ):
         self.path = path
         self.rng = rng or random.Random()
         self.now = now
+        self.prefix = prefix
         self.plans: dict[str, Plan] = {}
         if path.exists():
             try:
@@ -63,17 +72,28 @@ class ProactiveScheduler:
         tmp.write_text(json.dumps({k: asdict(v) for k, v in self.plans.items()}, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(self.path)
 
+    # ---- member settings for this kind of activity ----
+
+    def _on(self, pc: ParticipantConfig) -> bool:
+        return bool(getattr(pc, self.prefix))
+
+    def _per_day(self, pc: ParticipantConfig) -> int:
+        return max(int(getattr(pc, f"{self.prefix}_per_day")), 1)
+
+    def _hours(self, pc: ParticipantConfig) -> tuple[int, int]:
+        return parse_hours(getattr(pc, f"{self.prefix}_hours")) or (10, 23)
+
     # ---- timing ----
 
     def in_hours(self, pc: ParticipantConfig, at: datetime | None = None) -> bool:
-        start, end = parse_hours(pc.proactive_hours) or (10, 23)
+        start, end = self._hours(pc)
         hour = (at or self.now()).hour
         return start <= hour < end if start < end else hour >= start or hour < end % 24
 
     def _spacing(self, pc: ParticipantConfig) -> float:
-        start, end = parse_hours(pc.proactive_hours) or (10, 23)
+        start, end = self._hours(pc)
         hours = (end - start) % 24 or 24
-        return hours * 3600 / max(pc.proactive_per_day, 1)
+        return hours * 3600 / self._per_day(pc)
 
     def plan(self, pc: ParticipantConfig) -> Plan:
         """The member's plan for today, starting a fresh one on a new day."""
@@ -87,13 +107,13 @@ class ProactiveScheduler:
         return plan
 
     def due(self, pc: ParticipantConfig) -> bool:
-        if not pc.proactive:
+        if not self._on(pc):
             return False
         plan = self.plan(pc)
         return (
             self.in_hours(pc)
-            and plan.posts < pc.proactive_per_day
-            and plan.attempts < pc.proactive_per_day * 2
+            and plan.posts < self._per_day(pc)
+            and plan.attempts < self._per_day(pc) * 2
             and self.now().timestamp() >= plan.next_at
         )
 
@@ -123,7 +143,7 @@ class ProactiveScheduler:
             "posts_today": plan.posts,
             "next_at": plan.next_at,
             "in_hours": self.in_hours(pc),
-            "done_for_today": plan.posts >= pc.proactive_per_day or plan.attempts >= pc.proactive_per_day * 2,
+            "done_for_today": plan.posts >= self._per_day(pc) or plan.attempts >= self._per_day(pc) * 2,
         }
 
 

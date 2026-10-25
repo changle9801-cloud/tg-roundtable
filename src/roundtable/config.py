@@ -56,6 +56,13 @@ class ParticipantConfig:
     proactive_hours: str = "10-23"  # local hours it may post in (start-end)
     proactive_idle_minutes: int = 60  # only after the group has been quiet this long
     proactive_replies: int = 1  # turns each other member gets to react
+    # Browsing on its own and keeping a journal of what it saw (needs web search).
+    browse: bool = False
+    browse_topics: str = ""  # what it likes to look at; empty = the proactive topics
+    browse_per_day: int = 4
+    browse_hours: str = "10-23"
+    journal_days: int = 3  # ordinary sightings are forgotten after this many days...
+    journal_keep_days: int = 7  # ...memorable or shared ones after this many
     # Explicit command prefix, e.g. ["C:/tools/claude.exe"]; resolved from PATH when empty.
     command: list[str] = field(default_factory=list)
     # kind = "api" only

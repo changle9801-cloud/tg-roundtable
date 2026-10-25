@@ -139,6 +139,51 @@ def build_proactive_prompt(
     return "\n".join(lines)
 
 
+def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str]) -> str:
+    """A private browsing session: findings go into the member's journal, not the group."""
+    where = "X（推特）和网上" if covers_x else "网上"
+    lines = [
+        "（这不是群聊发言，是你自己的空闲时间：去网上逛一逛，看到的东西只记在你自己的见闻本里，不会发到群里。）",
+        f"按你的兴趣，用搜索工具去{where}刷一会儿：{topics or '你角色感兴趣的东西'}。",
+        "这次就是专门让你上网的时候：请先真的用搜索工具搜几次（换几个关键词），看过结果再挑内容，不要没搜就回答。",
+        "可以看帖子、新闻，也可以看看大家在评论里怎么说。",
+        "挑 1 到 3 条你真的看到、觉得有意思的记下来，只用一个 JSON 数组回复，不要输出别的内容：",
+        '[{"title": "一句话标题", "summary": "讲了什么，两三句话；评论区有意思的话也可以提一句", '
+        '"take": "你用自己角色的口吻说说怎么看", "url": "原帖或原文链接", "source": "x 或 web", '
+        '"interest": 3}]',
+        "interest 从 1 到 5，5 表示特别想马上分享给群里。",
+        "要求：只记你真的搜到的内容，链接必须是原帖或原文，不要编造；避开政治、色情、血腥、谣言和容易引战的话题。",
+        "什么都没找到就回复 []。",
+    ]
+    if known_urls:
+        lines.append("这些你最近已经记过了，不要重复：")
+        lines += [f"  {u}" for u in known_urls[-30:]]
+    return "\n".join(lines)
+
+
+def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
+    """Share one journal entry in the group when it has gone quiet."""
+    lines = []
+    if new_messages:
+        lines.append("[你上次发言之后的群聊消息]")
+        for m in new_messages:
+            who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
+            lines.append(f"{who}: {m.text}")
+        lines.append("[/群聊消息]")
+    where = "X 上" if entry.source == "x" else "网上"
+    lines += [
+        "（群里安静了一阵，这是你主动发言的机会，没有人在等你回复。）",
+        f"你之前在{where}看到过这个，现在想分享到群里：",
+        f"标题：{entry.title}",
+        f"内容：{entry.summary}",
+        f"你当时的看法：{entry.take}",
+        f"链接：{entry.url}",
+        "用你角色的口吻，一两句话像随手转发到群里一样说出来，附上这个链接。",
+        f"如果现在觉得不合适分享，只回复 {PASS_TOKEN}。",
+    ]
+    return "\n".join(lines)
+
+
 def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = ()) -> str:
     lines = ["[群聊新消息]"]
     for m in new_messages:

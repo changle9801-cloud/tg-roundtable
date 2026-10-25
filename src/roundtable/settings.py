@@ -35,6 +35,9 @@ PROACTIVE_RANGES = {
     "proactive_per_day": (1, 12, "每天主动发言次数"),
     "proactive_idle_minutes": (0, 1440, "冷场分钟数"),
     "proactive_replies": (0, 3, "其他人接话句数"),
+    "browse_per_day": (1, 12, "每天浏览次数"),
+    "journal_days": (1, 30, "见闻保留天数"),
+    "journal_keep_days": (1, 60, "印象深的见闻保留天数"),
 }
 
 
@@ -145,9 +148,9 @@ def normalize_participant(raw: dict) -> dict:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
         if f.name in ("name", "model", "effort", "provider", "base_url", "api_key_env",
                       "tagline", "persona", "style", "relationships", "examples",
-                      "proactive_topics", "proactive_hours"):
+                      "proactive_topics", "proactive_hours", "browse_topics", "browse_hours"):
             value = str(value or "").strip()
-        if f.name in ("enabled", "web_search", "proactive"):
+        if f.name in ("enabled", "web_search", "proactive", "browse"):
             value = bool(value)
         if f.name in PROACTIVE_RANGES:
             low, high, label = PROACTIVE_RANGES[f.name]
@@ -169,6 +172,10 @@ def normalize_participant(raw: dict) -> dict:
         out[f.name] = value
     if parse_hours(out["proactive_hours"]) is None:
         raise ConfigError(f"成员 {pid} 的主动发言时间段格式不对，应该像「10-23」")
+    if parse_hours(out["browse_hours"]) is None:
+        raise ConfigError(f"成员 {pid} 的浏览时间段格式不对，应该像「10-23」")
+    if out["journal_keep_days"] < out["journal_days"]:
+        out["journal_keep_days"] = out["journal_days"]
     if len(out["tagline"]) > 120:
         raise ConfigError(f"成员 {pid} 的一句话介绍最多 120 个字（Telegram 的限制）")
     if len(out["name"]) > 64:

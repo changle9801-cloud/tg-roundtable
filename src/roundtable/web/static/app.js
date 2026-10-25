@@ -137,6 +137,7 @@ function blankMember(id) {
     tagline: "", style: "", relationships: "", examples: "", activity: "normal", max_turns: 0,
     proactive: false, proactive_topics: "", proactive_per_day: 3, proactive_hours: "10-23",
     proactive_idle_minutes: 60, proactive_replies: 1,
+    browse: false, browse_topics: "", browse_per_day: 4, browse_hours: "10-23", journal_days: 3, journal_keep_days: 7,
   };
 }
 
@@ -348,6 +349,7 @@ function memberBody(m, isNew) {
       field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
         "叫到这些名字会优先回话")),
 
+    ...browseSection(m),
     ...proactiveSection(m),
 
     h("h3", { class: "section-title" }, "技术设置"),
@@ -415,6 +417,74 @@ function memberBody(m, isNew) {
     h("button", { class: "danger", onclick: () => deleteMember(m) }, "删除成员"));
 
   return h("div", { class: "member-body" }, ...rows, resultEl, actions);
+}
+
+function browseSection(m) {
+  const canSearch = (["claude_cli", "codex_cli", "grok_cli"].includes(m.kind) || (m.kind === "api" && m.provider === "anthropic")) && m.web_search;
+  const num = (key, min, max) => h("input", {
+    type: "number", min, max, value: m[key],
+    oninput: (e) => { m[key] = Number(e.target.value); changed(); },
+  });
+  const info = (server.status.browse || {})[m.id];
+  let statusText = "保存后开始安排";
+  if (m.browse && info) {
+    const next = info.next_at ? new Date(info.next_at * 1000) : null;
+    const when = next ? `${next.getHours()}:${String(next.getMinutes()).padStart(2, "0")}` : "—";
+    statusText = info.running ? "正在浏览……"
+      : info.done_for_today ? `今天刷了 ${info.posts_today} 次有收获，今天到此为止`
+      : !info.in_hours ? `今天刷到东西 ${info.posts_today} 次，现在不在浏览时间段`
+      : `今天刷到东西 ${info.posts_today} 次，下次大约 ${when}`;
+  }
+  const tryBtn = h("button", { disabled: !canSearch, onclick: () => tryBrowse(m, tryBtn) }, "现在去刷一次");
+
+  const fields = m.browse ? [
+    field("平时爱刷什么", h("textarea", {
+      rows: 2,
+      placeholder: "例如：数码评测、效率工具和生活小技巧（留空则用「主动发言」里的关注方向）",
+      oninput: (e) => { m.browse_topics = e.target.value; changed(); },
+    }, m.browse_topics || "")),
+    h("div", { class: "grid3" },
+      field("每天刷几次", num("browse_per_day", 1, 12)),
+      field("时间段", textInput(m.browse_hours, (v) => (m.browse_hours = v), { placeholder: "10-23" })),
+      h("div", {})),
+    h("div", { class: "grid3" },
+      field("见闻保留几天", num("journal_days", 1, 30), "普通的看过就忘"),
+      field("印象深的保留几天", num("journal_keep_days", 1, 60), "很想分享的、已经分享过的"),
+      h("div", {})),
+    h("div", { class: "row-between", style: "margin-bottom:12px" },
+      h("span", { class: "muted small" }, statusText), tryBtn),
+  ] : [];
+
+  return [
+    h("h3", { class: "section-title" }, "日常浏览与见闻"),
+    h("label", { class: "field check" },
+      h("input", {
+        type: "checkbox", checked: m.browse, disabled: !canSearch && !m.browse,
+        onchange: (e) => { m.browse = e.target.checked; changed(); renderMembers(); },
+      }),
+      h("span", {}, "平时自己上网刷一刷，把看到的东西记进见闻",
+        h("small", {}, canSearch ? "被问「在干嘛」时照见闻回答；冷场时从见闻里挑一条分享" : "需要先打开下面「技术设置」里的联网搜索"))),
+    ...fields,
+  ];
+}
+
+async function tryBrowse(m, btn) {
+  if (settingsDirty() || hasPendingSecrets()) {
+    toast("请先保存更改再试", true);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "正在刷……";
+  try {
+    const r = await api("POST", `/api/members/${encodeURIComponent(m.id)}/browse`);
+    journalData = r;
+    results[m.id] = r.added.length
+      ? { text: "记下了：\n" + r.added.map((e) => `· ${e.title}（${e.url}）`).join("\n") }
+      : { text: "这次没刷到值得记的东西。" };
+  } catch (e) {
+    results[m.id] = { text: e.message, err: true };
+  }
+  renderMembers();
 }
 
 function proactiveSection(m) {
@@ -904,6 +974,59 @@ async function addMemory() {
   if (await memoryCall("POST", "/api/memory", { text: input.value, scope: $("#memory-scope").value })) input.value = "";
 }
 
+// ---------- journal ----------
+
+let journalData = null;
+
+async function loadJournal() {
+  try {
+    journalData = await api("GET", "/api/journal");
+    renderJournal();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function renderJournal() {
+  const box = $("#journal");
+  if (!journalData) return;
+  const fmt = (ts) => {
+    const d = new Date(ts * 1000);
+    return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const members = journalData.members.filter((m) => m.entries.length || draft.participants.find((p) => p.id === m.id)?.browse);
+  if (!members.length) {
+    box.replaceChildren(h("div", { class: "card empty" }, "还没有见闻。在「成员」里为角色打开「日常浏览」，或者点「现在去刷一次」。"));
+    return;
+  }
+  box.replaceChildren(...members.map((m) => h("div", { class: "card" },
+    h("div", { class: "row-between" },
+      h("h2", {}, m.name, " ", h("span", { class: "muted small" }, `${m.entries.length} 条`))),
+    ...(m.entries.length ? m.entries.map((e) => h("div", { class: "entry" },
+      h("div", { class: "entry-head" },
+        h("span", { class: "stars", title: `印象 ${e.interest}/5` }, "★".repeat(e.interest) + "☆".repeat(5 - e.interest)),
+        h("b", {}, e.title),
+        e.shared_ts ? h("span", { class: "pill ok" }, "已分享") : null,
+        h("span", { class: "spacer" }),
+        h("button", { class: "danger", onclick: () => deleteEntry(e) }, "删除")),
+      h("div", { class: "entry-body" }, e.summary),
+      e.take ? h("div", { class: "entry-take" }, "它的看法：", e.take) : null,
+      h("div", { class: "entry-meta" },
+        `${fmt(e.ts)} · ${e.source === "x" ? "X" : "网页"} · ${fmt(e.expires_at)} 忘掉 · `,
+        h("a", { href: e.url, target: "_blank", rel: "noopener noreferrer" }, e.url)))) :
+      [h("div", { class: "muted small" }, "还没有见闻。")]))));
+}
+
+async function deleteEntry(e) {
+  if (!confirm(`删除这条见闻？\n${e.title}`)) return;
+  try {
+    journalData = await api("DELETE", `/api/journal/${e.id}`);
+    renderJournal();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 // ---------- chats ----------
 
 let chats = [];
@@ -1063,6 +1186,7 @@ function showTab(name) {
   history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
   if (name === "memory" && server) loadChats();
+  if (name === "journal" && server) loadJournal();
 }
 
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -1087,6 +1211,9 @@ $("#memory-add").onclick = addMemory;
 $("#memory-text").addEventListener("keydown", (e) => e.key === "Enter" && addMemory());
 showTab(location.hash.slice(1) || "members");
 load()
-  .then(() => location.hash === "#memory" && loadChats())
+  .then(() => {
+    if (location.hash === "#memory") loadChats();
+    if (location.hash === "#journal") loadJournal();
+  })
   .catch((e) => toast(e.message, true));
 setInterval(pollStatus, 4000);

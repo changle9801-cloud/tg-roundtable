@@ -7,7 +7,7 @@ import logging
 import time
 from collections import deque
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -22,9 +22,18 @@ from .participants import (
     participant_class,
     supports_web_search,
 )
-from .prompts import build_proactive_prompt, build_system_prompt, build_turn_prompt, render_role, search_instructions
+from .prompts import (
+    build_browse_prompt,
+    build_proactive_prompt,
+    build_share_prompt,
+    build_system_prompt,
+    build_turn_prompt,
+    render_role,
+    search_instructions,
+)
 from .room import ChatRoom
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
+from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .stickers import StickerLibrary, parse_set_name
@@ -82,6 +91,9 @@ class Runtime:
         self.stickers = StickerLibrary(store.data_dir)
         self.memory = MemoryStore(store.data_dir)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
+        self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
+        self.journal = JournalStore(store.data_dir)
+        self._browsing_now: set[str] = set()
         self.sink = TelegramSink(self)
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -114,7 +126,12 @@ class Runtime:
         if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
         limit = config.max_stickers if config.stickers_enabled else 0
-        parts = [search, self.memory.prompt_section(pc.id, config.memory_learn), self.stickers.prompt_section(limit)]
+        parts = [
+            search,
+            self.journal.prompt_section(pc.id),
+            self.memory.prompt_section(pc.id, config.memory_learn),
+            self.stickers.prompt_section(limit),
+        ]
         return "\n\n".join(p for p in parts if p)
 
     def preview_prompt(self, draft_settings: dict, member_id: str) -> str:
@@ -375,6 +392,14 @@ class Runtime:
                 log.exception("主动发言检查出错")
 
     async def _proactive_tick(self) -> None:
+        if self.journal.forget_expired():
+            self.refresh_prompts()
+        for p in list(self.participants):
+            if p.id not in self._browsing_now and self.browsing.due(p.cfg):
+                self._browsing_now.add(p.id)
+                task = asyncio.create_task(self._browse(p))
+                task.add_done_callback(lambda _t, pid=p.id: self._browsing_now.discard(pid))
+
         if self.controller is None:  # Telegram not running: nowhere to post
             return
         for p in list(self.participants):
@@ -388,13 +413,51 @@ class Runtime:
                 continue
             await self._proactive_attempt(p, room)
 
+    async def _browse(self, p: Participant) -> list:
+        """One private browsing session; what it finds goes into the member's journal."""
+        pc = p.cfg
+        if not (pc.web_search and supports_web_search(pc)):
+            self.browsing.record(pc, None)
+            return []
+        prompt = build_browse_prompt(pc.browse_topics or pc.proactive_topics, pc.kind == "grok_cli", self.journal.known_urls(pc.id))
+        log.info("%s 开始浏览……", p.name)
+        try:
+            added = await browse_once(p, self.journal, prompt)
+        except ParticipantError as e:
+            log.warning("%s 浏览失败：%s", p.id, e)
+            added = []
+        self.browsing.record(pc, "found" if added else None)
+        if added:
+            log.info("%s 记下了 %d 条见闻：%s", p.name, len(added), "；".join(e.title for e in added))
+            self.refresh_prompts()
+        return added
+
+    async def try_browse(self, pid: str) -> list[dict]:
+        """Admin "browse now"."""
+        p = next((x for x in self.participants if x.id == pid), None)
+        if p is None:
+            raise ConfigError("这个成员没有启用，或者启动失败了")
+        if not (p.cfg.web_search and supports_web_search(p.cfg)):
+            raise ConfigError("要先打开它的「联网搜索」才能去浏览")
+        if pid in self._browsing_now:
+            raise ConfigError("它正在浏览，稍等一下")
+        self._browsing_now.add(pid)
+        try:
+            return [asdict(e) for e in await self._browse(p)]
+        finally:
+            self._browsing_now.discard(pid)
+
     async def _proactive_attempt(self, p: Participant, room: ChatRoom) -> str | None:
         pc = p.cfg
         can_search = pc.web_search and supports_web_search(pc)
+        entry = self.journal.best_unshared(pc.id)
 
         def make_prompt(unseen):
+            if entry is not None:  # share something it already saw: no search needed now
+                return build_share_prompt(unseen, entry)
             return build_proactive_prompt(
-                unseen, pc.proactive_topics, can_search, pc.kind == "grok_cli", self.proactive.recent_urls(pc)
+                unseen, pc.proactive_topics, can_search, pc.kind == "grok_cli",
+                self.proactive.recent_urls(pc) + self.journal.known_urls(pc.id),
             )
 
         future = room.start_proactive(p, make_prompt, pc.proactive_replies)
@@ -408,6 +471,9 @@ class Runtime:
             log.warning("%s 主动发言没有完成：%s", p.id, e)
             posted = None
         self.proactive.record(pc, posted)
+        if posted is not None and entry is not None:
+            self.journal.mark_shared(pc, entry.id)
+            self.refresh_prompts()
         return posted
 
     async def try_proactive(self, pid: str) -> dict:
@@ -473,6 +539,10 @@ class Runtime:
                 "members": {
                     p.id: self.proactive.describe(p.cfg) for p in self.participants if p.cfg.proactive
                 },
+            },
+            "browse": {
+                p.id: {**self.browsing.describe(p.cfg), "running": p.id in self._browsing_now}
+                for p in self.participants if p.cfg.browse
             },
             "notices": self.notices,
             "logs": list(self.log_buffer.lines)[-150:] if self.log_buffer else [],

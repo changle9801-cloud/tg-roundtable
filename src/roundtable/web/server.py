@@ -129,6 +129,27 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         body = await request.json()
         return web.json_response({"prompt": runtime.preview_prompt(body.get("settings") or {}, str(body.get("member", "")))})
 
+    def journal() -> dict:
+        names = {p["id"]: p["name"] for p in runtime.settings["participants"]}
+        return {
+            "members": [
+                {"id": pid, "name": name, "entries": [asdict(e) for e in runtime.journal.of(pid)]}
+                for pid, name in names.items()
+            ]
+        }
+
+    async def get_journal(request):
+        return web.json_response(journal())
+
+    async def delete_journal_entry(request):
+        runtime.journal.delete(request.match_info["eid"])
+        runtime.refresh_prompts()
+        return web.json_response(journal())
+
+    async def try_browse(request):
+        added = await runtime.try_browse(request.match_info["pid"])
+        return web.json_response({"added": added, **journal()})
+
     async def try_proactive(request):
         return web.json_response(await runtime.try_proactive(request.match_info["pid"]))
 
@@ -240,6 +261,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/preview", preview)
     app.router.add_post("/api/members/{pid}/test", test_member)
     app.router.add_post("/api/members/{pid}/proactive", try_proactive)
+    app.router.add_post("/api/members/{pid}/browse", try_browse)
+    app.router.add_get("/api/journal", get_journal)
+    app.router.add_delete("/api/journal/{eid}", delete_journal_entry)
     app.router.add_get("/api/members/{pid}/models", member_models)
     app.router.add_post("/api/rooms/{key}/{action:stop|reset}", room_action)
     app.router.add_post("/api/stickers", upload_stickers)

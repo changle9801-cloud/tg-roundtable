@@ -95,8 +95,15 @@ def test_codex_runs_without_tools(tmp_path, store):
     for session in (None, "thread-1"):
         cmd = codex.build_command(session)
         disabled = {cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--disable"}
-        assert {"shell_tool", "unified_exec", "computer_use", "browser_use"} <= disabled
+        assert {"shell_tool", "unified_exec", "code_mode_host", "computer_use", "browser_use"} <= disabled
         assert 'sandbox_mode="read-only"' in cmd and 'web_search="disabled"' in cmd
+
+    # With search on, search needs the code-mode host; commands and files stay off.
+    codex.cfg.web_search = True
+    cmd = codex.build_command(None)
+    disabled = {cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--disable"}
+    assert {"shell_tool", "unified_exec", "computer_use", "browser_use"} <= disabled
+    assert "code_mode_host" not in disabled and 'web_search="live"' in cmd
 
 
 def test_split_text():
