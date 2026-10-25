@@ -14,8 +14,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from .config import ConfigError, telegram_problems
-from .participants import KINDS, Participant, ParticipantError, SessionStore
-from .participants.api import OpenAICompatAPI
+from .participants import HistoryParticipant, Participant, ParticipantError, SessionStore, participant_class
 from .prompts import build_system_prompt, build_turn_prompt
 from .room import ChatRoom, setup_system_prompts
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
@@ -117,7 +116,7 @@ class Runtime:
             self.refresh_prompts()
 
     def _make(self, pc) -> Participant:
-        return KINDS[pc.kind](pc, self.sessions, self.config.data_dir / "work" / pc.id, self.config.round.call_timeout)
+        return participant_class(pc)(pc, self.sessions, self.config.data_dir / "work" / pc.id, self.config.round.call_timeout)
 
     def chat_log_path(self, key: str) -> Path | None:
         if key.startswith("__"):  # admin tests and other internal chats are not recorded
@@ -248,7 +247,7 @@ class Runtime:
         members = []
         for p in self.participants:
             entry = {"id": p.id, "name": p.name, "kind": p.cfg.kind}
-            if isinstance(p, OpenAICompatAPI):
+            if isinstance(p, HistoryParticipant):
                 entry["history"] = p.load_history(key)
             else:
                 entry["session_id"] = self.sessions.get(key, p.id) or ""
@@ -267,7 +266,7 @@ class Runtime:
 
     def delete_history_entry(self, key: str, pid: str, index: int) -> None:
         p = self._member(pid)
-        if not isinstance(p, OpenAICompatAPI):
+        if not isinstance(p, HistoryParticipant):
             raise ConfigError("订阅 CLI 的上下文保存在 CLI 自己的会话里，只能整体清空")
         history = p.load_history(key)
         if not 0 <= index < len(history):
@@ -300,8 +299,9 @@ class Runtime:
         pc = self._participant_config(pid)
         if pc.kind != "api":
             raise ConfigError("只有 API 类型的成员可以查询模型列表")
-        p = self._make(pc)
-        assert isinstance(p, OpenAICompatAPI)
+        # Listing is how a model gets picked, so it must work before one is filled in.
+        p = self._make(replace(pc, model=pc.model or "-"))
+        assert isinstance(p, HistoryParticipant)
         return await p.list_models()
 
     async def set_max_turns(self, n: int) -> None:

@@ -1,7 +1,8 @@
-"""Models reached through an OpenAI-compatible chat completions API (pay per token).
+"""Models reached through an API (pay per token).
 
-DeepSeek, Grok (xAI), Gemini, Doubao (Volcengine Ark) and OpenAI all speak this protocol.
-Unlike the CLIs, the API keeps no conversation state, so the history lives here.
+DeepSeek, Grok (xAI), Gemini, Doubao (Volcengine Ark) and OpenAI speak the OpenAI chat
+completions protocol; Claude has its own (see anthropic_api.py). Unlike the CLIs, an API
+keeps no conversation state, so the history lives here.
 """
 
 from __future__ import annotations
@@ -25,20 +26,19 @@ PROVIDERS = {
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
     "doubao": ("https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    # Not OpenAI-compatible: served by AnthropicAPI through the official SDK.
+    "anthropic": ("https://api.anthropic.com", "ANTHROPIC_API_KEY"),
 }
 
 
-class OpenAICompatAPI(Participant):
+class HistoryParticipant(Participant):
+    """An API member: resolves its key and keeps the conversation history on disk."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cfg = self.cfg
         default_url, default_env = PROVIDERS.get(cfg.provider, ("", ""))
         self.base_url = (cfg.base_url or default_url).rstrip("/")
-        if not self.base_url:
-            raise ConfigError(
-                f"参与者 {cfg.id}：未知的 provider {cfg.provider!r}，"
-                f"请填写 base_url，或使用 {sorted(PROVIDERS)} 之一。"
-            )
         env = cfg.api_key_env or default_env
         self.api_key = cfg.api_key or (os.environ.get(env, "") if env else "")
         if not self.api_key:
@@ -76,7 +76,30 @@ class OpenAICompatAPI(Participant):
     def reset(self, chat_key: str) -> None:
         self._history_path(chat_key).unlink(missing_ok=True)
 
-    # ---- calls ----
+    async def reply(self, chat_key: str, prompt: str) -> str:
+        history = self.load_history(chat_key)
+        history.append({"role": "user", "content": prompt})
+        text = await self.complete(history)
+        history.append({"role": "assistant", "content": text})
+        self.save_history(chat_key, history)
+        return text
+
+    async def complete(self, history: list[dict]) -> str:
+        """Send the system prompt plus ``history`` and return the reply text."""
+        raise NotImplementedError
+
+    async def list_models(self) -> list[str]:
+        raise NotImplementedError
+
+
+class OpenAICompatAPI(HistoryParticipant):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.base_url:
+            raise ConfigError(
+                f"参与者 {self.cfg.id}：未知的 provider {self.cfg.provider!r}，"
+                f"请填写 base_url，或使用 {sorted(PROVIDERS)} 之一。"
+            )
 
     def build_payload(self, history: list[dict]) -> dict:
         payload = {
@@ -88,19 +111,14 @@ class OpenAICompatAPI(Participant):
         payload.update(self.cfg.params)
         return payload
 
-    async def reply(self, chat_key: str, prompt: str) -> str:
-        history = self.load_history(chat_key)
-        history.append({"role": "user", "content": prompt})
+    async def complete(self, history: list[dict]) -> str:
         data = await self._request("POST", "/chat/completions", self.build_payload(history))
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise ParticipantError(f"无法解析返回结果：{str(data)[:200]}") from None
-        text = _content_text(message.get("content"))
         log.debug("%s usage: %s", self.id, data.get("usage"))
-        history.append({"role": "assistant", "content": text})
-        self.save_history(chat_key, history)
-        return text
+        return _content_text(message.get("content"))
 
     async def list_models(self) -> list[str]:
         data = await self._request("GET", "/models")

@@ -60,11 +60,23 @@ const PRESETS = [
   { id: "claude", label: "Claude 订阅", hint: "本机已登录的 Claude Code", m: { kind: "claude_cli", name: "Claude", model: "sonnet", effort: "low" } },
   { id: "codex", label: "Codex 订阅", hint: "本机已登录的 Codex CLI", m: { kind: "codex_cli", name: "Codex", effort: "low", aliases: ["GPT"] } },
   { id: "grok", label: "Grok 订阅", hint: "本机已登录的 Grok Build CLI", m: { kind: "grok_cli", name: "Grok", effort: "low" } },
+  { id: "claude-api", label: "Claude API", hint: "console.anthropic.com 申请 key，按量计费", m: { kind: "api", provider: "anthropic", name: "Claude", model: "claude-opus-5-5", effort: "low" } },
+  { id: "gpt", label: "OpenAI API（GPT）", hint: "platform.openai.com 申请 key，模型用「查询可用模型」选", m: { kind: "api", provider: "openai", name: "GPT" } },
+  { id: "grok-api", label: "Grok API", hint: "console.x.ai 申请 key，模型用「查询可用模型」选", m: { kind: "api", provider: "grok", name: "Grok" } },
   { id: "deepseek", label: "DeepSeek API", hint: "platform.deepseek.com 申请 key", m: { kind: "api", provider: "deepseek", name: "DeepSeek", model: "deepseek-flash" } },
   { id: "gemini", label: "Gemini API", hint: "aistudio.google.com 申请 key", m: { kind: "api", provider: "gemini", name: "Gemini", model: "gemini-flash-latest", effort: "low" } },
   { id: "doubao", label: "豆包 API（火山方舟）", hint: "模型填方舟的模型 ID 或接入点 ID", m: { kind: "api", provider: "doubao", name: "豆包" } },
   { id: "custom", label: "其他 OpenAI 兼容 API", hint: "填写接口地址，如 OpenRouter、Ollama", m: { kind: "api", provider: "", name: "新成员" } },
 ];
+
+const PROVIDER_LABELS = {
+  anthropic: "Claude（Anthropic）",
+  openai: "OpenAI",
+  grok: "Grok（xAI）",
+  deepseek: "DeepSeek",
+  gemini: "Gemini",
+  doubao: "豆包（火山方舟）",
+};
 
 function blankMember(id) {
   return {
@@ -182,7 +194,7 @@ function memberStatus(id) {
 
 function kindLabel(m) {
   if (m.kind !== "api") return server.meta.kinds[m.kind] || m.kind;
-  return "API · " + (m.provider || "自定义接口");
+  return "API · " + (PROVIDER_LABELS[m.provider] || m.provider || "自定义接口");
 }
 
 function renderMembers() {
@@ -254,7 +266,7 @@ function memberBody(m, isNew) {
     const providerSelect = h("select", {
       onchange: (e) => { m.provider = e.target.value; changed(); renderMembers(); },
     },
-      ...Object.keys(providers).map((p) => h("option", { value: p, selected: m.provider === p }, p)),
+      ...Object.keys(providers).map((p) => h("option", { value: p, selected: m.provider === p }, PROVIDER_LABELS[p] || p)),
       h("option", { value: "", selected: !m.provider }, "自定义接口"));
     const defaultUrl = m.provider && providers[m.provider] ? providers[m.provider].base_url : "";
     rows.push(
@@ -269,7 +281,8 @@ function memberBody(m, isNew) {
           type: "number", min: 2, value: m.max_history,
           oninput: (e) => { m.max_history = Number(e.target.value) || 2; changed(); },
         }), "每次请求带上多少条历史消息，越多越贵"),
-        field("附加参数（JSON）", paramsInput(m), "例如 {\"temperature\": 0.8}")),
+        field("附加参数（JSON）", paramsInput(m),
+          m.provider === "anthropic" ? "一般留空；Claude 已不接受 temperature 等采样参数" : "例如 {\"temperature\": 0.8}")),
     );
   }
 

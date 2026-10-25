@@ -5,7 +5,7 @@
 模型有两种接入方式，可以混用：
 
 - **订阅 CLI**：通过本机已登录的官方 CLI 调用（Claude Code、Codex CLI、Grok Build），**走你现有的订阅额度，不需要 API key**
-- **API**：DeepSeek、Gemini、Grok、豆包，以及任何兼容 OpenAI 格式的接口，按 token 计费
+- **API**：Claude（Anthropic 官方 SDK）、OpenAI（GPT）、Grok、DeepSeek、Gemini、豆包，以及任何兼容 OpenAI 格式的接口，按 token 计费
 
 所有配置都在一个只能本机访问的**管理页面**里完成，token 和 key 保存在用户目录下，不会出现在项目文件夹里。
 
@@ -55,7 +55,7 @@ uv run roundtable
 
 ### 2. 在管理页面里填写
 
-- **成员**：点「添加成员」，选择类型（Claude 订阅、DeepSeek API……），填好 bot token。API 类型还要填 API key，可以用「查询可用模型」挑选模型，再用「测试对话」确认能正常回复。
+- **成员**：点「添加成员」，选择类型（Claude 订阅、Claude API、OpenAI API、DeepSeek API……），填好 bot token。同一个模型可以同时有订阅和 API 两种成员，比如订阅额度用完时换成 API 成员。API 类型还要填 API key，可以用「查询可用模型」挑选模型，再用「测试对话」确认能正常回复。
 - **群聊规则**：选择哪个 bot 兼任总控，填写你的 Telegram 用户 ID（找 [@userinfobot](https://t.me/userinfobot) 获取），只有这些人的消息会触发对话。
 - **提示词**：可以修改所有成员共用的群聊规则提示词，每个成员的人设在「成员」里单独填写。
 - **表情包**：上传图片、GIF 或贴纸文件，或者粘贴 `t.me/addstickers/…` 链接导入整个 Telegram 贴纸包。每个表情有一个名称（如「狗头」），模型在回复里写 `[表情:狗头]` 就会用它自己的 bot 发出来；同名的有多张时随机挑一张。名称起得越直白，模型越知道什么时候用。
@@ -119,6 +119,7 @@ uv run roundtable --import-config config.toml  # 从旧版配置文件导入
 - **只供自己使用**：请遵守各家的服务条款，不要把基于个人订阅的 bot 开放给其他人。
 - **速度**：订阅 CLI 每次调用大约 5 到 20 秒，API 通常 1 秒左右。模型思考时群里会显示"正在输入"。
 - **网络**：如果你所在的地区无法直接访问某些 API，可以设置 `HTTPS_PROXY` 环境变量走代理。
+- **Claude API**：通过 Anthropic 官方 Python SDK 调用，key 填在成员里或设置 `ANTHROPIC_API_KEY`。默认模型 `claude-opus-5-5`，聊天建议思考强度用 `low`。对支持的模型（Opus 5.5、Opus 5、Sonnet 5.5、Fable 5.1）默认开启了服务端拒答兜底（`fallbacks: "default"`）：万一请求被安全分类器误拒，API 会自动换用推荐的模型回答，而不是直接拒绝。Claude 已不再接受 `temperature` 等采样参数，附加参数一般留空。
 
 ## 开发
 

@@ -128,7 +128,7 @@ button:disabled { opacity: 0.55; cursor: default; }
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); padding: 6px;
 }
-.menu button { display: block; width: 100%; text-align: left; border: none; border-radius: 6px; }
+.menu button { display: block; width: 100%; text-align: left; border: none; border-radius: 6px; white-space: normal; }
 .menu button small { display: block; color: var(--muted); }
 
 /* member cards */

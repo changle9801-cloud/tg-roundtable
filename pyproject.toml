@@ -5,7 +5,10 @@ description = "A Telegram group chat where several AI models (Claude Code, Codex
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["aiogram>=3.13,<4"]
+dependencies = [
+    "aiogram>=3.13,<4",
+    "anthropic>=2.3.0",
+]
 
 [project.scripts]
 roundtable = "roundtable.__main__:main"
