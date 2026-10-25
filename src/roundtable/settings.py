@@ -38,6 +38,7 @@ PROACTIVE_RANGES = {
     "browse_per_day": (1, 12, "每天浏览次数"),
     "journal_days": (1, 30, "见闻保留天数"),
     "journal_keep_days": (1, 60, "印象深的见闻保留天数"),
+    "draws_per_day": (1, 20, "每天画图张数"),
 }
 
 
@@ -148,9 +149,9 @@ def normalize_participant(raw: dict) -> dict:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
         if f.name in ("name", "model", "effort", "provider", "base_url", "api_key_env",
                       "tagline", "persona", "style", "relationships", "examples",
-                      "proactive_topics", "proactive_hours", "browse_topics", "browse_hours"):
+                      "proactive_topics", "proactive_hours", "browse_topics", "browse_hours", "appearance"):
             value = str(value or "").strip()
-        if f.name in ("enabled", "web_search", "proactive", "browse"):
+        if f.name in ("enabled", "web_search", "proactive", "browse", "can_draw"):
             value = bool(value)
         if f.name in PROACTIVE_RANGES:
             low, high, label = PROACTIVE_RANGES[f.name]

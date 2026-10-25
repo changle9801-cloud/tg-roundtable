@@ -138,6 +138,7 @@ function blankMember(id) {
     proactive: false, proactive_topics: "", proactive_per_day: 3, proactive_hours: "10-23",
     proactive_idle_minutes: 60, proactive_replies: 1,
     browse: false, browse_topics: "", browse_per_day: 4, browse_hours: "10-23", journal_days: 3, journal_keep_days: 7,
+    appearance: "", can_draw: false, draws_per_day: 5,
   };
 }
 
@@ -331,6 +332,8 @@ function memberBody(m, isNew) {
       field("一句话介绍", textInput(m.tagline, (v) => (m.tagline = v), { maxlength: 120, placeholder: "例如：嘴毒心软的吐槽担当" }),
         "会显示在 bot 的资料里")),
     field("身份和性格", area(m.persona, 3, "例如：二十八岁的广告策划，嘴上不饶人，其实很会照顾人。最怕冷场。", (v) => (m.persona = v))),
+    field("外形", area(m.appearance, 2, "例如：蓝色头发、穿女仆装、带鲸鱼头鳍和大尾巴的鲸鱼娘", (v) => (m.appearance = v)),
+      "它长什么样；有人给它画表情包时照这个画"),
     field("说话风格", area(m.style, 2, "例如：短句多，爱反问，常说「好家伙」，偶尔一个 😅，从不长篇大论", (v) => (m.style = v))),
     field("怎么看群里其他人", area(m.relationships, 2, "例如：觉得小雅太容易感动，和老周是互怼的老朋友", (v) => (m.relationships = v))),
     field("示例台词", area(m.examples, 3, "每行一句，最能定住说话的语气。例如：\n就这？\n你这话说的，我都不知道怎么接", (v) => (m.examples = v)),
@@ -351,6 +354,7 @@ function memberBody(m, isNew) {
 
     ...browseSection(m),
     ...proactiveSection(m),
+    ...drawingSection(m),
 
     h("h3", { class: "section-title" }, "技术设置"),
     h("div", { class: "grid3" },
@@ -485,6 +489,23 @@ async function tryBrowse(m, btn) {
     results[m.id] = { text: e.message, err: true };
   }
   renderMembers();
+}
+
+function drawingSection(m) {
+  if (m.kind !== "codex_cli") return [];
+  return [
+    h("h3", { class: "section-title" }, "画表情包"),
+    h("label", { class: "field check" },
+      h("input", { type: "checkbox", checked: m.can_draw, onchange: (e) => { m.can_draw = e.target.checked; changed(); renderMembers(); schedulePreview(); } }),
+      h("span", {}, "群里有人请它画表情包时，它会接活",
+        h("small", {}, "用你 ChatGPT 订阅的生图额度，每张约 1 分钟；画好的图会进「表情包」库"))),
+    m.can_draw ? h("div", { class: "grid3" },
+      field("每天最多画几张", h("input", {
+        type: "number", min: 1, max: 20, value: m.draws_per_day,
+        oninput: (e) => { m.draws_per_day = Number(e.target.value); changed(); },
+      })),
+      h("div", {}), h("div", {})) : null,
+  ];
 }
 
 function proactiveSection(m) {

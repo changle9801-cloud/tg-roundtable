@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
 from .config import RoundConfig
+from .drawing import extract_draw_requests
 from .memory import extract_memories
 from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
@@ -26,6 +27,8 @@ MAX_HISTORY = 400  # messages kept in memory per chat
 MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
 
 MemoryHook = Callable[[Participant, list[str]], None]
+# (room, drawer, (label, description), message that asked for it or None)
+DrawHook = Callable[["ChatRoom", Participant, tuple[str, str], "Message | None"], None]
 
 
 @dataclass
@@ -91,6 +94,7 @@ class ChatRoom:
         log_path: Path | None = None,
         on_memory: MemoryHook | None = None,
         block_code: bool = False,
+        on_draw: DrawHook | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -106,6 +110,7 @@ class ChatRoom:
         self.log_path = log_path  # transcript file (JSON lines); survives restarts
         self.on_memory = on_memory  # called with facts a model asked to remember
         self.block_code = block_code  # drop replies that contain code
+        self.on_draw = on_draw  # called when a member takes on a drawing request
         self.messages: list[Message] = self._load_log()
         # Models already have the saved history in their own sessions, so nothing is unseen.
         self.cursors = {p.id: len(self.messages) for p in self.participants}
@@ -113,6 +118,7 @@ class ChatRoom:
         self._restart = False
         self._wake = asyncio.Event()  # set when the user speaks during a round
         self._activities: dict[str, str] = {}  # member id -> what it is doing right now
+        self._extra_turns: dict[str, int] = {}  # granted while a round runs, added at its next step
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -178,9 +184,9 @@ class ChatRoom:
 
     # ---- round loop ----
 
-    async def _run_round(self) -> None:
+    async def _run_round(self, turns: dict[str, int] | None = None, last_speaker: str | None = None) -> None:
         try:
-            await self._round_loop()
+            await self._round_loop(turns, last_speaker)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -205,6 +211,10 @@ class ChatRoom:
         try:
             while True:
                 self._wake.clear()
+                if self._extra_turns:  # e.g. a sticker was just delivered to someone
+                    for pid, n in self._extra_turns.items():
+                        state.turns[pid] = state.turns.get(pid, 0) + n
+                    self._extra_turns.clear()
                 if self._restart:
                     self._restart = False
                     state = _RoundState(self._fresh_turns(), state.last_speaker)
@@ -291,10 +301,14 @@ class ChatRoom:
     async def _publish(self, speaker: Participant, raw: str) -> str | None:
         """Clean a reply and post it. Returns the transcript text, or None if nothing was posted."""
         text = clean_reply(raw, speaker.name)
+        draws: list[tuple[str, str]] = []
         if text is not None:
             text, facts = extract_memories(text)
             if facts and self.on_memory is not None:
                 self.on_memory(speaker, facts)
+            text, draws = extract_draw_requests(text)
+            if draws and not text:
+                text = "行，等我一会儿。"  # it only wrote the tag; still acknowledge the request
             if self.stickers is not None:
                 text, stickers, transcript = self.stickers.extract(text, self.sticker_limit)
             else:
@@ -308,6 +322,7 @@ class ChatRoom:
             return None
 
         mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id]
+        requester = self._requester_for(speaker) if draws else None
         # The cursor stays where it was before the call: messages that arrived while
         # the model was thinking are still unseen, and _unseen() skips its own post.
         self._append(Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time()))
@@ -316,7 +331,34 @@ class ChatRoom:
             await self.sink.post(self.key, speaker, text)
         for sticker in stickers:
             await self.sink.post_sticker(self.key, speaker, sticker)
+        if draws and self.on_draw is not None:
+            self.on_draw(self, speaker, draws[0], requester)  # one picture at a time
         return transcript
+
+    def _requester_for(self, drawer: Participant) -> Message | None:
+        """Who asked for the drawing: the latest message addressing the drawer, else the latest from someone else."""
+        others = [m for m in reversed(self.messages) if m.speaker_id != drawer.id]
+        return next((m for m in others if drawer.id in m.mentions), others[0] if others else None)
+
+    async def deliver_drawing(self, drawer: Participant, text: str, sticker: Sticker | None, requester: Message | None) -> None:
+        """The drawer posts the finished sticker; a member who asked for it gets a turn to use it."""
+        to_member = requester is not None and not requester.from_user and requester.speaker_id != drawer.id
+        mentions = (requester.speaker_id,) if to_member else ()
+        transcript = f"{text} [表情:{sticker.label}]" if sticker else text
+        self._append(Message(drawer.id, drawer.name, transcript, mentions, time.time()))
+        log.info("[%s] %s: %s", self.key, drawer.name, _preview(transcript))
+        await self.sink.post(self.key, drawer, text)
+        if sticker is not None:
+            await self.sink.post_sticker(self.key, drawer, sticker)
+        if not (to_member and sticker):
+            return
+        if self.busy:
+            self._extra_turns[requester.speaker_id] = self._extra_turns.get(requester.speaker_id, 0) + 1
+            self._wake.set()
+        else:
+            turns = {p.id: 0 for p in self.participants}
+            turns[requester.speaker_id] = 1
+            self._task = asyncio.create_task(self._run_round(turns, last_speaker=drawer.id))
 
     # ---- proactive posts ----
 

@@ -30,7 +30,7 @@ class ConsoleSink:
         print(f"\n[{participant.name}] 〔表情：{sticker.label}〕\n", flush=True)
 
     async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
-        print(f"（🔍 {participant.name} {text}）", flush=True)
+        print(f"（{'🎨' if '画' in text else '🔍'} {participant.name} {text}）", flush=True)
 
     async def clear_activity(self, chat_key: str, participant: Participant) -> None:
         pass

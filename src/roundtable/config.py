@@ -46,6 +46,10 @@ class ParticipantConfig:
     relationships: str = ""  # how it sees the others in the group
     examples: str = ""  # a few sample lines, one per line; pins the voice down best
     activity: str = "normal"  # low / normal / high: how eagerly it joins in
+    appearance: str = ""  # what it looks like; used when someone draws it
+    # Drawing stickers for others when asked (Codex CLI only).
+    can_draw: bool = False
+    draws_per_day: int = 5
     max_turns: int = 0  # turns per round; 0 = the group's default
     # Read-only web search with the model's own built-in tool (Grok's also covers X).
     web_search: bool = False

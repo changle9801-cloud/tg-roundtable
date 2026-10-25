@@ -102,11 +102,12 @@ class TelegramSink:
             return
         key = (chat_key, participant.id)
         previous = self.activity_messages.get(key)
+        shown = f"{'🎨' if '画' in text else '🔍'} {text}"
         with suppress(TelegramAPIError):
             if previous is not None:  # a second search in the same turn: update the notice
-                await bot.edit_message_text(f"🔍 {text}", chat_id=int(chat_key), message_id=previous)
+                await bot.edit_message_text(shown, chat_id=int(chat_key), message_id=previous)
             else:
-                msg = await bot.send_message(int(chat_key), f"🔍 {text}", disable_notification=True)
+                msg = await bot.send_message(int(chat_key), shown, disable_notification=True)
                 self.activity_messages[key] = msg.message_id
 
     async def clear_activity(self, chat_key: str, participant: Participant) -> None:

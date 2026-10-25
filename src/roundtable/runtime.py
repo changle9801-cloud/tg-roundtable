@@ -33,6 +33,15 @@ from .prompts import (
 )
 from .room import ChatRoom
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
+from .drawing import (
+    DrawLog,
+    Drawing,
+    appearance_section,
+    build_draw_prompt,
+    drawer_instructions,
+    requester_instructions,
+    supports_drawing,
+)
 from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
@@ -93,7 +102,9 @@ class Runtime:
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
+        self.drawings = DrawLog(store.data_dir)
         self._browsing_now: set[str] = set()
+        self._background: set[asyncio.Task] = set()
         self.sink = TelegramSink(self)
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -126,8 +137,16 @@ class Runtime:
         if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
         limit = config.max_stickers if config.stickers_enabled else 0
+        drawing = ""
+        drawers = [m for m in config.enabled_participants if m.can_draw and supports_drawing(m)]
+        if pc.can_draw and supports_drawing(pc):
+            looks = appearance_section(config.enabled_participants)
+            drawing = drawer_instructions(self.drawings.remaining(pc)) + ("\n" + looks if looks else "")
+        elif drawers and limit:
+            drawing = requester_instructions(drawers[0].name)
         parts = [
             search,
+            drawing,
             self.journal.prompt_section(pc.id),
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.stickers.prompt_section(limit),
@@ -189,6 +208,7 @@ class Runtime:
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, block_code=self.config.no_coding,
+                on_draw=self._on_draw,
             )
         return self.rooms[key]
 
@@ -412,6 +432,51 @@ class Runtime:
                 self.proactive.postpone(p.cfg)  # not now; look again in a few minutes
                 continue
             await self._proactive_attempt(p, room)
+
+    # ---- drawing stickers for each other ----
+
+    def _on_draw(self, room: ChatRoom, drawer: Participant, request: tuple[str, str], requester) -> None:
+        pc = drawer.cfg
+        if not (pc.can_draw and supports_drawing(pc)):
+            return  # the tag is ignored for members that cannot draw
+        if drawer.id in self.drawings.busy:
+            self._spawn(room.deliver_drawing(drawer, "手上这张还没画完，排个队。", None, requester))
+            return
+        if self.drawings.remaining(pc) <= 0:
+            self._spawn(room.deliver_drawing(drawer, "今天画不动了，明天再说。", None, requester))
+            return
+        self.drawings.busy.add(drawer.id)
+        self._spawn(self._draw(room, drawer, *request, requester))
+
+    async def _draw(self, room: ChatRoom, drawer: Participant, label: str, description: str, requester) -> None:
+        asker = requester.speaker_name if requester is not None else ""
+        await room.sink.activity(room.key, drawer, f"正在画表情包：{label}")
+        log.info("[%s] %s 开始画「%s」：%s", room.key, drawer.name, label, description)
+        ok = False
+        try:
+            path = await drawer.draw(build_draw_prompt(label, description, self.config.enabled_participants))
+            label = self.stickers.unique_label(label)
+            note = f"{drawer.name} 给 {asker} 画的：{description}" if asker else f"{drawer.name} 画的：{description}"
+            sticker = self.stickers.add(f"drawing{path.suffix}", path.read_bytes(), label, note[:300])
+            ok = True
+            self.refresh_prompts()  # everyone can use the new sticker now
+            text = f"画好了 @{asker}，拿去用。" if asker and asker != drawer.name else "画好了。"
+            log.info("[%s] %s 画好了「%s」", room.key, drawer.name, label)
+            await room.sink.clear_activity(room.key, drawer)
+            await room.deliver_drawing(drawer, text, sticker, requester)
+        except Exception as e:
+            log.warning("%s 画图失败：%s", drawer.id, e)
+            await room.sink.clear_activity(room.key, drawer)
+            await room.deliver_drawing(drawer, "这张翻车了，没画出来。", None, requester)
+        finally:
+            self.drawings.busy.discard(drawer.id)
+            self.drawings.record(Drawing(time.time(), drawer.id, asker, label, description, ok))
+            self.refresh_prompts()  # the drawer's remaining count changed
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def _browse(self, p: Participant) -> list:
         """One private browsing session; what it finds goes into the member's journal."""

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import time
+from pathlib import Path
 
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
@@ -67,6 +70,47 @@ class CodexCLI(Participant):
         if thread_id:
             self.store.set(chat_key, self.id, thread_id)
         return text
+
+
+    async def draw(self, prompt: str) -> Path:
+        """Generate one picture with Codex's image tool and return the file it saved.
+
+        A separate, one-off run: image generation is the only thing left on (commands,
+        files, browsing and search stay off). Codex keeps images under
+        <CODEX_HOME>/generated_images/<thread id>/.
+        """
+        cmd = [
+            *self.command, "exec",
+            "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
+            "-c", 'sandbox_mode="read-only"',
+            "-c", 'web_search="disabled"',
+            "-c", f"developer_instructions={_toml_str(DRAW_INSTRUCTIONS)}",
+            "-c", 'model_reasoning_effort="low"',
+        ]
+        for feature in DISABLED_FEATURES:
+            if feature not in ("image_generation", "code_mode_host"):  # the image tool needs both
+                cmd += ["--disable", feature]
+        cmd.append("-")
+        started = time.time()
+        out = await run_cli(cmd, prompt, self.work_dir, max(self.timeout, 300))
+        thread_id = next(
+            (json.loads(line).get("thread_id") for line in out.splitlines() if '"thread.started"' in line), None
+        )
+        folder = codex_home() / "generated_images" / (thread_id or "")
+        images = sorted(
+            (p for p in folder.glob("*") if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and p.stat().st_mtime >= started - 5),
+            key=lambda p: p.stat().st_mtime,
+        ) if thread_id and folder.is_dir() else []
+        if not images:
+            raise ParticipantError("没有画出图片")
+        return images[-1]
+
+
+DRAW_INSTRUCTIONS = "你是表情包画师。只用画图工具画用户要的那一张图，画完就结束，不要写解释、不要追问。"
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 
 
 def parse_events(out: str) -> tuple[str, str | None]:

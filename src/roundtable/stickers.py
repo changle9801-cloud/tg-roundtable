@@ -119,6 +119,15 @@ class StickerLibrary:
         self.save()
         return s
 
+    def unique_label(self, label: str) -> str:
+        """``label``, or ``label2``, ``label3``… if it is taken, so a new drawing is the one sent."""
+        label = clean_label(label)
+        taken = {s.label for s in self.items}
+        candidate, n = label, 2
+        while candidate in taken:
+            candidate, n = f"{label}{n}", n + 1
+        return candidate
+
     def update(self, sticker_id: str, changes: dict) -> Sticker:
         s = self.get(sticker_id)
         if "label" in changes:

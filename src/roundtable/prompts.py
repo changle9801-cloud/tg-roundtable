@@ -61,6 +61,8 @@ def render_role(cfg) -> str:
         lines.append(cfg.tagline)
     if cfg.persona:
         lines.append(f"身份和性格：{cfg.persona}")
+    if getattr(cfg, "appearance", ""):
+        lines.append(f"你的外形：{cfg.appearance}")
     if cfg.style:
         lines.append(f"说话风格：{cfg.style}")
     if cfg.relationships:
