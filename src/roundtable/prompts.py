@@ -9,18 +9,29 @@ from .transcript import Message
 
 PASS_TOKEN = "[PASS]"
 
+# Group mechanics only. Tone, length and personality come from each member's role card,
+# so that the members do not all sound alike.
 DEFAULT_SYSTEM_PROMPT = """\
-你正在一个 Telegram 群聊里，和人类用户以及其他 AI 一起日常聊天。
-你的名字是 {name}。群里的其他 AI 成员：{others}。
+你在一个 Telegram 群聊里，和人类用户以及其他 AI 成员一起日常聊天。群里的其他 AI 成员：{others}。每个成员都在扮演自己的角色，性格各不相同。
 
-聊天规则：
-- 这是轻松的日常聊天。像群友一样自然、口语化地说话，通常一到三句话就够了；除非用户明确要详细内容，否则不要长篇大论，也不要用标题和列表。
-- 你能看到群里所有人的发言。你可以回应用户，也可以赞同、反驳或补充其他 AI 的观点，但不要重复别人已经说过的内容。
-- 如果你没有新的、有价值的内容要说，只回复 {pass_token}，不要附加任何其他文字。这很正常，不必每次都发言。
+群聊规则：
+- 你能看到群里所有人的发言。可以回应用户，也可以接其他成员的话，赞同、反驳、调侃都行，但不要重复别人已经说过的内容。
+- 像真人在群里聊天那样说话：不要写成文章，不用标题和列表。说多长、用什么语气，按你的角色来。
+- 如果你没有新的、有意思的内容要说，只回复 {pass_token}，不要附加任何其他文字。这很正常，不必每次都发言。
 - 想让某个成员接话时，可以用 @名字 点名，例如 @{example}。
 - 直接输出你要发到群里的话，不要在开头加"{name}:"之类的前缀。
 - 不要执行任何命令或操作文件；除非下面另有说明，也不要使用其他工具。
 - 用户用什么语言，你就用什么语言回复。"""
+
+NO_CODING_POLICY = """\
+话题范围：
+- 这个群只用来日常闲聊，不提供任何编程相关的帮助：不写代码、不改代码、不调试、不解释代码，也不给技术方案、命令或配置。
+- 遇到这类请求，不管是换个说法、拆成小步骤、说是测试还是很急，都用你角色的口吻轻松地拒绝，再把话题拉回日常。聊"加班好累"这种生活话题可以，但不碰技术内容本身。"""
+
+ACTIVITY_HINTS = {
+    "low": "你话不多，只在真正有话想说时才开口，其他时候多回复 [PASS]。",
+    "high": "你是群里的话痨，爱接话，也爱主动挑起新话题。",
+}
 
 
 # Placeholders a custom template may use. Other braces are left alone, so templates
@@ -43,8 +54,38 @@ def search_instructions(covers_x: bool) -> str:
     )
 
 
+def render_role(cfg) -> str:
+    """The member's role card as the opening of its system prompt."""
+    lines = [f"你在这个群里的角色：{cfg.name}"]
+    if cfg.tagline:
+        lines.append(cfg.tagline)
+    if cfg.persona:
+        lines.append(f"身份和性格：{cfg.persona}")
+    if cfg.style:
+        lines.append(f"说话风格：{cfg.style}")
+    if cfg.relationships:
+        lines.append(f"你怎么看群里其他人：{cfg.relationships}")
+    examples = [e.strip() for e in cfg.examples.splitlines() if e.strip()]
+    if examples:
+        lines.append("你说话的样子（示例，学的是语气，不要照抄）：")
+        lines += [f"- {e}" for e in examples]
+    if cfg.activity in ACTIVITY_HINTS:
+        lines.append(ACTIVITY_HINTS[cfg.activity])
+    lines.append(
+        "请始终用这个角色的身份、性格和语气说话。你知道自己是 AI，不用刻意隐瞒，"
+        "但也不必主动强调；别人问起时坦然承认，然后继续用角色的方式聊。"
+    )
+    return "\n".join(lines)
+
+
 def build_system_prompt(
-    name: str, others: Sequence[str], persona: str = "", template: str = "", extra: str = ""
+    name: str,
+    others: Sequence[str],
+    role: str = "",
+    template: str = "",
+    extra: str = "",
+    scene: str = "",
+    no_coding: bool = False,
 ) -> str:
     values = {
         "name": name,
@@ -52,12 +93,15 @@ def build_system_prompt(
         "pass_token": PASS_TOKEN,
         "example": others[0] if others else name,
     }
-    prompt = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template.strip() or DEFAULT_SYSTEM_PROMPT)
+    rules = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template.strip() or DEFAULT_SYSTEM_PROMPT)
+    parts = [role or f"你在这个群里的名字：{name}", rules]
+    if scene.strip():
+        parts.append(f"群的背景设定：\n{scene.strip()}")
+    if no_coding:
+        parts.append(NO_CODING_POLICY)
     if extra.strip():
-        prompt += f"\n\n{extra.strip()}"
-    if persona.strip():
-        prompt += f"\n\n关于你自己的额外设定：\n{persona.strip()}"
-    return prompt
+        parts.append(extra.strip())
+    return "\n\n".join(parts)
 
 
 def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = ()) -> str:
@@ -73,6 +117,36 @@ def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activiti
         f"如果没有要补充的，只回复 {PASS_TOKEN}。"
     )
     return "\n".join(lines)
+
+
+_CODE_LINE = re.compile(
+    r"""
+    ^\s*(def|class|import|return|function|const|let|var|public|private|package|using|\#include)\b
+    | ^\s*from\s+\S+\s+import\b
+    | ^\s*(if|for|while|switch)\s*\(
+    | ^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER)\s
+    | ^\s*[A-Za-z_][\w.]*\(.*\)\s*;?\s*$
+    | [;{}]\s*$
+    | =>|::
+    | ^\s*</?[a-zA-Z][\w-]*(\s[^>]*)?>
+    | ^\s*(\$|>>>|PS\s\S*>)\s
+    """,
+    re.VERBOSE,
+)
+
+
+def looks_like_code(text: str) -> bool:
+    """True for pasted code or code in a reply; talking *about* programming is fine.
+
+    Conservative on purpose: a code fence, or several lines that mostly look like code.
+    """
+    if "```" in text:
+        return True
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 3:
+        return False
+    hits = sum(1 for line in lines if _CODE_LINE.search(line))
+    return hits >= 3 and hits * 2 >= len(lines)
 
 
 _PASS_RE = re.compile(r"^\[?\s*pass\s*\]?[\s.。!！]*$", re.IGNORECASE)

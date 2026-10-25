@@ -15,6 +15,7 @@ from aiogram.types import FSInputFile
 from aiogram.types import Message as TgMessage
 
 from .participants import Participant
+from .prompts import looks_like_code
 from .stickers import Sticker
 
 if TYPE_CHECKING:
@@ -214,6 +215,10 @@ def build_router(runtime: Runtime) -> Router:
             return
         text = describe(msg)
         if not text or text.startswith("/"):
+            return
+        if runtime.config.no_coding and looks_like_code(text):
+            # Pasted code never reaches the models; this group is for everyday chat.
+            await msg.reply("⚙️ 这个群只用来日常闲聊，代码相关的就不在这儿处理啦。")
             return
         reply_to = None
         replied = msg.reply_to_message

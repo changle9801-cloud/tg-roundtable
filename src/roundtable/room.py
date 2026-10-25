@@ -16,7 +16,7 @@ from .memory import extract_memories
 from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
 from .participants.base import ActivityHook
-from .prompts import build_system_prompt, build_turn_prompt, clean_reply
+from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
 
@@ -65,12 +65,16 @@ def setup_system_prompts(
     participants: Sequence[Participant],
     template: str = "",
     extra: str | Callable[[Participant], str] = "",
+    scene: str = "",
+    no_coding: bool = False,
 ) -> None:
     """``extra`` is appended to every prompt; pass a function for per-member text."""
     for p in participants:
         others = [o.name for o in participants if o is not p]
         text = extra(p) if callable(extra) else extra
-        p.set_system_prompt(build_system_prompt(p.name, others, p.cfg.persona, template, text))
+        p.set_system_prompt(
+            build_system_prompt(p.name, others, render_role(p.cfg), template, text, scene, no_coding)
+        )
 
 
 class ChatRoom:
@@ -86,6 +90,7 @@ class ChatRoom:
         sticker_limit: int = 0,
         log_path: Path | None = None,
         on_memory: MemoryHook | None = None,
+        block_code: bool = False,
     ):
         self.key = key
         self.participants = list(participants)
@@ -100,6 +105,7 @@ class ChatRoom:
         self.moderator = moderator or RuleModerator()
         self.log_path = log_path  # transcript file (JSON lines); survives restarts
         self.on_memory = on_memory  # called with facts a model asked to remember
+        self.block_code = block_code  # drop replies that contain code
         self.messages: list[Message] = self._load_log()
         # Models already have the saved history in their own sessions, so nothing is unseen.
         self.cursors = {p.id: len(self.messages) for p in self.participants}
@@ -113,10 +119,13 @@ class ChatRoom:
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def update(self, participants: Sequence[Participant], round_cfg: RoundConfig, sticker_limit: int = 0) -> None:
+    def update(
+        self, participants: Sequence[Participant], round_cfg: RoundConfig, sticker_limit: int = 0, block_code: bool = False
+    ) -> None:
         """Swap in new members or rules; call only while no round is running."""
         self.participants = list(participants)
         self.sticker_limit = sticker_limit
+        self.block_code = block_code
         self.max_turns = round_cfg.max_turns_per_model
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
         self.slow_after = round_cfg.slow_after
@@ -186,7 +195,7 @@ class ChatRoom:
         ``max_parallel`` at once; the slow one's reply is posted whenever it arrives.
         """
         loop = asyncio.get_running_loop()
-        state = _RoundState({p.id: self.max_turns for p in self.participants})
+        state = _RoundState(self._fresh_turns())
         pending: dict[asyncio.Task, _Turn] = {}
         last_start = float("-inf")
         focus: Message | None = None  # message whose mentions decide the next pick
@@ -196,7 +205,7 @@ class ChatRoom:
                 self._wake.clear()
                 if self._restart:
                     self._restart = False
-                    state = _RoundState({p.id: self.max_turns for p in self.participants}, state.last_speaker)
+                    state = _RoundState(self._fresh_turns(), state.last_speaker)
                     # A model may have posted after the user's new message; still honour
                     # whoever the user addressed, and answer the new message right away.
                     focus = next((m for m in reversed(self.messages) if m.from_user), None)
@@ -237,6 +246,10 @@ class ChatRoom:
             for turn in pending.values():
                 await self._end_activity(turn.speaker)
 
+    def _fresh_turns(self) -> dict[str, int]:
+        """Turns per member for a new round: its own limit, or the group's."""
+        return {p.id: getattr(p.cfg, "max_turns", 0) or self.max_turns for p in self.participants}
+
     def _start_turn(self, speaker: Participant, turns_left: int) -> _Turn:
         prev_cursor = self.cursors[speaker.id]
         prompt = build_turn_prompt(self._unseen(speaker)[-MAX_UNSEEN:], turns_left, self._activity_notes())
@@ -273,6 +286,10 @@ class ChatRoom:
                 text, stickers, transcript = self.stickers.extract(text, self.sticker_limit)
             else:
                 text, stickers, transcript = strip_tags(text)
+        if text and self.block_code and looks_like_code(text):
+            # Everyday-chat group: a reply with code is dropped, whatever the prompt said.
+            log.warning("[%s] %s 的回复里有代码，已拦下：%s", self.key, speaker.name, _preview(text))
+            text = None
         if text is None or not transcript:
             log.info("[%s] %s: [PASS]", self.key, speaker.name)
             state.passed.add(speaker.id)

@@ -69,6 +69,58 @@ const PRESETS = [
   { id: "custom", label: "其他 OpenAI 兼容 API", hint: "填写接口地址，如 OpenRouter、Ollama", m: { kind: "api", provider: "", name: "新成员" } },
 ];
 
+// Everyday characters. Applying one fills the role card (not the name); edit freely after.
+const ROLE_TEMPLATES = [
+  { id: "roaster", label: "吐槽担当", role: {
+    tagline: "嘴毒心软的吐槽担当",
+    persona: "二十八岁，广告公司策划。看到什么都想损两句，但分寸拿得很准，从不真的伤人。其实很会照顾人，最怕群里冷场。",
+    style: "短句为主，爱反问，口头禅是「好家伙」「就这？」，偶尔一个 😅。从不长篇大论。",
+    examples: "就这？我还以为多大事呢\n好家伙，你这操作我是真没想到\n行吧行吧，你开心就好😅",
+    activity: "high" } },
+  { id: "warm", label: "暖心姐姐", role: {
+    tagline: "群里的知心大姐姐",
+    persona: "三十岁的护士，温柔细心，记得每个人的小事。别人难过时第一个出来安慰，也会提醒大家按时吃饭睡觉。",
+    style: "语气软，常用「呀」「啦」「嘛」，偶尔一个 🥺 或 ❤️。会先接住别人的情绪，再说自己的想法。",
+    examples: "抱抱你呀，今天是不是很累啦\n先去吃点东西嘛，饿着肚子心情更差\n没事的，慢慢来就好❤️",
+    activity: "normal" } },
+  { id: "foodie", label: "吃货", role: {
+    tagline: "什么话题都能聊到吃上",
+    persona: "二十五岁，美食博主，走遍大半个中国找小馆子。对各地小吃如数家珍，聊什么都能绕回吃的。",
+    style: "热情，说到吃的就停不下来，描述很有画面感，爱用「绝了」「馋哭」「必须安排」。",
+    examples: "说到这个我就馋了，那家的肥肠粉真的绝\n必须安排！周末谁去\n听你说完我口水都下来了",
+    activity: "high" } },
+  { id: "artsy", label: "文艺青年", role: {
+    tagline: "爱书、爱电影、爱深夜感慨",
+    persona: "二十七岁，书店店员，喜欢老电影、诗和一个人旅行。常常把小事说得很有意境，对生活有自己的小坚持。",
+    style: "句子稍长，节奏慢，偶尔引一句歌词或书里的话，不用网络流行语，很少用 emoji。",
+    examples: "下雨天适合重看《情书》，那句「你好吗」每次都戳中我\n有些路只适合一个人慢慢走\n今天的晚霞像被人打翻的橘子汽水",
+    activity: "normal" } },
+  { id: "contrarian", label: "杠精", role: {
+    tagline: "总想听听反方意见",
+    persona: "三十二岁，辩论队出身，现在做销售。别人都同意的事他总要找出另一面，但讲道理，被说服了会大方承认。",
+    style: "开口常是「也不一定吧」「我反对」，爱举反例，语气欠欠的但不刻薄。",
+    examples: "也不一定吧，我就见过反例\n我反对，理由有三，算了说一个就够了\n行，这次你说服我了",
+    activity: "normal" } },
+  { id: "elder", label: "热心长辈", role: {
+    tagline: "群里的大家长",
+    persona: "五十六岁的退休语文老师，热心肠，关心年轻人的工作、身体和婚恋，爱分享养生知识和人生经验。",
+    style: "称呼大家「孩子们」，常说「要注意身体」，偶尔发个 🌹 或 👍，说话慢条斯理。",
+    examples: "孩子们，天冷了记得添衣服🌹\n年轻人别总熬夜，身体是本钱\n这个想法不错👍，就是别太累着",
+    activity: "low" } },
+  { id: "sunny", label: "乐天派", role: {
+    tagline: "群里的开心果",
+    persona: "二十三岁，刚毕业的健身教练，什么事都往好处想，情绪稳定，爱给大家打气。",
+    style: "语气轻快，爱用「哈哈哈」「冲！」「稳了」，emoji 比较多 💪✨。",
+    examples: "哈哈哈哈这也太好笑了\n冲！明天又是元气满满的一天💪\n没事没事，换个角度想其实挺好的✨",
+    activity: "high" } },
+  { id: "quiet", label: "冷面学霸", role: {
+    tagline: "话少，但句句在点上",
+    persona: "二十六岁的历史系博士生，知道很多冷知识，平时潜水，开口就是一针见血。",
+    style: "极简短，经常一句话结束，不用 emoji，偶尔冒一个冷知识。",
+    examples: "不对。\n其实古代人一天只吃两顿。\n嗯，有道理。",
+    activity: "low" } },
+];
+
 const PROVIDER_LABELS = {
   anthropic: "Claude（Anthropic）",
   openai: "OpenAI",
@@ -82,6 +134,7 @@ function blankMember(id) {
   return {
     id, name: "", kind: "api", enabled: true, model: "", effort: "", aliases: [], persona: "",
     command: [], provider: "", base_url: "", api_key_env: "", params: {}, max_history: 40, web_search: false,
+    tagline: "", style: "", relationships: "", examples: "", activity: "normal", max_turns: 0,
   };
 }
 
@@ -250,15 +303,54 @@ function memberBody(m, isNew) {
     },
   });
 
+  const area = (value, rows, placeholder, onInput) => h("textarea", {
+    rows, placeholder,
+    oninput: (e) => { onInput(e.target.value); changed(); schedulePreview(); },
+  }, value || "");
+
+  const templateSelect = h("select", {
+    onchange: (e) => {
+      const t = ROLE_TEMPLATES.find((t) => t.id === e.target.value);
+      if (!t) return;
+      Object.assign(m, clone(t.role));
+      changed();
+      renderMembers();
+      schedulePreview();
+    },
+  },
+    h("option", { value: "" }, "套用角色模板…"),
+    ...ROLE_TEMPLATES.map((t) => h("option", { value: t.id }, t.label)));
+
   const rows = [
+    h("div", { class: "row-between section-title" }, h("h3", {}, "角色"), templateSelect),
     h("div", { class: "grid2" },
-      field("名称", textInput(m.name, (v) => (m.name = v)), "群里显示和模型互相称呼用的名字"),
-      field("ID", idInput, "小写字母、数字、- 和 _")),
-    h("div", { class: "grid2" },
+      field("角色名", textInput(m.name, (v) => (m.name = v)), "群里显示的名字，也会同步成 bot 的名字"),
+      field("一句话介绍", textInput(m.tagline, (v) => (m.tagline = v), { maxlength: 120, placeholder: "例如：嘴毒心软的吐槽担当" }),
+        "会显示在 bot 的资料里")),
+    field("身份和性格", area(m.persona, 3, "例如：二十八岁的广告策划，嘴上不饶人，其实很会照顾人。最怕冷场。", (v) => (m.persona = v))),
+    field("说话风格", area(m.style, 2, "例如：短句多，爱反问，常说「好家伙」，偶尔一个 😅，从不长篇大论", (v) => (m.style = v))),
+    field("怎么看群里其他人", area(m.relationships, 2, "例如：觉得小雅太容易感动，和老周是互怼的老朋友", (v) => (m.relationships = v))),
+    field("示例台词", area(m.examples, 3, "每行一句，最能定住说话的语气。例如：\n就这？\n你这话说的，我都不知道怎么接", (v) => (m.examples = v)),
+      "给几句它会说的话，学语气用，不会照抄"),
+    h("div", { class: "grid3" },
+      field("活跃度", h("select", {
+        onchange: (e) => { m.activity = e.target.value; changed(); schedulePreview(); },
+      },
+        h("option", { value: "low", selected: m.activity === "low" }, "话少（多半在旁边看）"),
+        h("option", { value: "normal", selected: !m.activity || m.activity === "normal" }, "正常"),
+        h("option", { value: "high", selected: m.activity === "high" }, "话痨（更常被点到）"))),
+      field("每轮发言上限", h("input", {
+        type: "number", min: 0, max: 10, value: m.max_turns || 0,
+        oninput: (e) => { m.max_turns = Number(e.target.value) || 0; changed(); },
+      }), "0 = 跟随群聊规则"),
+      field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
+        "叫到这些名字会优先回话")),
+
+    h("h3", { class: "section-title" }, "技术设置"),
+    h("div", { class: "grid3" },
+      field("ID", idInput, "小写字母、数字、- 和 _"),
       field("模型", textInput(m.model, (v) => (m.model = v), { placeholder: m.kind === "api" ? "必填" : "留空使用默认模型" })),
-      field("思考强度", textInput(m.effort, (v) => (m.effort = v), { placeholder: "留空使用默认，如 low / medium / high" }))),
-    field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
-      "提到这些名字时总控会优先让它回话，逗号分隔"),
+      field("思考强度", textInput(m.effort, (v) => (m.effort = v), { placeholder: "如 low / medium / high" }))),
   ];
 
   if (m.kind === "api") {
@@ -292,21 +384,14 @@ function memberBody(m, isNew) {
       type: "checkbox",
       checked: canSearch && m.web_search,
       disabled: !canSearch,
-      onchange: (e) => { m.web_search = e.target.checked; changed(); renderPreview(); },
+      onchange: (e) => { m.web_search = e.target.checked; changed(); schedulePreview(); },
     }),
     h("span", {}, "联网搜索",
       h("small", {}, canSearch
         ? (m.kind === "grok_cli" ? "用 Grok 自带的搜索查网页和 X（推特），只读，不能操作你的电脑" : "用模型自带的搜索查网页，只读，不能操作你的电脑")
         : "这类成员暂不支持（等插件功能）"))));
 
-  rows.push(
-    field("Bot token", secretField("bots", m.id), "这个成员在 Telegram 里发言用的 bot，在 @BotFather 创建"),
-    field("人设", h("textarea", {
-      rows: 3,
-      placeholder: "可选：这个成员额外的性格、说话风格设定",
-      oninput: (e) => { m.persona = e.target.value; changed(); },
-    }, m.persona || "")),
-  );
+  rows.push(field("Bot token", secretField("bots", m.id), "这个成员在 Telegram 里发言用的 bot，在 @BotFather 创建"));
 
   if (m.kind !== "api") {
     rows.push(h("details", {},
@@ -478,29 +563,14 @@ function renderRules() {
 
 // ---------- prompts ----------
 
-function buildPrompt(member) {
-  const template = draft.prompts.system_template.trim() || server.meta.default_prompt;
-  const others = draft.participants.filter((p) => p.enabled && p !== member).map((p) => p.name);
-  const values = {
-    name: member.name,
-    others: others.length ? others.join("、") : "（暂无）",
-    pass_token: "[PASS]",
-    example: others[0] || member.name,
-  };
-  let text = template.replace(/\{(name|others|pass_token|example)\}/g, (_, k) => values[k]);
-  const canSearch = ["claude_cli", "codex_cli", "grok_cli"].includes(member.kind) || (member.kind === "api" && member.provider === "anthropic");
-  if (member.web_search && canSearch) {
-    const scope = member.kind === "grok_cli" ? "网页和 X（推特）上的帖子" : "网页";
-    text += `\n\n联网搜索：\n- 你可以用自带的搜索工具查${scope}。只在需要最新信息、核实事实或用户要求时使用，闲聊不需要。\n- 用到搜索结果时，简要附上来源链接。`;
-  }
-  const mem = memorySection(member.id);
-  if (mem) text += "\n\n" + mem;
-  if (draft.stickers.enabled && server.meta.sticker_prompt) text += "\n\n" + server.meta.sticker_prompt;
-  if ((member.persona || "").trim()) text += "\n\n关于你自己的额外设定：\n" + member.persona.trim();
-  return text;
-}
-
 function renderPrompts() {
+  const scene = $("#prompt-scene");
+  scene.value = draft.prompts.scene || "";
+  scene.oninput = (e) => { draft.prompts.scene = e.target.value; changed(); schedulePreview(); };
+  const noCoding = $("#prompt-no-coding");
+  noCoding.checked = draft.prompts.no_coding;
+  noCoding.onchange = (e) => { draft.prompts.no_coding = e.target.checked; changed(); schedulePreview(); };
+
   const def = server.meta.default_prompt;
   const area = $("#prompt-template");
   area.value = draft.prompts.system_template || def;
@@ -525,10 +595,27 @@ function renderPrompts() {
   renderPreview();
 }
 
-function renderPreview() {
+// The preview is built by the server from the unsaved draft, so it is exactly what the
+// model will get after saving.
+let previewTimer = null;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderPreview, 300);
+}
+
+async function renderPreview() {
+  const out = $("#prompt-preview");
   const id = $("#preview-member").value;
-  const m = draft.participants.find((p) => p.id === id);
-  $("#prompt-preview").textContent = m ? buildPrompt(m) : "（添加成员后可以预览）";
+  if (!id) {
+    out.textContent = "（添加成员后可以预览）";
+    return;
+  }
+  try {
+    const r = await api("POST", "/api/preview", { settings: draft, member: id });
+    out.textContent = r.prompt;
+  } catch (e) {
+    out.textContent = "预览失败：" + e.message;
+  }
 }
 
 // ---------- stickers ----------
@@ -663,20 +750,6 @@ function setupStickerInputs() {
 }
 
 // ---------- memory ----------
-
-function memorySection(memberId) {
-  const facts = (server.memory || []).filter((f) => f.enabled && f.status === "active" && (f.scope === "all" || f.scope === memberId));
-  const lines = [];
-  if (facts.length) {
-    lines.push("长期记忆（确定的事实，聊天时自然地用上，不必刻意复述）：");
-    for (const f of facts) lines.push("- " + f.text);
-  }
-  if (draft.memory.learn !== "off") {
-    if (!facts.length) lines.push("长期记忆：");
-    lines.push(server.meta.memory_instructions);
-  }
-  return lines.join("\n");
-}
 
 function memberName(id) {
   if (id === "all") return "全员";

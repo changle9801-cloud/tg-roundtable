@@ -22,8 +22,8 @@ from .participants import (
     participant_class,
     supports_web_search,
 )
-from .prompts import build_system_prompt, build_turn_prompt, search_instructions
-from .room import ChatRoom, setup_system_prompts
+from .prompts import build_system_prompt, build_turn_prompt, render_role, search_instructions
+from .room import ChatRoom
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
 from .memory import MemoryStore
 from .stickers import StickerLibrary, parse_set_name
@@ -72,6 +72,7 @@ class Runtime:
         self.bots: dict[str, Bot] = {}  # participant id -> its bot
         self.bot_usernames: dict[str, str] = {}
         self.bot_user_ids: dict[int, str] = {}  # Telegram user id of a model bot -> participant id
+        self.bot_profiles: dict[str, tuple[str | None, str | None]] = {}  # shown name and intro
         self.controller: Bot | None = None
         self.controller_username = ""
         self.privacy_warning = False
@@ -93,14 +94,33 @@ class Runtime:
     def sticker_prompt(self) -> str:
         return self.stickers.prompt_section(self.sticker_limit)
 
-    def extra_prompt(self, member_id: str) -> str:
+    def system_prompt_for(self, pc, config=None) -> str:
+        """A member's full system prompt: role card, group rules, setting, policy, extras.
+
+        ``config`` lets the admin page preview unsaved settings.
+        """
+        config = config or self.config
+        others = [o.name for o in config.enabled_participants if o.id != pc.id]
+        return build_system_prompt(
+            pc.name, others, render_role(pc), config.system_template,
+            self._extra_prompt(pc, config), config.scene, config.no_coding,
+        )
+
+    def _extra_prompt(self, pc, config) -> str:
         """Search, memory and sticker sections appended to a member's system prompt."""
-        pc = next((p for p in self.config.participants if p.id == member_id), None)
         search = ""
-        if pc is not None and pc.web_search and supports_web_search(pc):
+        if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
-        parts = [search, self.memory.prompt_section(member_id, self.config.memory_learn), self.sticker_prompt()]
+        limit = config.max_stickers if config.stickers_enabled else 0
+        parts = [search, self.memory.prompt_section(pc.id, config.memory_learn), self.stickers.prompt_section(limit)]
         return "\n\n".join(p for p in parts if p)
+
+    def preview_prompt(self, draft_settings: dict, member_id: str) -> str:
+        config = build_config(normalize_settings(draft_settings), self.secrets, self.store.data_dir)
+        pc = next((p for p in config.participants if p.id == member_id), None)
+        if pc is None:
+            raise ConfigError(f"没有 ID 为 {member_id} 的成员")
+        return self.system_prompt_for(pc, config)
 
     def _rebuild_participants(self) -> None:
         built, errors = [], {}
@@ -109,15 +129,16 @@ class Runtime:
                 built.append(self._make(pc))
             except ConfigError as e:
                 errors[pc.id] = str(e)
-        setup_system_prompts(built, self.config.system_template, lambda p: self.extra_prompt(p.id))
         self.participants = built
         self.participant_errors = errors
+        self.refresh_prompts()
         for room in self.rooms.values():
-            room.update(built, self.config.round, self.sticker_limit)
+            room.update(built, self.config.round, self.sticker_limit, self.config.no_coding)
 
     def refresh_prompts(self) -> None:
-        """Stickers or memory changed: rebuild every system prompt (takes effect on the next turn)."""
-        setup_system_prompts(self.participants, self.config.system_template, lambda p: self.extra_prompt(p.id))
+        """Settings, stickers or memory changed: rebuild every system prompt (next turn on)."""
+        for p in self.participants:
+            p.set_system_prompt(self.system_prompt_for(p.cfg))
 
     stickers_changed = refresh_prompts
 
@@ -148,7 +169,7 @@ class Runtime:
             self.rooms[key] = ChatRoom(
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
-                log_path=self.chat_log_path(key), on_memory=self._on_memory,
+                log_path=self.chat_log_path(key), on_memory=self._on_memory, block_code=self.config.no_coding,
             )
         return self.rooms[key]
 
@@ -176,6 +197,7 @@ class Runtime:
             if self.bots[pid].token != wanted.get(pid):
                 bot = self.bots.pop(pid)
                 self.bot_usernames.pop(pid, None)
+                self.bot_profiles.pop(pid, None)
                 await bot.session.close()
         warnings = {}
         for pid, token in wanted.items():
@@ -193,8 +215,12 @@ class Runtime:
                 return
             self.bot_usernames[pid] = me.username or ""
             self.bot_user_ids[me.id] = pid
+            with suppress(Exception):
+                intro = await asyncio.wait_for(bot.get_my_short_description(), 15)
+                self.bot_profiles[pid] = (me.first_name, intro.short_description)
 
         await asyncio.gather(*(fetch(pid, b) for pid, b in self.bots.items() if pid not in self.bot_usernames))
+        await asyncio.gather(*(self._sync_profile(p) for p in self.participants if p.id in self.bots))
         for p in self.participants:
             if p.id not in wanted:
                 warnings.setdefault(p.id, "没有设置 bot token，它的发言发不到群里")
@@ -202,6 +228,21 @@ class Runtime:
             if username and username not in p.aliases:
                 p.aliases.append(username)
         self.participant_warnings = warnings
+
+    async def _sync_profile(self, p: Participant) -> None:
+        """Show the role's name and one-line intro on its Telegram bot."""
+        bot = self.bots[p.id]
+        name, intro = self.bot_profiles.get(p.id, (None, None))
+        try:
+            if name != p.name:
+                await asyncio.wait_for(bot.set_my_name(name=p.name), 15)
+                log.info("%s 的 bot 显示名已改为「%s」", p.id, p.name)
+            if intro != p.cfg.tagline:
+                await asyncio.wait_for(bot.set_my_short_description(short_description=p.cfg.tagline), 15)
+        except Exception as e:  # Telegram rate-limits name changes; try again next time
+            log.warning("%s 的 bot 资料没能更新：%s", p.id, e)
+            return
+        self.bot_profiles[p.id] = (p.name, p.cfg.tagline)
 
     async def start(self) -> None:
         await self._sync_bots()
@@ -218,10 +259,7 @@ class Runtime:
         """Send one message to a member (even a disabled one) outside any real chat."""
         pc = self._participant_config(pid)
         p = self._make(replace(pc, enabled=True))
-        others = [o.name for o in self.config.enabled_participants if o.id != pid]
-        p.set_system_prompt(
-            build_system_prompt(p.name, others, pc.persona, self.config.system_template, self.extra_prompt(pid))
-        )
+        p.set_system_prompt(self.system_prompt_for(pc))
         prompt = build_turn_prompt([Message(USER, "管理员", "你好，这是一条测试消息，请用一句话回复。")], 1)
         started = time.monotonic()
         try:

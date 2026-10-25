@@ -24,8 +24,11 @@ class RuleModerator:
     """Rule-based moderator.
 
     1. Whoever the latest message addressed (by @mention, name or reply) goes first.
-    2. Otherwise a random pick, avoiding the previous speaker when possible.
+    2. Otherwise a random pick, avoiding the previous speaker when possible; chattier
+       members (activity "high") are picked more often, quiet ones ("low") less.
     """
+
+    WEIGHTS = {"low": 0.5, "normal": 1.0, "high": 2.0}
 
     def __init__(self, rng: random.Random | None = None):
         self.rng = rng or random.Random()
@@ -43,4 +46,7 @@ class RuleModerator:
             if pid in by_id and pid != last_message.speaker_id:
                 return by_id[pid]
         pool = [p for p in candidates if p.id != last_speaker_id] or list(candidates)
-        return self.rng.choice(pool)
+        weights = [self.WEIGHTS.get(getattr(p.cfg, "activity", "normal"), 1.0) for p in pool]
+        if len(set(weights)) == 1:
+            return self.rng.choice(pool)
+        return self.rng.choices(pool, weights=weights)[0]

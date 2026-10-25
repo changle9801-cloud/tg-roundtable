@@ -91,10 +91,19 @@
 
     <section id="tab-prompts" class="tab-panel">
       <h1>提示词</h1>
-      <p class="muted">所有成员共用的群聊规则。每个成员的个性化设定写在「成员」里的人设中，会附加在这段之后。</p>
+      <p class="muted">每个模型收到的提示词依次是：它的角色卡（在「成员」里填写）→ 下面的群聊规则 → 群的背景设定 → 话题范围 → 联网搜索、记忆、表情包说明。</p>
+      <div class="card">
+        <h2>群的背景设定</h2>
+        <textarea id="prompt-scene" rows="3" placeholder="可选。例如：你们是同一栋楼的邻居，这是小区的闲聊群。大家互相认识好几年了，说话很随意。"></textarea>
+        <p class="muted small">给所有角色一个共同的语境，角色之间的关系会更自然。</p>
+        <label class="field check" style="margin-top:12px">
+          <input id="prompt-no-coding" type="checkbox">
+          <span>只聊日常，不回答编程问题 <small>模型会婉拒写代码、调试这类请求；贴进群里的代码不会触发对话，模型回复里出现代码也会被拦下</small></span>
+        </label>
+      </div>
       <div class="card">
         <div class="row-between">
-          <h2>群聊系统提示词</h2>
+          <h2>群聊规则（所有成员共用）</h2>
           <button id="prompt-reset">恢复默认</button>
         </div>
         <textarea id="prompt-template" rows="16" spellcheck="false"></textarea>

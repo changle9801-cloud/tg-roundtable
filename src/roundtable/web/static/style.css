@@ -121,6 +121,10 @@ button:disabled { opacity: 0.55; cursor: default; }
 .dot.warning { background: var(--warn); }
 .dot.error { background: var(--err); }
 
+.section-title { margin: 6px 0 12px; }
+h3.section-title, .section-title h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 0; }
+h3.section-title { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border); }
+
 /* add-member menu */
 .add-menu { position: relative; }
 .menu {

@@ -45,7 +45,7 @@ async def run_console(cfg: Config, user_name: str = "我") -> None:
     participants = build_participants(cfg, store)
     stickers = StickerLibrary(cfg.data_dir)
     limit = cfg.max_stickers if cfg.stickers_enabled else 0
-    setup_system_prompts(participants, cfg.system_template, stickers.prompt_section(limit))
+    setup_system_prompts(participants, cfg.system_template, stickers.prompt_section(limit), cfg.scene, cfg.no_coding)
     room = ChatRoom(CHAT_KEY, participants, ConsoleSink(), cfg.round, store, stickers=stickers, sticker_limit=limit)
 
     names = "、".join(p.name for p in participants)

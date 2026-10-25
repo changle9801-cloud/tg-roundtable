@@ -168,6 +168,20 @@ async def test_chat_listing_and_reset(admin):
     assert (await resp.json())["messages"] == []
 
 
+async def test_preview_uses_unsaved_draft(admin):
+    await login(admin)
+    draft = {
+        "prompts": {"scene": "你们是邻居", "no_coding": True},
+        "participants": [{"id": "a", "name": "阿杰", "kind": "claude_cli", "persona": "嘴毒心软"}],
+    }
+    resp = await admin.post("/api/preview", json={"settings": draft, "member": "a"}, headers={"Origin": admin.origin})
+    prompt = (await resp.json())["prompt"]
+    assert prompt.startswith("你在这个群里的角色：阿杰")
+    assert "嘴毒心软" in prompt and "你们是邻居" in prompt and "不写代码" in prompt
+    # Nothing was saved.
+    assert (await (await admin.get("/api/state")).json())["settings"]["participants"] == []
+
+
 async def test_member_without_key_shows_error_in_status(admin):
     await login(admin)
     member = {"id": "ds", "name": "DeepSeek", "kind": "api", "provider": "deepseek", "model": "m"}

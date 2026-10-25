@@ -39,7 +39,14 @@ class ParticipantConfig:
     model: str = ""
     effort: str = ""
     aliases: list[str] = field(default_factory=list)
-    persona: str = ""
+    # Role card: who this member plays in the group. `name` is the character's name.
+    tagline: str = ""  # one-line intro, also used as the bot's Telegram description
+    persona: str = ""  # identity and personality
+    style: str = ""  # how it talks: length, tone, catchphrases, emoji
+    relationships: str = ""  # how it sees the others in the group
+    examples: str = ""  # a few sample lines, one per line; pins the voice down best
+    activity: str = "normal"  # low / normal / high: how eagerly it joins in
+    max_turns: int = 0  # turns per round; 0 = the group's default
     # Read-only web search with the model's own built-in tool (Grok's also covers X).
     web_search: bool = False
     # Explicit command prefix, e.g. ["C:/tools/claude.exe"]; resolved from PATH when empty.
@@ -60,6 +67,8 @@ class Config:
     round: RoundConfig
     participants: list[ParticipantConfig]
     system_template: str = ""  # empty: use the built-in group chat prompt
+    scene: str = ""  # shared setting for the whole group, e.g. "you are housemates"
+    no_coding: bool = True  # everyday chat only: decline programming help
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
     memory_learn: str = "review"  # off / review / auto: what happens to [记住:…] from models

@@ -30,6 +30,7 @@ SECRETS_FILE = "secrets.json"
 DEFAULT_PORT = 8787
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+ACTIVITY_LEVELS = ("low", "normal", "high")
 SECRET_FIELDS = ("bot_token", "api_key")
 PARTICIPANT_FIELDS = [f for f in fields(ParticipantConfig) if f.name not in SECRET_FIELDS]
 
@@ -61,7 +62,7 @@ def default_settings() -> dict:
     return {
         "telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""},
         "round": asdict(RoundConfig()),
-        "prompts": {"system_template": ""},
+        "prompts": {"system_template": "", "scene": "", "no_coding": True},
         "stickers": {"enabled": True, "max_per_message": 1},
         "memory": {"learn": "review"},
         "web": {"port": DEFAULT_PORT},
@@ -125,11 +126,25 @@ def normalize_participant(raw: dict) -> dict:
                 raise ConfigError(f"成员 {pid} 的历史条数必须是数字") from None
             if value < 2:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
-        if f.name in ("name", "model", "effort", "persona", "provider", "base_url", "api_key_env"):
+        if f.name in ("name", "model", "effort", "provider", "base_url", "api_key_env",
+                      "tagline", "persona", "style", "relationships", "examples"):
             value = str(value or "").strip()
         if f.name in ("enabled", "web_search"):
             value = bool(value)
+        if f.name == "activity" and value not in ACTIVITY_LEVELS:
+            value = "normal"
+        if f.name == "max_turns":
+            try:
+                value = int(value or 0)
+            except (TypeError, ValueError):
+                raise ConfigError(f"成员 {pid} 的每轮发言上限必须是数字") from None
+            if not 0 <= value <= 10:
+                raise ConfigError(f"成员 {pid} 的每轮发言上限要在 0 到 10 之间（0 表示跟随群设置）")
         out[f.name] = value
+    if len(out["tagline"]) > 120:
+        raise ConfigError(f"成员 {pid} 的一句话介绍最多 120 个字（Telegram 的限制）")
+    if len(out["name"]) > 64:
+        raise ConfigError(f"成员 {pid} 的角色名最多 64 个字（Telegram 的限制）")
     return out
 
 
@@ -160,7 +175,12 @@ def normalize_settings(raw: dict) -> dict:
     if not 10 <= rnd["call_timeout"] <= 1800:
         raise ConfigError("超时时间要在 10 到 1800 秒之间")
 
-    prompts = {"system_template": str((raw.get("prompts") or {}).get("system_template") or "")}
+    raw_prompts = {**base["prompts"], **(raw.get("prompts") or {})}
+    prompts = {
+        "system_template": str(raw_prompts.get("system_template") or ""),
+        "scene": str(raw_prompts.get("scene") or "").strip(),
+        "no_coding": bool(raw_prompts.get("no_coding")),
+    }
     stickers = {**base["stickers"], **(raw.get("stickers") or {})}
     try:
         stickers = {"enabled": bool(stickers["enabled"]), "max_per_message": int(stickers["max_per_message"])}
@@ -279,6 +299,8 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         round=RoundConfig(**settings["round"]),
         participants=participants,
         system_template=settings["prompts"]["system_template"],
+        scene=settings["prompts"]["scene"],
+        no_coding=settings["prompts"]["no_coding"],
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
         memory_learn=settings["memory"]["learn"],

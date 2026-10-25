@@ -125,6 +125,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         await runtime.apply(secrets=apply_secret_changes(runtime.secrets, changes, ids))
         return web.json_response(state())
 
+    async def preview(request):
+        body = await request.json()
+        return web.json_response({"prompt": runtime.preview_prompt(body.get("settings") or {}, str(body.get("member", "")))})
+
     async def test_member(request):
         return web.json_response(await runtime.test_participant(request.match_info["pid"]))
 
@@ -230,6 +234,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_get("/api/status", get_status)
     app.router.add_put("/api/settings", put_settings)
     app.router.add_put("/api/secrets", put_secrets)
+    app.router.add_post("/api/preview", preview)
     app.router.add_post("/api/members/{pid}/test", test_member)
     app.router.add_get("/api/members/{pid}/models", member_models)
     app.router.add_post("/api/rooms/{key}/{action:stop|reset}", room_action)
