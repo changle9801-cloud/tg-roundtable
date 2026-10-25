@@ -28,6 +28,8 @@ from .prompts import (
     build_share_prompt,
     build_system_prompt,
     build_turn_prompt,
+    abilities_section,
+    ask_search_instructions,
     render_role,
     search_instructions,
 )
@@ -137,10 +139,15 @@ class Runtime:
 
     def _extra_prompt(self, pc, config) -> str:
         """Search, memory, sticker and kaomoji sections appended to a member's system prompt."""
-        search = ""
         if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
+        else:  # it can still ask a friend who can search
+            helpers = [(m.name, m.kind == "grok_cli") for m in config.enabled_participants
+                       if m.id != pc.id and m.web_search and supports_web_search(m)]
+            search = ask_search_instructions(helpers)
         limit = config.max_stickers if config.stickers_enabled else 0
+        others = [(m.name, self._abilities(m, config)) for m in config.enabled_participants if m.id != pc.id]
+        abilities = abilities_section(others, self._abilities(pc, config))
         drawing = ""
         drawers = [m for m in config.enabled_participants if m.can_draw and supports_drawing(m)]
         if pc.can_draw and supports_drawing(pc):
@@ -149,6 +156,7 @@ class Runtime:
         elif drawers and limit:
             drawing = requester_instructions(drawers[0].name)
         parts = [
+            abilities,
             search,
             drawing,
             self.journal.prompt_section(pc.id),
@@ -157,6 +165,21 @@ class Runtime:
             self.kaomoji.prompt_section(pc.id) if config.kaomoji_enabled else "",
         ]
         return "\n\n".join(p for p in parts if p)
+
+    @staticmethod
+    def _abilities(m, config) -> list[str]:
+        """What a member can do for the group beyond chatting."""
+        out = []
+        if m.web_search and supports_web_search(m):
+            out.append("联网搜索（也能搜 X/推特上的帖子）" if m.kind == "grok_cli" else "联网搜索")
+        if m.can_draw and supports_drawing(m) and config.stickers_enabled:
+            out.append("画表情包")
+        viewers = [v for v in config.enabled_participants if supports_vision(v)]
+        viewer = None if config.vision_member == "off" else next(
+            (v for v in viewers if config.vision_member in ("auto", v.id)), None)
+        if viewer is not None and viewer.id == m.id:
+            out.append("看图（群里发的图片都是先由这位看过再说给大家）")
+        return out
 
     def preview_prompt(self, draft_settings: dict, member_id: str) -> str:
         config = build_config(normalize_settings(draft_settings), self.secrets, self.store.data_dir)

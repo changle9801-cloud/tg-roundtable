@@ -76,6 +76,19 @@ def test_turn_prompt_has_no_assignment_or_quota():
     assert "[PASS]" in prompt
 
 
+def test_every_turn_says_what_time_it_is():
+    from datetime import datetime
+
+    from roundtable.prompts import build_proactive_prompt, now_line
+
+    assert now_line(datetime(2026, 10, 25, 21, 5)) == "（现在是 2026年10月25日 星期日 晚上 21:05）"
+    assert "星期一 凌晨 3:00" in now_line(datetime(2026, 10, 26, 3, 0))
+    assert "中午 12:30" in now_line(datetime(2026, 10, 26, 12, 30))
+    prompt = build_turn_prompt([Message("user", "阿明", "hi")], 3, now=datetime(2026, 10, 25, 9, 0))
+    assert prompt.startswith("（现在是 2026年10月25日 星期日 上午 9:00）\n[群聊新消息]")
+    assert build_proactive_prompt([], "", False, False, []).startswith("（现在是 ")
+
+
 def test_default_rules_include_friend_rules():
     assert FRIEND_RULES in DEFAULT_SYSTEM_PROMPT and "{friend_rules}" not in DEFAULT_SYSTEM_PROMPT
     assert "打圆场" in FRIEND_RULES and "我收手" in FRIEND_RULES

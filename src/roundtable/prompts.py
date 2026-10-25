@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Sequence
 
 from .transcript import Message
@@ -35,6 +36,7 @@ FRIEND_RULES = """\
 - 可以只回一个词、一个表情、一声"哈"；斗嘴、吐槽不用收场，可以让它自然停下。
 - 口头禅、外号、emoji 和颜文字偶尔用，不要每条都带；同一个梗在一段对话里最多用一次。
 - 不用每句都抖机灵、硬凹比喻或玩人设梗，平常话就很好；比如没看到图，就说「图呢？没收到，是不是忘发了」。
+- 别人提到你不了解的新东西（新游戏、新闻、新梗），就像朋友那样直说没听过、问一句，别装懂、别编细节。
 - 不要用多行的字符画、符号或方框拼图冒充图片；一行的颜文字可以用。"""
 
 DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT.replace("{friend_rules}", FRIEND_RULES)
@@ -65,9 +67,43 @@ def search_instructions(covers_x: bool) -> str:
     scope = "网页和 X（推特）上的帖子" if covers_x else "网页"
     return (
         "联网搜索：\n"
-        f"- 你可以用自带的搜索工具查{scope}。只在需要最新信息、核实事实或用户要求时使用，闲聊不需要。\n"
+        f"- 你可以用自带的搜索工具查{scope}。需要最新信息、核实事实、用户要求，"
+        "或者聊天里出现你不确定的新东西（新游戏、新闻、新梗）时，就搜一下再接话；普通闲聊不需要。\n"
+        "- 朋友请你帮忙查的时候就去查，查完 @对方，用一两句话说查到了什么。\n"
         "- 用到搜索结果时，简要附上来源链接。"
     )
+
+
+def abilities_section(others: list[tuple[str, list[str]]], mine: list[str]) -> str:
+    """What each friend can do beyond chatting, so members know whom to ask for help."""
+    if not any(skills for _, skills in others) and not mine:
+        return ""
+    lines = ["朋友们各自会什么（除了聊天）："]
+    lines += [f"- {name}：{'、'.join(skills) if skills else '只聊天'}" for name, skills in others]
+    lines.append(f"- 你自己：{'、'.join(mine) if mine else '只聊天'}")
+    lines.append(
+        "自己做不到的事（查最新消息、看 X 上的帖子、画表情包等），可以 @会的朋友帮个忙；"
+        "朋友找你帮忙时，你会的就去做。帮完或被帮完接着聊就好，不用互相客套。"
+    )
+    return "\n".join(lines)
+
+
+def ask_search_instructions(helpers: list[tuple[str, bool]]) -> str:
+    """For members who cannot search: ask a friend who can. ``helpers`` is (name, covers X)."""
+    lines = ["联网：", "- 你不能联网搜索，最近的新东西（新游戏、新闻、新梗）你不一定知道。"]
+    if not helpers:
+        lines.append("- 聊天里出现你不了解的新东西时，像朋友那样直说没听过就好，别装懂、别编细节。")
+        return "\n".join(lines)
+    names = "、".join(f"@{name}" for name, _ in helpers)
+    lines.append(
+        "- 聊天里出现你不了解的新东西时，像朋友那样直说没听过；想知道的话，"
+        f"可以说你上不了网，@一个能搜的朋友帮忙查一下：{names}。"
+    )
+    x_name = next((name for name, covers_x in helpers if covers_x), None)
+    if x_name:
+        lines.append(f"- X（推特）上的事找 @{x_name} 最合适。")
+    lines.append("- 别人帮你查完，接着聊就好，道谢不用再 @对方。")
+    return "\n".join(lines)
 
 
 def render_role(cfg) -> str:
@@ -154,7 +190,7 @@ def build_proactive_prompt(
             "一两句话就好，可以问问大家。不要假装看到了什么新闻。",
             f"如果现在不想说话，只回复 {PASS_TOKEN}。",
         ]
-    return "\n".join(lines)
+    return now_line() + "\n" + "\n".join(lines)
 
 
 def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str]) -> str:
@@ -176,7 +212,7 @@ def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str]) 
     if known_urls:
         lines.append("这些你最近已经记过了，不要重复：")
         lines += [f"  {u}" for u in known_urls[-30:]]
-    return "\n".join(lines)
+    return now_line() + "\n" + "\n".join(lines)
 
 
 def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
@@ -199,11 +235,24 @@ def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
         "用你角色的口吻，一两句话像随手转发到群里一样说出来，附上这个链接。",
         f"如果现在觉得不合适分享，只回复 {PASS_TOKEN}。",
     ]
-    return "\n".join(lines)
+    return now_line() + "\n" + "\n".join(lines)
 
 
-def build_turn_prompt(new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = ()) -> str:
-    lines = ["[群聊新消息]"]
+WEEKDAYS = "一二三四五六日"
+
+
+def now_line(now: datetime | None = None) -> str:
+    """The current local time, so members know what "now" is (API models have no clock)."""
+    now = now or datetime.now()
+    h = now.hour
+    period = "凌晨" if h < 5 else "早上" if h < 9 else "上午" if h < 12 else "中午" if h < 14 else "下午" if h < 18 else "晚上"
+    return f"（现在是 {now.year}年{now.month}月{now.day}日 星期{WEEKDAYS[now.weekday()]} {period} {h}:{now.minute:02d}）"
+
+
+def build_turn_prompt(
+    new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = (), now: datetime | None = None
+) -> str:
+    lines = [now_line(now), "[群聊新消息]"]
     for m in new_messages:
         who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
         lines.append(f"{who}: {m.text}")
