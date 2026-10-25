@@ -8,14 +8,25 @@ import webbrowser
 from pathlib import Path
 
 from .config import ConfigError, telegram_problems
-from .settings import SettingsStore, default_data_dir, import_legacy_toml
+from .settings import (
+    DATA_DIR_ENV,
+    SettingsStore,
+    copy_data_dir,
+    default_data_dir,
+    import_legacy_toml,
+    resolve_data_dir,
+)
 
 LEGACY_CONFIG = Path("config.toml")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="roundtable", description="Telegram 多模型群聊")
-    parser.add_argument("--data-dir", type=Path, default=default_data_dir(), help="配置和数据的存放目录")
+    parser.add_argument(
+        "--data-dir", type=Path,
+        help=f"配置和数据的存放目录（默认读取环境变量 {DATA_DIR_ENV}，未设置时为 {default_data_dir()}）",
+    )
+    parser.add_argument("--move-data-to", type=Path, metavar="PATH", help="把现有数据复制到新位置（原目录保留），之后改用新位置")
     parser.add_argument("--port", type=int, help="管理页面端口（默认 8787）")
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开管理页面")
     parser.add_argument("--console", action="store_true", help="在终端里试聊，不连接 Telegram")
@@ -36,7 +47,11 @@ def main() -> None:
         logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
     try:
-        store = SettingsStore(args.data_dir)
+        data_dir = resolve_data_dir(args.data_dir)
+        if args.move_data_to:
+            move_data(data_dir, args.move_data_to)
+            return
+        store = SettingsStore(data_dir)
         notice = migrate(store, args.import_config)
         if args.list_models:
             asyncio.run(list_models(store, args.list_models))
@@ -52,6 +67,18 @@ def main() -> None:
         sys.exit(2)
     except KeyboardInterrupt:
         pass
+
+
+def move_data(source: Path, target: Path) -> None:
+    count = copy_data_dir(source, target)
+    target = target.expanduser().resolve()
+    print(f"已把 {count} 个文件从 {source} 复制到 {target}，并逐个校验了大小。")
+    print("接下来：")
+    print(f"  1. 把环境变量 {DATA_DIR_ENV} 设为 {target}，例如在 PowerShell 里运行：")
+    print(f"     [Environment]::SetEnvironmentVariable('{DATA_DIR_ENV}', '{target}', 'User')")
+    print("     然后重新打开终端；或者每次启动时加 --data-dir 参数。")
+    print("  2. 用新位置启动，确认一切正常。")
+    print(f"  3. 确认无误后再删除旧目录 {source}（里面有明文 token 和 key）。")
 
 
 def migrate(store: SettingsStore, explicit: Path | None) -> str:

@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets as _secrets
+import shutil
 from dataclasses import asdict, fields
 from pathlib import Path
 
@@ -32,8 +34,27 @@ SECRET_FIELDS = ("bot_token", "api_key")
 PARTICIPANT_FIELDS = [f for f in fields(ParticipantConfig) if f.name not in SECRET_FIELDS]
 
 
+DATA_DIR_ENV = "ROUNDTABLE_HOME"
+
+
 def default_data_dir() -> Path:
     return Path("~/.tg-roundtable").expanduser()
+
+
+def resolve_data_dir(explicit: Path | None) -> Path:
+    """--data-dir, else $ROUNDTABLE_HOME, else ~/.tg-roundtable.
+
+    A chosen location must already exist: if it is on a drive that is not mounted,
+    silently starting with an empty config would look like everything was lost.
+    """
+    chosen = explicit or (Path(os.environ[DATA_DIR_ENV]) if os.environ.get(DATA_DIR_ENV) else None)
+    if chosen is None:
+        return default_data_dir()
+    chosen = chosen.expanduser()
+    if not chosen.is_dir():
+        source = "--data-dir" if explicit else f"环境变量 {DATA_DIR_ENV}"
+        raise ConfigError(f"数据目录 {chosen} 不存在（来自 {source}）。如果是新位置，请先创建这个文件夹。")
+    return chosen
 
 
 def default_settings() -> dict:
@@ -279,6 +300,27 @@ def import_legacy_toml(path: Path) -> tuple[dict, dict]:
     else:
         secrets["controller_token"] = cfg.telegram.controller_token
     return normalize_settings(settings), secrets
+
+
+def copy_data_dir(source: Path, target: Path) -> int:
+    """Copy all data to an empty (or new) folder and check the copy; returns the file count.
+
+    The source is left in place so nothing is lost if something goes wrong.
+    """
+    source, target = source.resolve(), target.expanduser().resolve()
+    if not (source / SETTINGS_FILE).exists():
+        raise ConfigError(f"{source} 里没有配置，不需要搬")
+    if target == source or source in target.parents:
+        raise ConfigError("新位置不能是当前数据目录本身或它的子文件夹")
+    if target.exists() and any(target.iterdir()):
+        raise ConfigError(f"{target} 不是空文件夹，为避免覆盖已有文件，请换一个位置或先清空它")
+    shutil.copytree(source, target, dirs_exist_ok=True)
+    files = [p for p in source.rglob("*") if p.is_file()]
+    for p in files:
+        copied = target / p.relative_to(source)
+        if not copied.is_file() or copied.stat().st_size != p.stat().st_size:
+            raise ConfigError(f"复制后校验失败：{copied}")
+    return len(files)
 
 
 def _read_json(path: Path) -> dict:

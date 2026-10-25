@@ -5,6 +5,7 @@ from conftest import FakeSink
 
 from roundtable.config import ConfigError
 from roundtable.memory import LEARN_INSTRUCTIONS, MemoryStore, extract_memories
+from roundtable.participants import ParticipantError
 from roundtable.room import ChatRoom
 
 
@@ -90,6 +91,37 @@ async def test_transcript_survives_restart(make, round_cfg, store, tmp_path):
 
     await again.reset()
     assert not log.exists()
+
+
+async def test_lost_session_restarts_with_recent_transcript(make, round_cfg, store):
+    a = make("a", ["earlier reply", ParticipantError("No conversation found"), "fresh reply"])
+    sink = FakeSink()
+    room = ChatRoom("chat", [a], sink, round_cfg, store)
+    room.add_user_message("me", "first")
+    await room.wait_idle()
+    store.set("chat", "a", "stale-session")
+
+    room.add_user_message("me", "second")
+    await room.wait_idle()
+
+    assert sink.posts[-1] == ("a", "fresh reply")
+    assert sink.notices == []
+    assert store.get("chat", "a") is None
+    fresh_prompt = a.prompts[-1]
+    assert "me（用户）: first" in fresh_prompt and "A: earlier reply" in fresh_prompt
+
+
+async def test_real_errors_keep_the_session(make, round_cfg, store):
+    a = make("a", [ParticipantError("quota"), ParticipantError("quota")])
+    sink = FakeSink()
+    room = ChatRoom("chat", [a], sink, round_cfg, store)
+    store.set("chat", "a", "good-session")
+
+    room.add_user_message("me", "hi")
+    await room.wait_idle()
+
+    assert store.get("chat", "a") == "good-session"
+    assert any("quota" in n for n in sink.notices)
 
 
 async def test_reset_member_replays_recent_transcript(make, round_cfg, store, tmp_path):

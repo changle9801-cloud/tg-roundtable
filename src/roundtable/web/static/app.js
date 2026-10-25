@@ -831,6 +831,7 @@ function renderStatus(s) {
   $("#status-telegram").replaceChildren(h("div", { class: "kv" },
     h("div", {}, "状态"), h("div", {}, tg.state),
     h("div", {}, "总控 bot"), h("div", {}, tg.controller ? "@" + tg.controller : "—"),
+    h("div", {}, "数据目录"), h("div", { style: "word-break:break-all" }, server.meta.data_dir),
     tg.privacy_warning ? h("div", {}, "注意") : null,
     tg.privacy_warning ? h("div", { style: "color:var(--warn)" }, "总控 bot 开着 privacy mode，收不到群里的普通消息。请在 @BotFather 执行 /setprivacy → Disable，再把它移出群重新拉入。") : null));
 

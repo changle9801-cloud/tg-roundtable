@@ -2,13 +2,17 @@ import pytest
 
 from roundtable.config import ConfigError
 from roundtable.settings import (
+    DATA_DIR_ENV,
     SettingsStore,
     apply_secret_changes,
     build_config,
+    copy_data_dir,
+    default_data_dir,
     import_legacy_toml,
     masked_secrets,
     normalize_settings,
     prune_secrets,
+    resolve_data_dir,
 )
 
 LEGACY = """
@@ -104,6 +108,40 @@ def test_secret_changes_set_clear_and_reject_unknown():
     assert secrets["bots"]["a"] == "old-token-1"  # input untouched
     with pytest.raises(ConfigError):
         apply_secret_changes(secrets, {"bots": {"ghost": "t"}}, {"a"})
+
+
+def test_resolve_data_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    assert resolve_data_dir(None) == default_data_dir()
+    assert resolve_data_dir(tmp_path) == tmp_path
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path))
+    assert resolve_data_dir(None) == tmp_path
+    # A chosen folder that is missing (e.g. a drive that is not mounted) is an error.
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "missing"))
+    with pytest.raises(ConfigError, match=DATA_DIR_ENV):
+        resolve_data_dir(None)
+    with pytest.raises(ConfigError, match="--data-dir"):
+        resolve_data_dir(tmp_path / "missing")
+
+
+def test_copy_data_dir(tmp_path):
+    src = tmp_path / "old"
+    SettingsStore(src).save({"participants": []}, {"bots": {}, "api_keys": {}})
+    (src / "stickers").mkdir()
+    (src / "stickers" / "a.png").write_bytes(b"png")
+    dst = tmp_path / "new"
+    dst.mkdir()
+
+    assert copy_data_dir(src, dst) == 3
+    assert (dst / "stickers" / "a.png").read_bytes() == b"png"
+    assert (src / "settings.json").exists()  # the original stays
+
+    with pytest.raises(ConfigError, match="不是空文件夹"):
+        copy_data_dir(src, dst)
+    with pytest.raises(ConfigError, match="子文件夹"):
+        copy_data_dir(src, src / "inner")
+    with pytest.raises(ConfigError, match="没有配置"):
+        copy_data_dir(tmp_path / "nothing", tmp_path / "x")
 
 
 def test_prune_and_mask():

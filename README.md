@@ -94,7 +94,21 @@ uv run roundtable
 | `memory.json` | 长期记忆 |
 | `chats/<群 ID>.jsonl` | 各群的群聊记录 |
 
-想换个位置，可以用 `--data-dir` 指定。
+### 换一个存放位置
+
+1. 新建一个空文件夹，比如 `H:\tg-roundtable-data`
+2. 停掉 bot，把现有数据复制过去（原目录会保留，复制后会逐个校验）：
+
+   ```bash
+   uv run roundtable --move-data-to "H:\tg-roundtable-data"
+   ```
+
+3. 把环境变量 `ROUNDTABLE_HOME` 设为新位置（Windows 可在 PowerShell 里运行 `[Environment]::SetEnvironmentVariable('ROUNDTABLE_HOME', 'H:\tg-roundtable-data', 'User')`，然后重新打开终端），之后直接 `uv run roundtable` 就会用新位置。也可以每次启动时加 `--data-dir` 参数。
+4. 确认没问题后再删除旧目录。
+
+指定的数据目录不存在时（比如移动硬盘没接上），程序会直接报错退出，而不是悄悄新建一份空配置。状态页会显示当前用的数据目录。
+
+换位置后，订阅 CLI 成员原来的会话可能无法续接（Claude Code 按工作目录保存会话）。这种情况下程序会自动为它开一个新会话，并把最近 30 条群聊记录发给它，不需要手动处理。
 
 ## 管理页面的安全措施
 

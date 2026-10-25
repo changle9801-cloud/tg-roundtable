@@ -181,7 +181,7 @@ class ChatRoom:
             self.cursors[speaker.id] = len(self.messages)
             try:
                 async with self.sink.typing(self.key, speaker):
-                    raw = await speaker.reply(self.key, prompt)
+                    raw = await self._ask(speaker, prompt, turns[speaker.id])
             except ParticipantError as e:
                 log.warning("%s failed: %s", speaker.id, e)
                 self.cursors[speaker.id] = prev_cursor
@@ -217,6 +217,28 @@ class ChatRoom:
                 await self.sink.post(self.key, speaker, text)
             for sticker in stickers:
                 await self.sink.post_sticker(self.key, speaker, sticker)
+
+    async def _ask(self, speaker: Participant, prompt: str, turns_left: int) -> str:
+        """Get a model's turn, starting a new session if its saved one cannot be resumed.
+
+        CLI sessions can disappear (the CLI was reinstalled, or the data folder moved and
+        with it the CLI's working folder). The new session gets the recent transcript.
+        """
+        try:
+            return await speaker.reply(self.key, prompt)
+        except ParticipantError:
+            session = self.store.get(self.key, speaker.id)
+            if not session:
+                raise
+            self.store.clear_one(self.key, speaker.id)
+            fresh = build_turn_prompt(self.messages[-MAX_UNSEEN:], turns_left)
+            try:
+                text = await speaker.reply(self.key, fresh)
+            except ParticipantError:
+                self.store.set(self.key, speaker.id, session)  # not a session problem after all
+                raise
+            log.warning("[%s] %s 的会话无法恢复，已用最近的群聊记录开始新会话", self.key, speaker.name)
+            return text
 
     def _unseen(self, p: Participant) -> list[Message]:
         return [m for m in self.messages[self.cursors[p.id]:] if m.speaker_id != p.id]
