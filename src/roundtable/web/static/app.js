@@ -49,7 +49,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 
 let server = null; // last response of /api/state
 let draft = null; // editable copy of server.settings
-let pending = { bots: {}, api_keys: {} }; // secret edits: string = set, null = clear
+let pending = { bots: {}, api_keys: {}, tools: {} }; // secret edits: string = set, null = clear
 const expanded = new Set();
 const newIds = new Set(); // members added here and not saved yet: their ID is still editable
 const results = {}; // member id -> {text|node, err}
@@ -143,7 +143,8 @@ function blankMember(id) {
 }
 
 function hasPendingSecrets() {
-  return "controller_token" in pending || Object.keys(pending.bots).length > 0 || Object.keys(pending.api_keys).length > 0;
+  return "controller_token" in pending || Object.keys(pending.bots).length > 0 || Object.keys(pending.api_keys).length > 0
+    || Object.values(pending.tools).some((g) => Object.keys(g.env || {}).length || Object.keys(g.headers || {}).length);
 }
 function settingsDirty() {
   return JSON.stringify(draft) !== JSON.stringify(server.settings);
@@ -159,7 +160,8 @@ async function load() {
 
 function resetDraft() {
   draft = clone(server.settings);
-  pending = { bots: {}, api_keys: {} };
+  pending = { bots: {}, api_keys: {}, tools: {} };
+  newToolIds.clear();
   newIds.clear();
   invalid.clear();
   for (const k of Object.keys(paramsText)) delete paramsText[k];
@@ -198,6 +200,8 @@ function renderAll() {
   renderByMember();
   renderMemory();
   renderMemes();
+  renderTools();
+  renderLifeSettings();
   renderStatus(server.status);
 }
 
@@ -355,6 +359,9 @@ function memberBody(m, isNew) {
       field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
         "叫到这些名字会优先回话")),
 
+    ...(draft.life?.enabled && draft.life.members.includes(m.id)
+      ? [h("p", { class: "muted small" }, "这位成员在「日常」里：闲逛和主动发言由日常统一安排，下面这两项设置暂不生效。")]
+      : []),
     ...browseSection(m),
     ...proactiveSection(m),
     ...drawingSection(m),
@@ -1169,6 +1176,182 @@ function setupStickerInputs() {
   $("#bm-member").onchange = renderByMember;
 }
 
+// ---------- tools (MCP servers) ----------
+
+const toolListings = {}; // tool id -> [{name, description}] from the last "列出工具"
+const newToolIds = new Set(); // added here and not saved yet: their ID is still editable
+const TOOL_TRANSPORTS = { claude_cli: ["stdio", "http", "sse"], codex_cli: ["stdio", "http"], grok_cli: ["stdio", "http", "sse"] };
+const TRANSPORT_LABELS = { stdio: "本地命令（stdio）", http: "网址（streamable HTTP）", sse: "网址（SSE，老式）" };
+
+function toolPresets() {
+  return [
+    { id: "video", name: "看视频", timeout: 900,
+      description: "在 YouTube / B 站上搜视频、看视频：字幕用本地的 SenseVoice 转写，再附几张画面截图",
+      command: "uv", args: ["run", "--script", server.meta.video_tool] },
+    { id: "reader", name: "读帖子与订阅", timeout: 120,
+      description: "只读公开 X 帖子、网页/贴吧静态正文和 RSS/Atom 摘要。先用已有搜索找链接；返回实际阅读范围，不登录、不评论。",
+      command: "uv", args: ["run", "--script", server.meta.reader_tool] },
+  ];
+}
+
+function addTool(preset) {
+  const taken = new Set(draft.tools.map((t) => t.id));
+  let id = preset?.id || "tool";
+  for (let n = 2; taken.has(id); n++) id = `${preset?.id || "tool"}-${n}`;
+  draft.tools.push({
+    id, name: preset?.name || "新工具", description: preset?.description || "", enabled: true,
+    transport: "stdio", command: preset?.command || "", args: preset?.args || [], url: "",
+    allowed: [], members: [], timeout: preset?.timeout || 600,
+  });
+  newToolIds.add(id);
+  changed();
+  renderTools();
+}
+
+function removeTool(t) {
+  if (!confirm(`删除工具「${t.name}」？`)) return;
+  draft.tools = draft.tools.filter((x) => x !== t);
+  for (const m of draft.participants) if (m.tool_notes) delete m.tool_notes[t.id];
+  delete pending.tools[t.id];
+  changed();
+  renderTools();
+}
+
+// Env vars (local command) or headers (web address) live in secrets.json: shown masked, typed as KEY=VALUE lines.
+function toolSecrets(t, group) {
+  const stored = server.secrets.tools?.[t.id]?.[group] || {};
+  const edits = pending.tools[t.id]?.[group] || {};
+  const set = (key, value) => {
+    pending.tools[t.id] ||= { env: {}, headers: {} };
+    pending.tools[t.id][group][key] = value;
+    changed();
+  };
+  const rows = Object.keys(stored).map((key) => {
+    const removing = edits[key] === null;
+    return h("div", { class: "kv" + (removing ? " off" : "") },
+      h("code", {}, key), h("span", { class: "muted small" }, removing ? "保存后删除" : stored[key]),
+      h("button", { type: "button", onclick: () => { removing ? delete pending.tools[t.id][group][key] : set(key, null); changed(); renderTools(); } },
+        removing ? "撤销" : "删除"));
+  });
+  const area = h("textarea", {
+    rows: 2, spellcheck: "false",
+    placeholder: group === "env" ? "KEY=VALUE，每行一个（例如 API_KEY=xxx、HTTPS_PROXY=http://127.0.0.1:7890）" : "名称: 值，每行一个（例如 Authorization: Bearer xxx）",
+    oninput: (e) => {
+      pending.tools[t.id] ||= { env: {}, headers: {} };
+      const kept = Object.fromEntries(Object.entries(pending.tools[t.id][group]).filter(([, v]) => v === null));
+      for (const line of e.target.value.split("\n")) {
+        const m = line.match(group === "env" ? /^\s*([^=\s]+)\s*=\s*(.*)$/ : /^\s*([^:\s]+)\s*:\s*(.*)$/);
+        if (m) kept[m[1]] = m[2].trim();
+      }
+      pending.tools[t.id][group] = kept;
+      changed();
+    },
+  }, Object.entries(edits).filter(([, v]) => v !== null).map(([k, v]) => (group === "env" ? `${k}=${v}` : `${k}: ${v}`)).join("\n"));
+  return h("div", {}, rows, area);
+}
+
+function pendingValues(id, group) {
+  return Object.fromEntries(Object.entries(pending.tools[id]?.[group] || {}).filter(([, v]) => v !== null));
+}
+
+async function listToolsOf(t, btn) {
+  btn.disabled = true;
+  btn.textContent = "连接中…";
+  try {
+    const r = await api("POST", "/api/tools/list", { tool: t, env: pendingValues(t.id, "env"), headers: pendingValues(t.id, "headers") });
+    toolListings[t.id] = r.tools;
+    if (!t.allowed.length) { t.allowed = r.tools.map((x) => x.name); changed(); } // first time: tick them all, untick what you don't want
+    toast(`找到 ${r.tools.length} 个工具`);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    renderTools();
+  }
+}
+
+function toolCard(t) {
+  const update = (key, value, rerender = false) => { t[key] = value; changed(); if (rerender) renderTools(); };
+  const isNew = newToolIds.has(t.id);
+  const idInput = h("input", { value: t.id, disabled: !isNew, title: isNew ? "只能用小写字母、数字和 -" : "保存后不能再改" });
+  idInput.addEventListener("change", () => {
+    const next = idInput.value.trim();
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(next) || draft.tools.some((o) => o !== t && o.id === next)) {
+      toast("工具 ID 只能用小写字母、数字和 -，并且不能重复", true);
+      idInput.value = t.id;
+      return;
+    }
+    newToolIds.delete(t.id);
+    newToolIds.add(next);
+    t.id = next;
+    changed();
+  });
+
+  const where = t.transport === "stdio"
+    ? h("div", { class: "grid2" },
+        field("启动命令", textInput(t.command, (v) => update("command", v.trim())), "例如 npx、uvx、uv、python"),
+        field("参数", textInput(t.args.join(" "), (v) => update("args", v.trim() ? v.trim().split(/\s+/) : [])), "空格分隔；路径里不能有空格"))
+    : field("地址", textInput(t.url, (v) => update("url", v.trim())), "以 http:// 或 https:// 开头");
+
+  const listing = toolListings[t.id] || t.allowed.map((name) => ({ name, description: "" }));
+  const listBtn = h("button", { type: "button", onclick: (e) => listToolsOf(t, e.target) }, "列出工具");
+  const toolRows = listing.length ? listing.map((x) => h("label", { class: "tool-name" },
+    h("input", { type: "checkbox", checked: t.allowed.includes(x.name), onchange: (e) => {
+      update("allowed", e.target.checked ? [...new Set([...t.allowed, x.name])] : t.allowed.filter((n) => n !== x.name));
+    } }),
+    h("code", {}, x.name), x.description ? h("span", { class: "muted small" }, x.description.split("\n")[0]) : null))
+    : [h("div", { class: "muted small" }, "先点「列出工具」看看它提供哪些工具，再勾选允许用的。")];
+
+  const memberRows = draft.participants.map((m) => {
+    const ok = (TOOL_TRANSPORTS[m.kind] || []).includes(t.transport);
+    const why = m.kind === "api" ? "API 成员暂不支持工具" : m.kind === "codex_cli" ? "Codex 不支持 SSE 方式" : "";
+    const on = t.members.includes(m.id);
+    const note = on ? h("input", {
+      value: (m.tool_notes || {})[t.id] || "", placeholder: "它用这个工具时爱看什么（可选），例如：宇宙、科技八卦",
+      oninput: (e) => { m.tool_notes ||= {}; m.tool_notes[t.id] = e.target.value; changed(); schedulePreview(); },
+    }) : null;
+    return h("div", { class: "tool-member" },
+      h("label", {},
+        h("input", { type: "checkbox", checked: on && ok, disabled: !ok, onchange: (e) => {
+          update("members", e.target.checked ? [...t.members, m.id] : t.members.filter((x) => x !== m.id), true);
+          schedulePreview();
+        } }),
+        m.name || m.id, ok ? null : h("small", { class: "muted" }, ` ${why}`)),
+      note);
+  });
+
+  return h("div", { class: "card tool-card" + (t.enabled ? "" : " off") },
+    h("div", { class: "row-between" },
+      h("h2", {}, t.name || t.id),
+      h("div", { class: "row-gap" },
+        h("label", { class: "row-gap small" }, h("input", { type: "checkbox", checked: t.enabled, onchange: (e) => update("enabled", e.target.checked) }), "启用"),
+        h("button", { type: "button", class: "danger", onclick: () => removeTool(t) }, "删除"))),
+    h("div", { class: "grid3" },
+      field("名称", textInput(t.name, (v) => update("name", v))),
+      field("ID", idInput),
+      field("连接方式", h("select", { onchange: (e) => update("transport", e.target.value, true) },
+        ...Object.entries(TRANSPORT_LABELS).map(([v, label]) => h("option", { value: v, selected: t.transport === v }, label))))),
+    field("说明", textInput(t.description, (v) => update("description", v)), "写给成员看的：这个工具能干什么"),
+    where,
+    h("div", { class: "grid2" },
+      field(t.transport === "stdio" ? "环境变量" : "请求头", toolSecrets(t, t.transport === "stdio" ? "env" : "headers"), "存在 secrets.json 里，不进 git"),
+      field("单次调用最长（秒）", h("input", { type: "number", min: 10, max: 3600, value: t.timeout,
+        oninput: (e) => update("timeout", Number(e.target.value)) }), "看视频这类慢工具要给长一点")),
+    h("h3", { class: "section-title" }, "允许用的工具 ", listBtn),
+    h("div", { class: "tool-list" }, toolRows),
+    h("h3", { class: "section-title" }, "给谁用"),
+    h("div", {}, memberRows));
+}
+
+function renderTools() {
+  const box = $("#tool-cards");
+  if (!box) return;
+  box.replaceChildren(...(draft.tools.length ? draft.tools.map(toolCard)
+    : [h("div", { class: "card empty" }, "还没有工具。点上面的按钮添加一个。")]));
+  $("#tool-presets").replaceChildren(
+    ...toolPresets().map((p) => h("button", { type: "button", onclick: () => addTool(p) }, `添加「${p.name}」`)),
+    h("button", { type: "button", onclick: () => addTool() }, "自己填一个"));
+}
+
 // ---------- memory ----------
 
 function memberName(id) {
@@ -1279,6 +1462,125 @@ async function addMemory() {
   const input = $("#memory-text");
   if (!input.value.trim()) return;
   if (await memoryCall("POST", "/api/memory", { text: input.value, scope: $("#memory-scope").value })) input.value = "";
+}
+
+// ---------- continuing daily life ----------
+
+let lifeData = null;
+const LIFE_ACTIONS = { idle: "先歇着", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
+
+function renderLifeSettings() {
+  const box = $("#life-settings");
+  const cfg = draft.life;
+  if (!cfg) {
+    box.textContent = "日常功能需要更新后的服务，更新后刷新即可。";
+    return;
+  }
+  cfg.member_days ||= {};
+  const memberRows = draft.participants.filter((p) => p.enabled).map((p) => {
+    const on = cfg.members.includes(p.id);
+    const fallback = p.kind === "claude_cli" ? 1 : cfg.per_day; // Claude shares your own subscription
+    return h("div", { class: "tool-member" },
+      h("label", {},
+        h("input", { type: "checkbox", checked: on, onchange: (e) => {
+          cfg.members = e.target.checked ? [...cfg.members, p.id] : cfg.members.filter((x) => x !== p.id);
+          if (e.target.checked && !cfg.member_days[p.id]) cfg.member_days[p.id] = fallback;
+          changed(); renderLifeSettings();
+        } }),
+        p.name || p.id),
+      on ? h("label", { class: "row-gap small" }, "每天最多",
+        h("input", { type: "number", min: 1, max: 8, style: "width:70px", value: cfg.member_days[p.id] || fallback,
+          oninput: (e) => { cfg.member_days[p.id] = Number(e.target.value); changed(); } }),
+        "次", p.kind === "claude_cli" ? h("small", { class: "muted" }, "（用你的 Claude 订阅额度，建议少一点）") : null) : null);
+  });
+  const numberField = (key, label, min, max) => field(label, h("input", {
+    type: "number", min, max, value: cfg[key],
+    oninput: (e) => {
+      const value = Number(e.target.value);
+      cfg[key] = value;
+      const bad = !e.target.value || !Number.isInteger(value) || value < min || value > max;
+      e.target.classList.toggle("invalid", bad);
+      if (bad) invalid.add(`life-${key}`); else invalid.delete(`life-${key}`);
+      changed();
+    },
+  }));
+  box.replaceChildren(
+    h("label", { class: "check" }, h("input", { type: "checkbox", checked: cfg.enabled,
+      onchange: (e) => { cfg.enabled = e.target.checked; changed(); } }), " 开启日常"),
+    field("谁参加", h("div", {}, memberRows), "至少选两位。主动活动和被群友找去私聊都算一次"),
+    h("div", { class: "life-grid" }, numberField("per_day", "新加入成员的默认次数", 1, 8),
+      field("活动与分享时间段", textInput(cfg.hours, (v) => { cfg.hours = v; }, { placeholder: "10-23" }))),
+    h("div", { class: "life-grid" }, numberField("shares_per_day", "每人每天最多发群里几次", 1, 4),
+      numberField("quiet_minutes", "群里安静多少分钟后才分享", 0, 1440)),
+    h("p", { class: "muted small" }, "次数是上限，不是任务。选中的成员会用这套安排接替原来的定时闲逛和主动发言，继续使用已分配的工具，看到的东西照样记进「见闻」。"));
+  if (location.hash === "#life") loadLife();
+}
+
+async function loadLife(showError = true) {
+  try {
+    const next = await api("GET", "/api/life");
+    if (JSON.stringify(next) !== JSON.stringify(lifeData)) { lifeData = next; renderLife(); }
+  }
+  catch (e) { if (showError) toast(e.message, true); }
+}
+
+async function stepLife(pid) {
+  if (settingsDirty()) { toast("先保存日常设置，再让成员活动", true); return; }
+  try {
+    lifeData = await api("POST", `/api/life/${encodeURIComponent(pid)}/step`);
+    renderLife(); toast("已开始，它会自己选择做什么");
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderLife() {
+  if (!lifeData) return;
+  const d = lifeData, names = d.names;
+  const openThreads = new Set([...document.querySelectorAll(".life-thread[open]")].map((el) => el.dataset.threadId));
+  const name = (pid) => names[pid] || pid;
+  const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "";
+  const status = { active: "正在关注", paused: "先放着", done: "告一段落" };
+  const cards = d.settings.members.map((pid) => {
+    const items = d.interests.filter((i) => i.owner === pid).sort((a, b) => b.updated_at - a.updated_at);
+    const plan = d.plans[pid] || {};
+    return h("div", { class: "card life-member" },
+      h("div", { class: "row-between" }, h("h2", {}, `${name(pid)} 的近况`),
+        h("span", { class: "pill" }, d.running === pid ? "活动中" : d.settings.enabled ? "自由安排" : "已暂停")),
+      h("p", { class: "muted small" }, `今天活动 ${plan.posts_today || 0}/${plan.limit || d.settings.per_day} 次 · 分享 ${plan.shares_today || 0}/${d.settings.shares_per_day} 次`),
+      h("button", { class: "life-step", disabled: !!d.running || !d.settings.enabled,
+        onclick: () => stepLife(pid) }, `让 ${name(pid)} 自己安排一次`),
+      ...items.map((i) => h("div", { class: "life-interest" },
+        h("div", { class: "row-between" }, h("b", {}, i.title), h("span", { class: "muted small" }, status[i.status] || i.status)),
+        h("p", { class: "muted small" }, i.why), h("p", {}, i.progress),
+        h("p", { class: "small" }, h("b", {}, "下次想做："), i.next_step || "还没决定"),
+        ...i.sources.slice(0, 3).map((s) => h("p", { class: "small" },
+          h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title || "查看来源"),
+          " · ", s.read_level || "阅读程度未说明")),
+        h("div", { class: "muted small" }, `最近进展 ${when(i.updated_at)}`))),
+      !items.length ? h("p", { class: "muted" }, "还没有持续事项。下次活动时，它可以从最近的兴趣和见闻里挑一件。") : null);
+  });
+  const threads = [...d.threads].reverse().map((t) => h("details", { class: "card life-thread", "data-thread-id": t.id, open: openThreads.has(t.id) },
+    h("summary", {}, `${t.members.map(name).join(" ↔ ")} · ${t.subject} · ${t.messages.length} 条`),
+    h("p", { class: "muted small" }, `${when(t.created_at)} · 只有参与者会收到这段私聊；其他成员要等他们公开提起才知道。`),
+    ...t.messages.map((m) => h("div", { class: "life-message" },
+      h("b", {}, name(m.sender)), h("span", { class: "muted small" }, " · " + when(m.ts)), h("p", {}, m.text)))));
+  const events = [...d.events].reverse().slice(0, 20).map((e) => h("li", {},
+    h("span", { class: "muted small" }, when(e.ts) + " · "), h("b", {}, name(e.member) + " · " + (LIFE_ACTIONS[e.action] || e.action)),
+    h("p", {}, e.note)));
+  const shared = [...(d.shares || [])].reverse().slice(0, 12).map((s) => h("div", { class: "card" },
+    h("b", {}, name(s.member)), h("span", { class: "muted small" }, " · " + when(s.ts)),
+    h("p", { style: "white-space:pre-wrap" }, s.text),
+    ...(s.sources || []).map((source) => h("div", { class: "life-interest" },
+      h("a", { href: source.url, target: "_blank", rel: "noopener noreferrer" }, source.title || "查看原文"),
+      h("p", { class: "muted small" }, source.read_level || "未记录阅读范围"),
+      source.excerpt ? h("p", { class: "small" }, source.excerpt) : null))));
+  $("#life-content").replaceChildren(
+    h("div", { class: "life-grid" }, ...cards),
+    h("h2", {}, "分享到群里的内容"),
+    h("p", { class: "muted small" }, "仅记录实际发出的分享。群友会收到这些来源摘记，是否接话由各自决定；未分享的事项和私聊仍各自保留。"),
+    ...(shared.length ? shared : [h("p", { class: "muted" }, "还没有公开分享。读到有意思的内容后，他们可以留着、私聊，或者挑合适的时候发群里。")]),
+    h("h2", {}, "私聊"), ...(threads.length ? threads : [h("p", { class: "muted" }, "目前没有私聊。有想说给对方的话时，他们才会开始聊。")]),
+    h("div", { class: "card" }, h("h2", {}, "最近活动"),
+      events.length ? h("ul", { class: "life-events" }, ...events) : h("p", { class: "muted" }, "活动会记录在这里，留在心里或暂时不说也算一次。")));
 }
 
 // ---------- journal ----------
@@ -1481,6 +1783,7 @@ async function roomAction(key, action) {
 async function pollStatus() {
   try {
     renderStatus(await api("GET", "/api/status"));
+    if (location.hash === "#life" && server) await loadLife(false);
   } catch { /* server restarting; try again next tick */ }
 }
 
@@ -1494,6 +1797,7 @@ function showTab(name) {
   window.scrollTo(0, 0);
   if (name === "memory" && server) loadChats();
   if (name === "journal" && server) loadJournal();
+  if (name === "life" && server) loadLife();
 }
 
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -1523,6 +1827,7 @@ load()
   .then(() => {
     if (location.hash === "#memory") loadChats();
     if (location.hash === "#journal") loadJournal();
+    if (location.hash === "#life") loadLife();
   })
   .catch((e) => toast(e.message, true));
 setInterval(pollStatus, 4000);

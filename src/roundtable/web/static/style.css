@@ -272,6 +272,29 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .dialog-body { padding: 16px 18px 4px; }
 .dialog-actions { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--border); }
 
+/* tools */
+.tool-card.off { opacity: 0.6; }
+.tool-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.tool-name { display: flex; align-items: baseline; gap: 8px; }
+.tool-member { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; padding: 4px 0; }
+.tool-member label { display: flex; align-items: center; gap: 6px; }
+@media (max-width: 760px) { .tool-member { grid-template-columns: 1fr; } }
+.kv { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.kv.off code { text-decoration: line-through; color: var(--muted); }
+.kv button { padding: 1px 8px; font-size: 12px; }
+
+/* continuing daily life */
+.life-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.life-grid > * { min-width: 0; }
+.life-interest { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--border, #e4e7ec); }
+.life-interest p, .life-message p, .life-events p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.life-interest .row-between { gap: 12px; align-items: flex-start; }
+.life-thread summary { cursor: pointer; font-weight: 600; }
+.life-message { border-left: 3px solid #dbe5ff; padding: 6px 12px; margin: 12px 0; }
+.life-events { padding-left: 20px; }
+.life-events li { margin-bottom: 16px; }
+@media (max-width: 760px) { .life-grid { grid-template-columns: 1fr; } }
+
 /* memory */
 .badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--err); color: #fff; font-size: 11px; line-height: 18px; font-weight: 600; }
 .memory-add { display: flex; gap: 8px; margin: 4px 0 14px; }

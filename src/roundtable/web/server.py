@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
+VIDEO_TOOL = Path(__file__).parent.parent / "mcp_servers" / "video.py"  # the built-in 看视频 server
+READER_TOOL = Path(__file__).parent.parent / "mcp_servers" / "reader.py"
 COOKIE = "roundtable_admin"
 
 KIND_LABELS = {
@@ -112,6 +114,8 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
                 "default_prompt": DEFAULT_SYSTEM_PROMPT,
                 "placeholders": PLACEHOLDERS,
                 "data_dir": str(runtime.store.data_dir),
+                "video_tool": str(VIDEO_TOOL),
+                "reader_tool": str(READER_TOOL),
             },
         }
 
@@ -130,8 +134,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def put_secrets(request):
         ids = {p["id"] for p in runtime.settings["participants"]}
+        tool_ids = {t["id"] for t in runtime.settings["tools"]}
         changes = await request.json()
-        await runtime.apply(secrets=apply_secret_changes(runtime.secrets, changes, ids))
+        await runtime.apply(secrets=apply_secret_changes(runtime.secrets, changes, ids, tool_ids))
         return web.json_response(state())
 
     async def preview(request):
@@ -149,6 +154,12 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def get_journal(request):
         return web.json_response(journal())
+
+    async def get_life(request):
+        return web.json_response(runtime.life_status())
+
+    async def step_life(request):
+        return web.json_response(runtime.start_life(request.match_info["pid"]))
 
     async def delete_journal_entry(request):
         runtime.journal.delete(request.match_info["eid"])
@@ -291,6 +302,11 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         runtime.memes.delete(request.match_info["mid"])
         return memes_response()
 
+    async def list_tool(request):
+        body = await request.json()
+        tools = await runtime.list_tool(body.get("tool") or {}, body.get("env") or {}, body.get("headers") or {})
+        return web.json_response({"tools": tools})
+
     async def list_chats(request):
         return web.json_response({"chats": runtime.chat_overview()})
 
@@ -312,12 +328,15 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         return web.json_response(runtime.chat_detail(key))
 
     app = web.Application(middlewares=[guard], client_max_size=100 * 1024 * 1024)
+    app.router.add_get("/api/life", get_life)
+    app.router.add_post("/api/life/{pid}/step", step_life)
     app.router.add_post("/api/memory", add_memory)
     app.router.add_put("/api/memory/{fid}", update_memory)
     app.router.add_delete("/api/memory/{fid}", delete_memory)
     app.router.add_post("/api/memes", add_meme)
     app.router.add_put("/api/memes/{mid}", update_meme)
     app.router.add_delete("/api/memes/{mid}", delete_meme)
+    app.router.add_post("/api/tools/list", list_tool)
     app.router.add_get("/api/chats", list_chats)
     app.router.add_get("/api/chats/{key}", chat_detail)
     app.router.add_post("/api/chats/{key}/reset", reset_chat)

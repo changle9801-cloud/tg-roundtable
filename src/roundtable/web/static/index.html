@@ -20,6 +20,8 @@
       <button role="tab" data-tab="stickers">表情</button>
       <button role="tab" data-tab="memory">记忆 <span id="memory-badge" class="badge" hidden></span></button>
       <button role="tab" data-tab="journal">见闻</button>
+      <button role="tab" data-tab="life">日常</button>
+      <button role="tab" data-tab="tools">工具</button>
       <button role="tab" data-tab="status">状态</button>
     </nav>
   </header>
@@ -339,10 +341,27 @@
       </div>
     </section>
 
+    <section id="tab-tools" class="tab-panel">
+      <h1>工具</h1>
+      <p class="muted">给成员接上外部工具（MCP 服务器），比如刷 X、看视频。只有你在这里勾选允许的工具能用，也只有分给它的成员能用；
+        成员闲逛时会按你写的偏好去用，群里聊天时也能用。Claude、Codex、Grok 订阅成员可以用，API 成员暂不支持。
+        本地命令在你的电脑上运行，远程服务在其服务器上执行。自带的「读帖子与订阅」只读取公开内容，不登录或发表评论。</p>
+      <div class="row-gap" id="tool-presets" style="margin-bottom:12px"></div>
+      <div id="tool-cards"></div>
+    </section>
+
     <section id="tab-journal" class="tab-panel">
       <h1>见闻</h1>
       <p class="muted">每个角色自己上网刷到、记下来的东西，各自私有，到期自动忘掉。被问「在干嘛」时它们照这里回答，冷场时也会从这里挑一条分享。</p>
       <div id="journal"></div>
+    </section>
+
+    <section id="tab-life" class="tab-panel">
+      <div class="section-head"><h1>日常</h1></div>
+      <p class="muted">参加的成员各自关注一些事，可以继续了解、找群友私聊（会轮流找不同的人），也可以先歇着。
+        事项和私聊跨天保留；看到的东西会记进「见闻」，想分享时才发到群里。参加日常的成员不再单独闲逛和主动发言，由这里统一安排。</p>
+      <div id="life-settings" class="card"></div>
+      <div id="life-content"></div>
     </section>
 
     <section id="tab-status" class="tab-panel">

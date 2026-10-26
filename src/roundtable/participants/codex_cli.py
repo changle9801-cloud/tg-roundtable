@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from ..tools import codex_overrides
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
 
@@ -46,11 +47,12 @@ class CodexCLI(Participant):
             "-c", f"developer_instructions={_toml_str(self.system_prompt)}",
         ]
         for feature in DISABLED_FEATURES:
-            # Web search runs through the code-mode host. With the shell and exec tools off
-            # it has no file or command tool to reach, so keep it when search is on.
-            if feature == "code_mode_host" and self.cfg.web_search:
+            # Web search and MCP tools run through the code-mode host. With the shell and exec
+            # tools off it has no file or command tool to reach, so keep it when either is on.
+            if feature == "code_mode_host" and (self.cfg.web_search or self.tools):
                 continue
             cmd += ["--disable", feature]
+        cmd += codex_overrides(self.tools)
         if self.cfg.model:
             cmd += ["-m", self.cfg.model]
         if self.cfg.effort:
@@ -65,10 +67,17 @@ class CodexCLI(Participant):
     ) -> str:
         session_id = self.store.get(chat_key, self.id)
 
+        names = {s.id: s.name for s in self.tools}
+
         def watch(line: str) -> None:
             # The query is only known once the search completes; announce the start.
-            if on_activity is not None and '"web_search"' in line and '"item.started"' in line:
+            if on_activity is None or '"item.started"' not in line:
+                return
+            if '"web_search"' in line:
                 on_activity("正在联网搜索")
+            elif '"mcp_tool_call"' in line:
+                server = str((json.loads(line).get("item") or {}).get("server", ""))
+                on_activity(f"正在用{names.get(server, server or '工具')}")
 
         out = await run_cli(self.build_command(session_id, images), prompt, self.work_dir, self.timeout, on_line=watch)
         text, thread_id = parse_events(out)

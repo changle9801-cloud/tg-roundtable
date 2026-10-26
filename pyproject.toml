@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "aiogram>=3.13,<4",
     "anthropic>=2.3.0",
+    "mcp>=1.9",
 ]
 
 [project.scripts]

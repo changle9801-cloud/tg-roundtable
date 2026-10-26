@@ -25,6 +25,7 @@ from .repetition import repeated_bits
 from .vision import MAX_IMAGES, can_see_images
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
+from .sources import source_key, source_list
 
 log = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ class ChatRoom:
         if own is not None:
             state.granted.update(pid for pid in own.mentions if pid != speaker.id)
 
-    async def _publish(self, speaker: Participant, raw: str, seen: Sequence[Message] = ()) -> str | None:
+    async def _publish(self, speaker: Participant, raw: str, seen: Sequence[Message] = (), sources=()) -> str | None:
         """Clean a reply and post it. Returns the transcript text, or None if nothing was posted.
 
         ``seen`` is what the speaker was answering: a reaction goes on the message it answered,
@@ -408,12 +409,16 @@ class ChatRoom:
             log.info("[%s] %s: [PASS]", self.key, speaker.name)
             return None
 
+        attached = source_list(sources)
+        for source in attached:
+            if source["url"] not in text:
+                text = (text + "\n" + source["url"]).strip()
+                transcript = (transcript + "\n" + source["url"]).strip()
+
         requester = self._requester_for(speaker) if draws else None
         # The cursor stays where it was before the call: messages that arrived while
         # the model was thinking are still unseen, and _unseen() skips its own post.
-        message = Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time())
-        self._append(message)
-        log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
+        message = Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time(), sources=tuple(attached))
         if reaction:
             await self.sink.react(self.key, speaker, target_id, reaction)
         if text:
@@ -421,6 +426,9 @@ class ChatRoom:
             moved_on = target is not None and any(m.ts > target.ts and m is not message for m in self.messages)
             sent = await self.sink.post(self.key, speaker, text, reply_to=target_id if moved_on else None)
             self._remember_tg(message, sent)
+        # Failed delivery must not become shared knowledge or suppress a later retry.
+        self._append(message)
+        log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
         for sticker in stickers:
             await self.sink.post_sticker(self.key, speaker, sticker)
         if draws and self.on_draw is not None:
@@ -490,7 +498,9 @@ class ChatRoom:
         return self.messages[-1].ts if self.messages else 0.0
 
     def start_proactive(
-        self, speaker: Participant, make_prompt: Callable[[list[Message]], str], reply_turns: int
+        self, speaker: Participant, make_prompt: Callable[[list[Message]], str], reply_turns: int,
+        prepared_text: str | None = None,
+        sources=(),
     ) -> asyncio.Future | None:
         """Let a member speak unprompted, then give the others ``reply_turns`` each to react.
 
@@ -500,21 +510,25 @@ class ChatRoom:
         if self.busy:
             return None
         result = asyncio.get_running_loop().create_future()
-        self._task = asyncio.create_task(self._run_proactive(speaker, make_prompt, reply_turns, result))
+        self._task = asyncio.create_task(self._run_proactive(speaker, make_prompt, reply_turns, result, prepared_text, sources))
         return result
 
-    async def _run_proactive(self, speaker, make_prompt, reply_turns: int, result: asyncio.Future) -> None:
+    async def _run_proactive(self, speaker, make_prompt, reply_turns: int, result: asyncio.Future,
+                             prepared_text: str | None = None, sources=()) -> None:
         try:
             prompt = make_prompt(self._unseen(speaker)[-MAX_UNSEEN:])
             self.cursors[speaker.id] = len(self.messages)
             try:
                 # No typing indicator: most checks end in a quiet [PASS].
-                raw = await self._ask(speaker, prompt, 1)
+                raw = await self._ask(speaker, prompt, 1) if prepared_text is None else prepared_text
             except ParticipantError as e:
                 log.warning("[%s] %s 主动发言失败：%s", self.key, speaker.id, e)
                 result.set_result(None)
                 return
-            posted = await self._publish(speaker, raw)
+            if sources and self.shared_recently(sources):
+                result.set_result(None)
+                return
+            posted = await self._publish(speaker, raw, sources=sources)
             result.set_result(posted)
             if posted is None or reply_turns < 1:
                 return
@@ -529,6 +543,17 @@ class ChatRoom:
             log.exception("proactive post failed in %s", self.key)
             if not result.done():
                 result.set_exception(e)
+
+    def shared_recently(self, sources, seconds: int = 86400) -> bool:
+        """Avoid different readers repeatedly bringing the same link to this room."""
+        keys = {source_key(s["url"]) for s in source_list(sources)}
+        since = time.time() - seconds
+        for message in reversed(self.messages):
+            if message.ts < since:
+                continue
+            if any(source_key(s["url"]) in keys for s in message.sources):
+                return True
+        return False
 
     def _activity_notes(self) -> list[str]:
         names = {p.id: p.name for p in self.participants}

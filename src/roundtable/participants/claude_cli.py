@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
+from ..tools import claude_allowed, claude_config
 from .base import ActivityHook, Participant, ParticipantError, image_data, resolve_command, run_cli
 
 
@@ -14,6 +16,7 @@ class ClaudeCLI(Participant):
         super().__init__(*args, **kwargs)
         self.command = resolve_command("claude", self.cfg.command)
         self._prompt_file = self.work_dir / "system_prompt.md"
+        self._mcp_file = self.work_dir / "mcp.json"
 
     def set_system_prompt(self, prompt: str) -> None:
         super().set_system_prompt(prompt)
@@ -31,11 +34,16 @@ class ClaudeCLI(Participant):
             "--strict-mcp-config",
             "--system-prompt-file", str(self._prompt_file),
         ]
-        if self.cfg.web_search:
-            # Read-only web search is the only tool; allowed up front since nobody can approve.
-            cmd += ["--tools", "WebSearch", "--allowedTools", "WebSearch"]
-        else:
-            cmd += ["--tools", ""]
+        # Built-in tools: read-only web search at most. Allowed up front since nobody can approve.
+        cmd += ["--tools", "WebSearch" if self.cfg.web_search else ""]
+        allowed = ["WebSearch"] if self.cfg.web_search else []
+        if self.tools:
+            # The owner's MCP servers, in this member's own file (--strict-mcp-config ignores the rest).
+            self._mcp_file.write_text(json.dumps(claude_config(self.tools), ensure_ascii=False), encoding="utf-8")
+            cmd += ["--mcp-config", str(self._mcp_file)]
+            allowed += claude_allowed(self.tools)
+        if allowed:
+            cmd += ["--allowedTools", ",".join(allowed)]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
         if self.cfg.effort:
@@ -49,9 +57,13 @@ class ClaudeCLI(Participant):
     ) -> str:
         session_id = self.store.get(chat_key, self.id)
         stdin = image_message(prompt, images) if images else prompt
+        env = None
+        if self.tools:  # slow tools (watching a video) may take minutes
+            env = {**os.environ, "MCP_TOOL_TIMEOUT": str(1000 * max(s.timeout for s in self.tools))}
+        names = {s.id: s.name for s in self.tools}
         out = await run_cli(
             self.build_command(session_id, bool(images)), stdin, self.work_dir, self.timeout,
-            on_line=_activity_reader(on_activity),
+            env=env, on_line=_activity_reader(on_activity, names),
         )
         text, new_session = parse_output(out)
         self.store.set(chat_key, self.id, new_session)
@@ -68,7 +80,7 @@ def image_message(prompt: str, images: Sequence[Path]) -> str:
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n"
 
 
-def _activity_reader(on_activity: ActivityHook | None):
+def _activity_reader(on_activity: ActivityHook | None, tool_names: dict[str, str] | None = None):
     if on_activity is None:
         return None
 
@@ -77,9 +89,15 @@ def _activity_reader(on_activity: ActivityHook | None):
             return
         event = json.loads(line)
         for block in (event.get("message") or {}).get("content") or []:
-            if block.get("type") == "tool_use" and block.get("name") == "WebSearch":
+            if block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name", ""))
+            if name == "WebSearch":
                 query = (block.get("input") or {}).get("query", "")
                 on_activity(f"正在联网搜索：{query}" if query else "正在联网搜索")
+            elif name.startswith("mcp__"):
+                server = name.split("__")[1]
+                on_activity(f"正在用{(tool_names or {}).get(server, server)}")
 
     return read
 

@@ -206,18 +206,49 @@ def build_proactive_prompt(
     return now_line() + "\n" + "\n".join(lines)
 
 
-def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str], members: Sequence[str] = ()) -> str:
+def tools_section(tools: Sequence[tuple[str, str, str]]) -> str:
+    """The member's own MCP tools: (name, description, its preference)."""
+    if not tools:
+        return ""
+    lines = ["你的工具（需要的时候直接调用，只能用这些）："]
+    for name, description, note in tools:
+        line = f"- {name}" + (f"：{description}" if description else "")
+        lines.append(line + (f"（你平时爱看：{note}）" if note else ""))
+    lines.append("用工具看到的东西用你自己的话说，别整段照搬；觉得有意思的可以分享到群里。")
+    return "\n".join(lines)
+
+
+def build_browse_prompt(
+    topics: str,
+    covers_x: bool,
+    known_urls: Sequence[str],
+    members: Sequence[str] = (),
+    tools: Sequence[tuple[str, str]] = (),
+    can_search: bool = True,
+    focus: tuple[str, str] | None = None,
+) -> str:
     """A private browsing session: findings go into the member's journal, not the group."""
     where = "X（推特）和网上" if covers_x else "网上"
+    how = "搜索工具" if can_search else "你的工具"
     lines = [
         "（这不是群聊发言，是你自己的空闲时间：去网上逛一逛，看到的东西只记在你自己的见闻本里，不会发到群里。）",
-        f"按你的兴趣，用搜索工具去{where}刷一会儿：{topics or '你角色感兴趣的东西'}。",
-        "这次就是专门让你上网的时候：请先真的用搜索工具搜几次（换几个关键词），看过结果再挑内容，不要没搜就回答。",
+        f"按你的兴趣，用{how}去{where}刷一会儿：{topics or '你角色感兴趣的东西'}。" if not focus
+        else f"按你的兴趣刷一会儿：{topics or '你角色感兴趣的东西'}。",
+    ]
+    if focus:
+        name, note = focus
+        how = f"「{name}」"
+        lines.append(f"这次专门用你的工具「{name}」逛" + (f"，按你的偏好：{note}" if note else "") + "。先用它找，再用它看，看完再挑内容记下来。")
+    elif tools:
+        lines.append("这次也可以用你的工具：" + "；".join(f"{n}（你爱看：{note}）" if note else n for n, note in tools) + "。")
+    lines += [
+        f"这次就是专门让你上网的时候：请先真的用{how}看几次（换几个关键词），看过结果再挑内容，不要没看就回答。",
         "可以看帖子、新闻，也可以看看大家在评论里怎么说。",
+        "可以用现有搜索发现 X、贴吧或文章链接，再用分配的只读工具打开。没读到的评论、视频画面和完整线程不要推测。",
         "挑 1 到 3 条你真的看到、觉得有意思的记下来，只用一个 JSON 数组回复，不要输出别的内容：",
         '[{"title": "一句话标题", "summary": "讲了什么，两三句话；评论区有意思的话也可以提一句", '
         '"take": "你用自己角色的口吻说说怎么看", "url": "原帖或原文链接", "source": "x 或 web", '
-        '"interest": 3}]',
+        '"read_level": "实际读了搜索摘要、帖子正文、评论或视频哪些部分", "interest": 3}]',
         "interest 从 1 到 5，5 表示特别想马上分享给群里。",
         "要求：只记你真的搜到的内容，链接必须是原帖或原文，不要编造；避开政治、色情、血腥、谣言和容易引战的话题。",
         "什么都没找到就回复 []。",
@@ -278,6 +309,9 @@ def build_turn_prompt(
     for m in new_messages:
         who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
         lines.append(f"{who}: {m.text}")
+        if m.sources:
+            from .sources import source_context
+            lines.append(source_context(m.sources))
     lines.append("[/群聊新消息]")
     for activity in activities:
         lines.append(f"（{activity}，结果还没出来。不要替它猜测会查到什么，可以先聊别的角度，或者回复 {PASS_TOKEN} 等它。）")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Sequence
+from .sources import source_list
 
 if TYPE_CHECKING:
     from .participants import Participant
@@ -21,6 +22,7 @@ class Message:
     mentions: tuple[str, ...] = field(default=())
     ts: float = 0.0  # unix time; 0 when unknown
     images: tuple[str, ...] = field(default=())  # saved picture files sent with the message
+    sources: tuple[dict, ...] = field(default=())  # only sources explicitly shared in this room
 
     def to_json(self) -> dict:
         data = {
@@ -32,6 +34,8 @@ class Message:
         }
         if self.images:
             data["images"] = list(self.images)
+        if self.sources:
+            data["sources"] = source_list(self.sources)
         return data
 
     @classmethod
@@ -39,6 +43,7 @@ class Message:
         return cls(
             data["speaker_id"], data["speaker_name"], data["text"],
             tuple(data.get("mentions") or ()), float(data.get("ts") or 0), tuple(data.get("images") or ()),
+            tuple(source_list(data.get("sources"))),
         )
 
     @property

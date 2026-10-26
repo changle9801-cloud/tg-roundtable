@@ -87,6 +87,7 @@ class Participant(ABC):
         self.work_dir = work_dir
         self.timeout = timeout
         self.system_prompt = ""
+        self.tools: list = []  # ToolServer: MCP servers given to this member (CLI members only)
         work_dir.mkdir(parents=True, exist_ok=True)
 
     def set_system_prompt(self, prompt: str) -> None:

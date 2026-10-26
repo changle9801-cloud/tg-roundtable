@@ -41,6 +41,7 @@ class Entry:
     interest: int  # 1-5; 5 = can't wait to share it
     shared_ts: float = 0.0  # when it was posted to the group, 0 if not yet
     expires_at: float = 0.0
+    read_level: str = ""
 
 
 class JournalStore:
@@ -87,6 +88,7 @@ class JournalStore:
                 ts=now,
                 title=title[:120],
                 summary=str(item.get("summary") or "").strip()[:500],
+                read_level=str(item.get("read_level") or "").strip()[:160],
                 take=str(item.get("take") or "").strip()[:300],
                 url=url,
                 source="x" if str(item.get("source", "")).lower() == "x" or "x.com/" in url or "twitter.com/" in url else "web",

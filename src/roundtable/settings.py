@@ -18,12 +18,14 @@ from .config import (
     KNOWN_KINDS,
     Config,
     ConfigError,
+    LifeConfig,
     ParticipantConfig,
     RoundConfig,
     TelegramConfig,
     load_legacy_toml,
 )
 from .memory import LEARN_MODES
+from .tools import build_tools, normalize_tools
 
 SETTINGS_FILE = "settings.json"
 SECRETS_FILE = "secrets.json"
@@ -87,13 +89,14 @@ def default_settings() -> dict:
         "memory": {"learn": "review"},
         "proactive": {"chat_id": 0},
         "vision": {"member": "help"},
+        "life": asdict(LifeConfig()),
         "web": {"port": DEFAULT_PORT},
         "participants": [],
     }
 
 
 def default_secrets() -> dict:
-    return {"controller_token": "", "bots": {}, "api_keys": {}, "web_token": ""}
+    return {"controller_token": "", "bots": {}, "api_keys": {}, "web_token": "", "tools": {}}
 
 
 def mask(secret: str) -> str:
@@ -133,6 +136,10 @@ def normalize_participant(raw: dict) -> dict:
             value = [a.strip() for a in re.split(r"[,，]", value) if a.strip()]
         if f.name == "command" and isinstance(value, str):
             value = value.split() if value.strip() else []
+        if f.name == "tool_notes":
+            if not isinstance(value, dict):
+                raise ConfigError(f"成员 {pid} 的工具偏好格式不对")
+            value = {str(k): str(v).strip() for k, v in value.items() if str(v or "").strip()}
         if f.name == "params":
             if isinstance(value, str):
                 try:
@@ -250,6 +257,48 @@ def normalize_settings(raw: dict) -> dict:
         tg["controller_participant"] = ""
     if vision["member"] not in ("help", "auto", "off") and vision["member"] not in ids:
         vision["member"] = "help"
+    tools = normalize_tools(raw.get("tools"), set(ids))
+    if raw.get("life") is not None and not isinstance(raw["life"], dict):
+        raise ConfigError("日常设置格式不对")
+    life_raw = {**base["life"], **(raw.get("life") or {})}
+    life_members = life_raw.get("members") or []
+    if not isinstance(life_members, list) or not all(isinstance(pid, str) for pid in life_members):
+        raise ConfigError("日常参与成员格式不对")
+    life = {"enabled": bool(life_raw["enabled"]), "members": list(dict.fromkeys(life_members)),
+            "hours": str(life_raw["hours"] or "").strip()}
+    if parse_hours(life["hours"]) is None:
+        raise ConfigError("日常活动时间段应像「10-23」")
+    for key, low, high, label in (("per_day", 1, 8, "每天活动次数"),
+                                  ("shares_per_day", 1, 4, "每天分享上限"),
+                                  ("quiet_minutes", 0, 1440, "分享前安静分钟数")):
+        try:
+            value = int(life_raw[key])
+        except (ValueError, TypeError):
+            raise ConfigError(f"日常的{label}必须是数字") from None
+        if not low <= value <= high:
+            raise ConfigError(f"日常的{label}要在 {low} 到 {high} 之间")
+        life[key] = value
+    enabled_ids = {p["id"] for p in participants if p["enabled"]}
+    kinds = {p["id"]: p["kind"] for p in participants}
+    life["members"] = [m for m in life["members"] if m in kinds]
+    if life["enabled"] and (len(life["members"]) < 2 or not set(life["members"]) <= enabled_ids):
+        raise ConfigError("日常至少要选两位已启用的成员")
+    days_raw = life_raw.get("member_days") or {}
+    if not isinstance(days_raw, dict):
+        raise ConfigError("每人每天的日常次数格式不对")
+    life["member_days"] = {}
+    for pid in life["members"]:
+        default = 1 if kinds[pid] == "claude_cli" else life["per_day"]  # Claude: the owner's own quota
+        try:
+            days = int(days_raw.get(pid, default))
+        except (TypeError, ValueError):
+            raise ConfigError("每人每天的日常次数必须是数字") from None
+        if not 1 <= days <= 8:
+            raise ConfigError("每人每天的日常次数要在 1 到 8 之间")
+        life["member_days"][pid] = days
+    tool_ids = {t["id"] for t in tools}
+    for p in participants:  # preferences for tools that are gone
+        p["tool_notes"] = {k: v for k, v in p["tool_notes"].items() if k in tool_ids}
 
     return {
         "telegram": tg,
@@ -259,6 +308,8 @@ def normalize_settings(raw: dict) -> dict:
         "memory": memory,
         "proactive": proactive,
         "vision": vision,
+        "tools": tools,
+        "life": life,
         "web": web,
         "participants": participants,
     }
@@ -298,9 +349,25 @@ class SettingsStore:
         return build_config(*self.load(), self.data_dir)
 
 
-def apply_secret_changes(secrets: dict, changes: dict, participant_ids: set[str]) -> dict:
+def apply_secret_changes(
+    secrets: dict, changes: dict, participant_ids: set[str], tool_ids: set[str] = frozenset()
+) -> dict:
     """Merge admin-page edits: a string sets a value, null deletes it, absent keeps it."""
     out = {**secrets, "bots": dict(secrets.get("bots", {})), "api_keys": dict(secrets.get("api_keys", {}))}
+    out["tools"] = {k: {g: dict(v.get(g) or {}) for g in ("env", "headers")} for k, v in (secrets.get("tools") or {}).items()}
+    for tid, groups in (changes.get("tools") or {}).items():
+        if tid not in tool_ids:
+            raise ConfigError(f"没有 ID 为 {tid} 的工具")
+        entry = out["tools"].setdefault(tid, {"env": {}, "headers": {}})
+        for group in ("env", "headers"):
+            for key, value in ((groups or {}).get(group) or {}).items():
+                key = str(key).strip()
+                if not key:
+                    continue
+                if value is None:
+                    entry[group].pop(key, None)
+                else:
+                    entry[group][key] = str(value)
     if "controller_token" in changes:
         out["controller_token"] = (changes["controller_token"] or "").strip()
     for group in ("bots", "api_keys"):
@@ -314,11 +381,13 @@ def apply_secret_changes(secrets: dict, changes: dict, participant_ids: set[str]
     return out
 
 
-def prune_secrets(secrets: dict, participant_ids: set[str]) -> dict:
-    """Drop tokens and keys of members that no longer exist."""
+def prune_secrets(secrets: dict, participant_ids: set[str], tool_ids: set[str] | None = None) -> dict:
+    """Drop tokens and keys of members (and tool settings of tools) that no longer exist."""
     out = dict(secrets)
     for group in ("bots", "api_keys"):
         out[group] = {k: v for k, v in secrets.get(group, {}).items() if k in participant_ids}
+    if tool_ids is not None:
+        out["tools"] = {k: v for k, v in (secrets.get("tools") or {}).items() if k in tool_ids}
     return out
 
 
@@ -327,6 +396,10 @@ def masked_secrets(secrets: dict) -> dict:
         "controller_token": mask(secrets.get("controller_token", "")),
         "bots": {k: mask(v) for k, v in secrets.get("bots", {}).items()},
         "api_keys": {k: mask(v) for k, v in secrets.get("api_keys", {}).items()},
+        "tools": {
+            tid: {g: {k: mask(v) for k, v in (entry.get(g) or {}).items()} for g in ("env", "headers")}
+            for tid, entry in (secrets.get("tools") or {}).items()
+        },
     }
 
 
@@ -354,6 +427,8 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         no_coding=settings["prompts"]["no_coding"],
         proactive_chat_id=settings["proactive"]["chat_id"],
         vision_member=settings["vision"]["member"],
+        tools=build_tools(settings["tools"], secrets),
+        life=LifeConfig(**settings["life"]),
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
         kaomoji_enabled=settings["stickers"]["kaomoji"],

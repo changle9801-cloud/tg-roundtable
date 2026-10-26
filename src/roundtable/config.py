@@ -83,7 +83,21 @@ class ParticipantConfig:
     api_key: str = ""
     api_key_env: str = ""
     params: dict = field(default_factory=dict)  # extra request fields, e.g. temperature
+    tool_notes: dict = field(default_factory=dict)  # tool id -> what it likes to look at with that tool
     max_history: int = 40  # messages of history sent with each request
+
+
+@dataclass
+class LifeConfig:
+    enabled: bool = False
+    members: list[str] = field(default_factory=list)
+    per_day: int = 4
+    hours: str = "10-23"
+    shares_per_day: int = 2
+    quiet_minutes: int = 30
+    # Activities a day per member, being messaged by a friend included; Claude defaults to 1
+    # since it shares the owner's subscription.
+    member_days: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -99,6 +113,8 @@ class Config:
     # Pictures: "help" (members who can see get them, the others ask a friend), "auto" or a member id
     # (that member describes every picture for everyone first), or "off".
     vision_member: str = "help"
+    tools: list = field(default_factory=list)  # ToolServer: MCP servers the owner added
+    life: LifeConfig = field(default_factory=LifeConfig)
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
     kaomoji_enabled: bool = True

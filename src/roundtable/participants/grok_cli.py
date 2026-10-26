@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Sequence
 
+from ..tools import grok_rules, write_grok_config
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
 # Every built-in tool, removed so Grok can only chat. Unknown names only cause a warning.
@@ -17,6 +18,9 @@ DISALLOWED_TOOLS = ",".join([
     "scheduler_create", "scheduler_delete", "scheduler_list", "monitor", "workflow",
     "search_tool", "use_tool", "enter_plan_mode", "exit_plan_mode", "ask_user_question",
     "send_feedback", "image_gen", "image_edit", "image_to_video", "reference_to_video",
+    # Opening a page needs an approval nobody can give in a headless run, which ends the turn
+    # with no answer; pages are read through the 读帖子与订阅 tool instead.
+    "web_fetch",
 ])
 
 
@@ -26,6 +30,11 @@ class GrokCLI(Participant):
         self.command = resolve_command("grok", self.cfg.command)
         # No cross-session memory writes, no self-update while the bot runs.
         self.env = {**os.environ, "GROK_MEMORY": "0", "GROK_DISABLE_AUTOUPDATER": "1"}
+        # Grok also reads Claude Code's and Cursor's MCP servers, skills, hooks and rules by
+        # default; this member gets none of the owner's own setup.
+        for cell in ("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS"):
+            self.env[f"GROK_CLAUDE_{cell}_ENABLED"] = "0"
+            self.env[f"GROK_CURSOR_{cell}_ENABLED"] = "0"
 
     def build_command(self, prompt_file: str, session_id: str | None) -> list[str]:
         cmd = [
@@ -33,7 +42,9 @@ class GrokCLI(Participant):
             "--prompt-file", prompt_file,
             "--verbatim",
             "--output-format", "streaming-json",  # tool events show when a search starts
-            "--disallowed-tools", DISALLOWED_TOOLS,
+            # MCP tools are called through search_tool / use_tool; those stay off without tools.
+            "--disallowed-tools", DISALLOWED_TOOLS if not self.tools else ",".join(
+                t for t in DISALLOWED_TOOLS.split(",") if t not in ("search_tool", "use_tool")),
             "--no-subagents",
             "--no-plan",
             "--permission-mode", "default",
@@ -42,6 +53,11 @@ class GrokCLI(Participant):
         if not self.cfg.web_search:
             # With search on, Grok keeps its built-in web and X search; everything else stays off.
             cmd.append("--disable-web-search")
+        # The owner's MCP servers live in this member's own folder, which it must trust to load
+        # them; only the allowed tools may run and file reads and edits are refused outright.
+        write_grok_config(self.work_dir, self.tools)
+        if self.tools:
+            cmd += ["--trust", *grok_rules(self.tools)]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
         if self.cfg.effort:
@@ -80,6 +96,8 @@ def describe_tool(event: dict) -> str:
     if event.get("type") != "tool_call":
         return ""
     name = str(event.get("toolName") or event.get("title") or "")
+    if name in ("use_tool", "search_tool"):  # an MCP tool
+        return "正在用工具"
     variant = str((event.get("rawInput") or {}).get("variant", ""))
     if "XSearch" in variant or name.lower().startswith("x search"):
         return "正在 X 上搜索"

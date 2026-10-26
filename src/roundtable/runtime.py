@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections import deque
 from contextlib import suppress
@@ -31,6 +32,7 @@ from .prompts import (
     abilities_section,
     ask_search_instructions,
     render_role,
+    tools_section,
     search_instructions,
 )
 from .room import ChatRoom
@@ -45,10 +47,12 @@ from .drawing import (
     supports_drawing,
 )
 from .journal import JournalStore, browse_once
+from .life import LifeEngine, LifeStore
 from .memes import MemeLibrary
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .kaomoji import KaomojiLibrary
+from .tools import ToolServer, list_tools, tools_for
 from .reactions import reaction_instructions
 from .vision import (
     IMAGE_KEEP_SECONDS,
@@ -119,6 +123,12 @@ class Runtime:
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
+        self.life = LifeStore(store.data_dir)
+        self.life_schedule = ProactiveScheduler(store.data_dir / "life_plan.json", prefix="browse")
+        self.life_posts = ProactiveScheduler(store.data_dir / "life_shares.json")
+        self.life_sessions = SessionStore(store.data_dir / "life_sessions.json")
+        self._life_task: asyncio.Task | None = None
+        self._life_member = ""
         self.drawings = DrawLog(store.data_dir)
         self._browsing_now: set[str] = set()
         self._background: set[asyncio.Task] = set()
@@ -173,13 +183,16 @@ class Runtime:
             if config.vision_member == "help" or sees:
                 helpers = [m.name for m in config.enabled_participants if m.id != pc.id and can_see_images(m)]
                 sight = sight_instructions(sees, helpers)
+        mine = [(s.name, s.description, pc.tool_notes.get(s.id, "")) for s in tools_for(pc, config.tools)]
         parts = [
             abilities,
             search,
+            tools_section(mine),
             sight,
             drawing,
             self.memes.prompt_section(),
             self.journal.prompt_section(pc.id),
+            self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}),
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.stickers.prompt_section(limit, pc.id),
             self.kaomoji.prompt_section(pc.id) if config.kaomoji_enabled else "",
@@ -195,6 +208,7 @@ class Runtime:
             out.append("联网搜索（也能搜 X/推特上的帖子）" if m.kind == "grok_cli" else "联网搜索")
         if m.can_draw and supports_drawing(m) and config.stickers_enabled:
             out.append("画表情包")
+        out += [s.name for s in tools_for(m, config.tools)]
         mode = config.vision_member
         if mode != "off":
             describer = None if mode == "help" else next(
@@ -219,6 +233,8 @@ class Runtime:
                 built.append(self._make(pc))
             except ConfigError as e:
                 errors[pc.id] = str(e)
+        for p in built:
+            p.tools = tools_for(p.cfg, self.config.tools)
         self.participants = built
         self.participant_errors = errors
         self.refresh_prompts()
@@ -276,7 +292,9 @@ class Runtime:
             if settings is not None:
                 settings = normalize_settings(settings)
                 ids = {p["id"] for p in settings["participants"]}
-                secrets = prune_secrets(secrets if secrets is not None else self.secrets, ids)
+                tool_ids = {t["id"] for t in settings["tools"]}
+                secrets = prune_secrets(secrets if secrets is not None else self.secrets, ids, tool_ids)
+            await self._cancel_life()
             self.store.save(settings, secrets)
             self.settings, self.secrets = self.store.load()
             self.config = build_config(self.settings, self.secrets, self.store.data_dir)
@@ -449,6 +467,16 @@ class Runtime:
             return None
         return next((p for p in self.participants if supports_vision(p.cfg) and choice in ("auto", p.id)), None)
 
+    async def list_tool(self, raw: dict, env: dict | None = None, headers: dict | None = None) -> list[dict]:
+        """Admin "列出工具": connect to a (possibly unsaved) server and list what it offers."""
+        from .tools import normalize_tool
+
+        t = normalize_tool(raw)
+        stored = (self.secrets.get("tools") or {}).get(t["id"]) or {}
+        server = ToolServer(**t, env={**(stored.get("env") or {}), **(env or {})},
+                            headers={**(stored.get("headers") or {}), **(headers or {})})
+        return await list_tools(server)
+
     async def keep_image(self, bot, media: tuple[str, str, str]) -> Path | None:
         """Save a picture sent in the group for a couple of days, so members who can see get it."""
         file_id, unique_id, ext = media
@@ -540,6 +568,10 @@ class Runtime:
         if self.journal.forget_expired():
             self.refresh_prompts()
         for p in list(self.participants):
+            if self._life_enabled(p.id):
+                if self._life_task is None and self.life_schedule.due(self._life_policy(p)) and self._life_idle():
+                    self.start_life(p.id)
+                continue
             if p.id not in self._browsing_now and self.browsing.due(p.cfg):
                 self._browsing_now.add(p.id)
                 task = asyncio.create_task(self._browse(p))
@@ -548,6 +580,8 @@ class Runtime:
         if self.controller is None:  # Telegram not running: nowhere to post
             return
         for p in list(self.participants):
+            if self._life_enabled(p.id):
+                continue
             if not self.proactive.due(p.cfg):
                 continue
             chat = self.proactive_chat()
@@ -557,6 +591,165 @@ class Runtime:
                 self.proactive.postpone(p.cfg)  # not now; look again in a few minutes
                 continue
             await self._proactive_attempt(p, room)
+
+    # ---- members' continuing daily life ----
+
+    def _life_enabled(self, pid: str) -> bool:
+        return self.config.life.enabled and pid in self.config.life.members
+
+    def _life_days(self, pid: str) -> int:
+        return self.config.life.member_days.get(pid) or self.config.life.per_day
+
+    def _life_left(self, pid: str) -> int:
+        """Activities left today; being messaged by a friend uses one too."""
+        p = next((x for x in self.participants if x.id == pid), None)
+        if p is None or not self._life_enabled(pid):
+            return 0
+        return self._life_days(pid) - self.life_schedule.plan(self._life_policy(p)).posts
+
+    def _life_charge(self, pid: str) -> None:
+        p = next((x for x in self.participants if x.id == pid), None)
+        if p is not None:
+            self.life_schedule.plan(self._life_policy(p)).posts += 1
+            self.life_schedule.save()
+
+    def _life_found(self, pid: str, item, result: dict) -> None:
+        """Progress from a daily-life look-around also goes into the member's 见闻."""
+        sources = result.get("sources") or []
+        first = next((s for s in sources if isinstance(s, dict) and s.get("url")), None)
+        if first is None:
+            return
+        entry = {
+            "title": result.get("title") or first.get("title") or item.title,
+            "summary": result.get("progress") or "",
+            "take": result.get("take") or "",
+            "url": first["url"],
+            "read_level": first.get("read_level") or "",
+            "interest": 4 if result.get("follow_up") == "share" else 3,
+        }
+        if self.journal.add(self._member(pid).cfg, [entry]):
+            self.refresh_prompts()
+
+    def _life_policy(self, p: Participant):
+        policy = self.config.life
+        return replace(p.cfg, browse=True, browse_per_day=self._life_days(p.id), browse_hours=policy.hours,
+                       proactive=True, proactive_per_day=policy.shares_per_day,
+                       proactive_hours=policy.hours, proactive_idle_minutes=policy.quiet_minutes)
+
+    def _life_idle(self) -> bool:
+        return (not any(room.busy for room in self.rooms.values())
+                and not self._browsing_now.intersection(self.config.life.members))
+
+    def life_status(self) -> dict:
+        names = {p.id: p.name for p in self.config.participants}
+        plans = {}
+        for p in self.participants:
+            if p.id in self.config.life.members:
+                policy = self._life_policy(p)
+                plans[p.id] = {**self.life_schedule.describe(policy),
+                               "shares_today": self.life_posts.plan(policy).posts,
+                               "limit": self._life_days(p.id)}
+        return {**self.life.public(), "names": names, "settings": asdict(self.config.life),
+                "running": self._life_member, "plans": plans}
+
+    def start_life(self, pid: str) -> dict:
+        if not self._life_enabled(pid):
+            raise ConfigError("请先在日常页开启日常，并把这位成员选进去")
+        if self._life_task is not None or not self._life_idle():
+            raise ConfigError("角色或群聊正在忙，稍后再试")
+        p = self._member(pid)
+        policy = self._life_policy(p)
+        if self._life_left(pid) <= 0:
+            raise ConfigError("这位成员今天的日常活动次数已用完")
+        # Reserve the activity before making any model calls, including manual runs.
+        self.life_schedule.record(policy, "activity")
+        self._life_member = pid
+        self._life_task = asyncio.create_task(self._run_life(pid))
+        return self.life_status()
+
+    def _life_context(self, pid: str) -> str:
+        p = self._member(pid)
+        chat = self.proactive_chat()
+        room = self.room(chat) if chat else None
+        recent = "\n".join(f"{m.speaker_name}：{m.text[:600]}" for m in room.messages[-10:]) if room else "暂无新消息"
+        interests = p.cfg.browse_topics or p.cfg.proactive_topics or "按自己的兴趣选择"
+        return (f"你的长期兴趣：{interests}\n最近的公开群聊（不是给你的新任务）：\n{recent}\n"
+                f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, room) else '暂不合适，可以先留着，下次再决定'}。")
+
+    async def _life_ask(self, pid: str, prompt: str) -> str:
+        import uuid
+        p = self._member(pid)
+        # Separate work and sessions prevent background JSON/private dialogue from
+        # entering the actor's public CLI/API conversation or racing its prompt file.
+        actor = participant_class(p.cfg)(p.cfg, self.life_sessions,
+                                        self.config.data_dir / "work" / "life" / pid,
+                                        self.config.round.call_timeout)
+        actor.tools = tools_for(p.cfg, self.config.tools)
+        actor.set_system_prompt(self.system_prompt_for(p.cfg))
+        key = "__life_" + uuid.uuid4().hex
+        try:
+            return await actor.reply(key, prompt)
+        finally:
+            self.life_sessions.clear_one(key, pid)
+            actor.reset(key)
+
+    async def _run_life(self, pid: str) -> None:
+        try:
+            p = self._member(pid)
+            names = {m.id: m.name for m in self.config.participants}
+            engine = LifeEngine(self.life, self._life_ask, self._life_share, self._life_context,
+                                names, self.refresh_prompts, charge=self._life_charge, found=self._life_found)
+            can_explore = bool(p.tools) or (p.cfg.web_search and supports_web_search(p.cfg))
+            # Friends it can message: the others in daily life with activities left today.
+            peers = [m for m in self.config.life.members if m != pid and self._life_left(m) > 0]
+            action = await engine.step(pid, peers, can_explore)
+            log.info("%s 完成一次日常活动：%s", p.name, action)
+        except asyncio.CancelledError:
+            self.life.event(pid, "interrupted", "本次活动已中断，已经发生的进展和私聊仍然保留")
+            raise
+        except Exception as error:
+            log.warning("%s 日常活动失败：%s", pid, error)
+            self.life.event(pid, "error", str(error))
+        finally:
+            self._life_task = None
+            self._life_member = ""
+            self.refresh_prompts()
+
+    def _life_share_ready(self, p: Participant, room: ChatRoom | None) -> bool:
+        if not self._life_enabled(p.id) or self.controller is None or room is None or room.busy:
+            return False
+        policy = self._life_policy(p)
+        plan = self.life_posts.plan(policy)
+        return (self.life_posts.in_hours(policy) and plan.posts < policy.proactive_per_day
+                and plan.attempts < policy.proactive_per_day * 2
+                and seconds_quiet(room.last_activity) >= policy.proactive_idle_minutes * 60)
+
+    async def _life_share(self, pid: str, message: str, sources=()) -> str | None:
+        p = self._member(pid)
+        chat = self.proactive_chat()
+        room = self.room(chat) if chat else None
+        if not self._life_share_ready(p, room):
+            return None
+        if sources and room.shared_recently(sources):
+            return None
+        policy = self._life_policy(p)
+        # Sharing is selected by the actor; reserve a bounded attempt before posting.
+        self.life_posts.record(policy, None)
+        future = room.start_proactive(p, lambda unseen: "", max(1, p.cfg.proactive_replies), prepared_text=message, sources=sources)
+        if future is None:
+            return None
+        posted = await future
+        if posted:
+            self.life_posts.plan(policy).posts += 1
+            self.life_posts.save()
+        return posted
+
+    async def _cancel_life(self) -> None:
+        task = self._life_task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     # ---- drawing stickers for each other ----
 
@@ -606,12 +799,17 @@ class Runtime:
     async def _browse(self, p: Participant) -> list:
         """One private browsing session; what it finds goes into the member's journal."""
         pc = p.cfg
-        if not (pc.web_search and supports_web_search(pc)):
+        can_search = pc.web_search and supports_web_search(pc)
+        if not (can_search or p.tools):
             self.browsing.record(pc, None)
             return []
         names = [m.name for m in self.config.enabled_participants]
+        tools = [(s.name, pc.tool_notes.get(s.id, "")) for s in p.tools]
+        # Left alone, members stick to plain web search; every other session is about one of their tools.
+        focus = random.choice(tools) if tools and (not can_search or random.random() < 0.5) else None
         prompt = build_browse_prompt(
-            pc.browse_topics or pc.proactive_topics, pc.kind == "grok_cli", self.journal.known_urls(pc.id), names
+            pc.browse_topics or pc.proactive_topics, pc.kind == "grok_cli", self.journal.known_urls(pc.id), names,
+            tools, can_search, focus,
         )
         log.info("%s 开始浏览……", p.name)
         memes_before = len(self.memes.items)
@@ -632,8 +830,10 @@ class Runtime:
         p = next((x for x in self.participants if x.id == pid), None)
         if p is None:
             raise ConfigError("这个成员没有启用，或者启动失败了")
-        if not (p.cfg.web_search and supports_web_search(p.cfg)):
-            raise ConfigError("要先打开它的「联网搜索」才能去浏览")
+        if self._life_enabled(pid):
+            raise ConfigError("这位成员由日常流程安排活动，请到「日常」页让它自己决定")
+        if not (p.cfg.web_search and supports_web_search(p.cfg)) and not p.tools:
+            raise ConfigError("要先打开它的「联网搜索」，或者在「工具」里给它分配工具，才能去浏览")
         if pid in self._browsing_now:
             raise ConfigError("它正在浏览，稍等一下")
         self._browsing_now.add(pid)
@@ -655,7 +855,9 @@ class Runtime:
                 self.proactive.recent_urls(pc) + self.journal.known_urls(pc.id),
             )
 
-        future = room.start_proactive(p, make_prompt, pc.proactive_replies)
+        sources = [{"url": entry.url, "title": entry.title, "excerpt": entry.summary,
+                    "read_level": entry.read_level or "群友的浏览摘记，未记录具体阅读范围"}] if entry else []
+        future = room.start_proactive(p, make_prompt, pc.proactive_replies, sources=sources)
         if future is None:
             self.proactive.postpone(pc)
             return None
@@ -668,6 +870,7 @@ class Runtime:
         self.proactive.record(pc, posted)
         if posted is not None and entry is not None:
             self.journal.mark_shared(pc, entry.id)
+            self.life.record_share(pc.id, posted, sources)
             self.refresh_prompts()
         return posted
 
@@ -809,6 +1012,7 @@ class Runtime:
                 await bot.session.close()
 
     async def shutdown(self) -> None:
+        await self._cancel_life()
         for room in self.rooms.values():
             await room.stop()
         for bot in self.bots.values():
