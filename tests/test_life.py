@@ -201,6 +201,15 @@ async def test_no_friend_free_means_no_private_chat(tmp_path):
     assert "这次不能私聊" in script.calls[0][1] and not store.threads
 
 
+async def test_looking_around_stays_light(tmp_path):
+    from roundtable.prompts import LIGHT_READING, build_browse_prompt
+
+    script = Script({"action": "explore", "interest": IDEA}, observation())
+    await script.engine(LifeStore(tmp_path)).step("codex", ["claude"], True)
+    assert LIGHT_READING in script.calls[1][1] and "学术论文" in LIGHT_READING
+    assert LIGHT_READING in build_browse_prompt("宇宙", True, [])
+
+
 async def test_progress_is_reported_for_the_journal(tmp_path):
     store = LifeStore(tmp_path)
     found = []

@@ -206,6 +206,10 @@ def build_proactive_prompt(
     return now_line() + "\n" + "\n".join(lines)
 
 
+# Browsing is for things to chat about, not research.
+LIGHT_READING = "挑好懂、好玩、能拿来聊天的内容，不用去啃学术论文和很专业的长文；看到论文相关的，就看新闻和大家怎么说。"
+
+
 def tools_section(tools: Sequence[tuple[str, str, str]]) -> str:
     """The member's own MCP tools: (name, description, its preference)."""
     if not tools:
@@ -244,6 +248,7 @@ def build_browse_prompt(
     lines += [
         f"这次就是专门让你上网的时候：请先真的用{how}看几次（换几个关键词），看过结果再挑内容，不要没看就回答。",
         "可以看帖子、新闻，也可以看看大家在评论里怎么说。",
+        LIGHT_READING,
         "可以用现有搜索发现 X、贴吧或文章链接，再用分配的只读工具打开。没读到的评论、视频画面和完整线程不要推测。",
         "挑 1 到 3 条你真的看到、觉得有意思的记下来，只用一个 JSON 数组回复，不要输出别的内容：",
         '[{"title": "一句话标题", "summary": "讲了什么，两三句话；评论区有意思的话也可以提一句", '
