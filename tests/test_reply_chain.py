@@ -92,6 +92,8 @@ def test_every_turn_says_what_time_it_is():
 def test_default_rules_include_friend_rules():
     assert FRIEND_RULES in DEFAULT_SYSTEM_PROMPT and "{friend_rules}" not in DEFAULT_SYSTEM_PROMPT
     assert "打圆场" in FRIEND_RULES and "我收手" in FRIEND_RULES
+    assert "说话用口语" in FRIEND_RULES and "修仙呢" in FRIEND_RULES
+    assert "喂喂" not in FRIEND_RULES  # no single opener for everyone to copy
 
 
 def test_bubbles_and_pauses():

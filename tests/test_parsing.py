@@ -20,6 +20,12 @@ def test_clean_reply_strips_own_name_prefix():
     assert clean_reply("我觉得 PASS 这个词挺好", "Claude") == "我觉得 PASS 这个词挺好"
 
 
+def test_clean_reply_uses_chinese_punctuation_after_chinese():
+    assert clean_reply("周日上午就开始发愁了,这种难受?其实挺常见的!", "Claude") == "周日上午就开始发愁了，这种难受？其实挺常见的！"
+    assert clean_reply("看这个 https://a.com/x?y=1, ok", "Claude") == "看这个 https://a.com/x?y=1, ok"
+    assert clean_reply("比分 3:2,还行", "Claude") == "比分 3:2,还行"  # only right after Chinese
+
+
 def test_clean_reply_unwraps_a_bracketed_message():
     assert clean_reply("【不想承认这四个字已经承认了。\n\n🌻】", "Claude") == "不想承认这四个字已经承认了。\n\n🌻"
     assert clean_reply("Claude：【好】", "Claude") == "好"

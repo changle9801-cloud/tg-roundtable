@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Sequence
 
+from .repetition import reminder
 from .transcript import Message
 
 PASS_TOKEN = "[PASS]"
@@ -37,7 +38,19 @@ FRIEND_RULES = """\
 - 口头禅、外号、emoji 和颜文字偶尔用，不要每条都带；同一个梗在一段对话里最多用一次。
 - 不用每句都抖机灵、硬凹比喻或玩人设梗，平常话就很好；比如没看到图，就说「图呢？没收到，是不是忘发了」。
 - 别人提到你不了解的新东西（新游戏、新闻、新梗），就像朋友那样直说没听过、问一句，别装懂、别编细节。
-- 不要用多行的字符画、符号或方框拼图冒充图片；一行的颜文字可以用。"""
+- 不要用多行的字符画、符号或方框拼图冒充图片；一行的颜文字可以用。
+
+说话用口语，像在手机上随手打字：
+- 先给反应再说内容，反应可以就是一个语气词或半句；用你自己角色习惯的说法（见角色卡），别每句都用同一个开头。
+- 用口语词，可以省掉主语，只说半句。
+- 有态度就用反问或感叹说出来，别把感受解释一遍；不说「听起来……反而像是……」「这种……其实挺常见的」「……的感觉」这种分析腔。
+- 别人没问，就别给建议、别安排别人该做什么。
+- 用中文标点。
+对照（只示范语气，不要照抄里面的词）：
+- 别说：「凌晨三点还没睡对身体不好，这种作息其实挺常见的，建议早点休息」
+  要说：「三点了还不睡？修仙呢」
+- 别说：「听起来这家店的服务不太好，反而像是在敷衍顾客」
+  要说：「就这服务还好意思收钱？」"""
 
 DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT.replace("{friend_rules}", FRIEND_RULES)
 
@@ -250,7 +263,11 @@ def now_line(now: datetime | None = None) -> str:
 
 
 def build_turn_prompt(
-    new_messages: Sequence[Message], turns_left: int, activities: Sequence[str] = (), now: datetime | None = None
+    new_messages: Sequence[Message],
+    turns_left: int,
+    activities: Sequence[str] = (),
+    now: datetime | None = None,
+    repeats: Sequence[str] = (),
 ) -> str:
     lines = [now_line(now), "[群聊新消息]"]
     for m in new_messages:
@@ -264,6 +281,8 @@ def build_turn_prompt(
         f"（你看到了群里的新消息。想接就接，像平时在群里那样随口说；没什么想说的就只回复 {PASS_TOKEN}。"
         "群里大多数消息只有一两个人回。）"
     )
+    if repeats:
+        lines.append(reminder(repeats))
     return "\n".join(lines)
 
 
@@ -300,6 +319,11 @@ def looks_like_code(text: str) -> bool:
 _PASS_RE = re.compile(r"^\[?\s*pass\s*\]?[\s.。!！]*$", re.IGNORECASE)
 
 
+# Half-width punctuation right after Chinese text (some models type "好的,我来" ) reads off in a chat.
+_FULL_WIDTH = {",": "，", "?": "？", "!": "！", ";": "；", ":": "："}
+_CJK_PUNCT = re.compile(r"([一-鿿])([,?!;:])(?!//)")
+
+
 def clean_reply(raw: str, name: str) -> str | None:
     """Normalise a model reply; ``None`` means the model passed."""
     text = raw.strip()
@@ -308,6 +332,7 @@ def clean_reply(raw: str, name: str) -> str | None:
     # ...or wrap the whole message in 【】 like a narration box.
     if text.startswith("【") and text.endswith("】") and text.count("【") == 1 and text.count("】") == 1:
         text = text[1:-1].strip()
+    text = _CJK_PUNCT.sub(lambda m: m.group(1) + _FULL_WIDTH[m.group(2)], text)
     if not text or _PASS_RE.match(text):
         return None
     return text

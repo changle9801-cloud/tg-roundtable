@@ -19,6 +19,7 @@ from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
 from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
+from .repetition import repeated_bits
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
 
@@ -292,7 +293,11 @@ class ChatRoom:
 
     def _start_turn(self, speaker: Participant, turns_left: int) -> _Turn:
         prev_cursor = self.cursors[speaker.id]
-        prompt = build_turn_prompt(self._unseen(speaker)[-MAX_UNSEEN:], turns_left, self._activity_notes())
+        own = [m.text for m in self.messages if m.speaker_id == speaker.id]
+        others = [m.text for m in self.messages[-MAX_UNSEEN:] if m.speaker_id != speaker.id]
+        prompt = build_turn_prompt(
+            self._unseen(speaker)[-MAX_UNSEEN:], turns_left, self._activity_notes(), repeats=repeated_bits(own, others)
+        )
         self.cursors[speaker.id] = len(self.messages)
 
         def on_activity(text: str) -> None:
