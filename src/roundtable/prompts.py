@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Sequence
 
 from .repetition import reminder
+from .routine import describe_routine
 from .transcript import Message
 
 PASS_TOKEN = "[PASS]"
@@ -138,6 +139,9 @@ def render_role(cfg) -> str:
         lines += [f"- {e}" for e in examples]
     if cfg.activity in ACTIVITY_HINTS:
         lines.append(ACTIVITY_HINTS[cfg.activity])
+    routine = describe_routine(cfg)
+    if routine:
+        lines.append(routine)
     lines.append(
         "请始终用这个角色的身份、性格和语气说话。你知道自己是 AI，不用刻意隐瞒，"
         "但也不必主动强调；别人问起时坦然承认，然后继续用角色的方式聊。"

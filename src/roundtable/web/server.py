@@ -90,6 +90,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     def kaomoji() -> list[dict]:
         return [asdict(k) for k in runtime.kaomoji.items]
 
+    def feedback() -> list[dict]:
+        return [asdict(f) for f in runtime.feedback.items[-150:]]
+
     def followups() -> list[dict]:
         return [asdict(f) for f in runtime.followups.items[-60:]]
 
@@ -112,6 +115,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             "memory": memory(),
             "memes": memes(),
             "followups": followups(),
+            "feedback": feedback(),
             "chronicle": chronicle(),
             "meta": {
                 "memory_instructions": LEARN_INSTRUCTIONS,
@@ -315,6 +319,19 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         tools = await runtime.list_tool(body.get("tool") or {}, body.get("env") or {}, body.get("headers") or {})
         return web.json_response({"tools": tools})
 
+    async def use_feedback(request):
+        await runtime.use_feedback(request.match_info["fid"])
+        return web.json_response({"feedback": feedback(), "settings": runtime.settings})
+
+    async def ignore_feedback(request):
+        runtime.feedback.mark(request.match_info["fid"], "ignored")
+        return web.json_response({"feedback": feedback()})
+
+    async def delete_feedback(request):
+        runtime.feedback.delete(request.match_info["fid"])
+        runtime.refresh_prompts()
+        return web.json_response({"feedback": feedback()})
+
     def followups_response():
         runtime.refresh_prompts()
         return web.json_response({"followups": followups()})
@@ -383,6 +400,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_put("/api/memes/{mid}", update_meme)
     app.router.add_delete("/api/memes/{mid}", delete_meme)
     app.router.add_post("/api/tools/list", list_tool)
+    app.router.add_post("/api/feedback/{fid}/use", use_feedback)
+    app.router.add_post("/api/feedback/{fid}/ignore", ignore_feedback)
+    app.router.add_delete("/api/feedback/{fid}", delete_feedback)
     app.router.add_post("/api/followups", add_followup)
     app.router.add_put("/api/followups/{fid}", update_followup)
     app.router.add_delete("/api/followups/{fid}", delete_followup)

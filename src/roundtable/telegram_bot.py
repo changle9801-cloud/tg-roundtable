@@ -13,7 +13,7 @@ from aiogram import F, Router
 from aiogram.enums import ChatAction, ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import FSInputFile, ReactionTypeEmoji, ReplyParameters
+from aiogram.types import FSInputFile, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters
 from aiogram.types import Message as TgMessage
 
 from .config import ConfigError
@@ -79,6 +79,7 @@ class TelegramSink:
         self.runtime = runtime
         self.file_ids: dict[tuple[str, str], str] = {}  # (participant, sticker) -> Telegram file id
         self.activity_messages: dict[tuple[str, str], int] = {}  # (chat, participant) -> notice id
+        self.parts: dict[tuple[str, int], int] = {}  # (chat, id of any bubble of a reply) -> id of its last bubble
         self.pacing = True  # human-like typing pauses between messages
 
     async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> int | None:
@@ -87,6 +88,7 @@ class TelegramSink:
             await self.notice(chat_key, f"{participant.name} 没有可用的 bot，发言没能发出去。")
             return None
         last = None
+        ids = []
         try:
             for i, bubble in enumerate(bubbles(text)):
                 for chunk in split_text(bubble):
@@ -97,9 +99,14 @@ class TelegramSink:
                     quote = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to and last is None else None
                     sent = await bot.send_message(int(chat_key), chunk, reply_parameters=quote)
                     last = sent.message_id
+                    ids.append(last)
         except TelegramAPIError as e:
             log.warning("%s could not post: %s", participant.id, e)
             await self.notice(chat_key, f"{participant.name} 的 bot 发不出消息（{e}），请确认它已经被拉进这个群。")
+        for mid in ids:  # a reaction on any bubble counts for the whole reply
+            self.parts[(chat_key, mid)] = last
+        while len(self.parts) > 2000:
+            del self.parts[next(iter(self.parts))]
         return last
 
     async def react(self, chat_key: str, participant: Participant, message_id: int, emoji: str) -> None:
@@ -323,6 +330,19 @@ def build_router(runtime: Runtime) -> Router:
         except (ConfigError, TelegramAPIError) as e:
             text = f"收藏失败：{e}"
         await msg.reply(text)
+
+    @r.message_reaction()
+    async def reacted(event: MessageReactionUpdated):
+        tg = runtime.config.telegram
+        user = event.user
+        if user is None or user.is_bot or user.id not in tg.allowed_user_ids:
+            return
+        if tg.allowed_chat_ids and event.chat.id not in tg.allowed_chat_ids:
+            return
+        emojis = lambda items: [r.emoji for r in items or () if getattr(r, "emoji", None)]  # noqa: E731
+        old, new = emojis(event.old_reaction), emojis(event.new_reaction)
+        runtime.on_reaction(str(event.chat.id), event.message_id, user.first_name,
+                            [e for e in new if e not in old], [e for e in old if e not in new])
 
     @r.message(group)
     async def chat(msg: TgMessage):

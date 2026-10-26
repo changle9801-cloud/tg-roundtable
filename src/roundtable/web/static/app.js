@@ -139,6 +139,7 @@ function blankMember(id) {
     proactive_idle_minutes: 60, proactive_replies: 1,
     browse: false, browse_topics: "", browse_per_day: 4, browse_hours: "10-23", journal_days: 3, journal_keep_days: 7,
     appearance: "", can_draw: false, draws_per_day: 5, vision: false,
+    sleep: "", busy: "", busy_doing: "",
   };
 }
 
@@ -200,6 +201,7 @@ function renderAll() {
   renderByMember();
   renderMemory();
   renderMemes();
+  renderFeedback();
   renderFollowups();
   renderChronicle();
   renderTools();
@@ -360,6 +362,13 @@ function memberBody(m, isNew) {
       }), "0 = 跟随群聊规则"),
       field("别名", textInput((m.aliases || []).join("，"), (v) => (m.aliases = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean))),
         "叫到这些名字会优先回话")),
+    h("div", { class: "grid3" },
+      field("睡觉时间", textInput(m.sleep, (v) => (m.sleep = v), { placeholder: "00:30-10:30" }),
+        "睡着时不回话，被你 @ 才会迷迷糊糊醒来；醒来后会翻翻错过的消息。留空 = 不睡觉"),
+      field("忙碌时间（工作日）", textInput(m.busy, (v) => (m.busy = v), { placeholder: "09:30-18:00" }),
+        "这段时间回得少、回得短；周末不算"),
+      field("忙的时候在做什么", textInput(m.busy_doing, (v) => (m.busy_doing = v), { placeholder: "在上班" }),
+        "例如：在上班、在上课、在赶稿")),
 
     ...(draft.life?.enabled && draft.life.members.includes(m.id)
       ? [h("p", { class: "muted small" }, "这位成员在「日常」里：闲逛和主动发言由日常统一安排，下面这两项设置暂不生效。")]
@@ -1230,7 +1239,7 @@ function toolSecrets(t, group) {
   };
   const rows = Object.keys(stored).map((key) => {
     const removing = edits[key] === null;
-    return h("div", { class: "kv" + (removing ? " off" : "") },
+    return h("div", { class: "tool-kv" + (removing ? " off" : "") },
       h("code", {}, key), h("span", { class: "muted small" }, removing ? "保存后删除" : stored[key]),
       h("button", { type: "button", onclick: () => { removing ? delete pending.tools[t.id][group][key] : set(key, null); changed(); renderTools(); } },
         removing ? "撤销" : "删除"));
@@ -1405,6 +1414,34 @@ function renderMemory() {
   const active = items.filter((f) => f.status === "active");
   $("#memory-list").replaceChildren(...(active.length ? active.map(factRow) :
     [h("div", { class: "muted small" }, "还没有长期记忆。")]));
+}
+
+function renderFeedback() {
+  const list = server.feedback || [];
+  const liked = list.filter((f) => f.kind === "liked" && f.status === "new").reverse();
+  const disliked = list.filter((f) => f.kind === "disliked" && Date.now() / 1000 - f.ts < 30 * 86400).reverse();
+  $("#feedback-count").textContent = liked.length ? `${liked.length} 句等你挑` : "";
+  const row = (f, buttons) => h("div", { class: "fact" },
+    h("span", { class: "src" }, `${f.emoji} ${memberName(f.member)}`),
+    h("span", { style: "flex:1" }, f.text),
+    ...buttons);
+  const call = async (method, path, done) => {
+    try {
+      const r = await api(method, path);
+      server.feedback = r.feedback;
+      if (r.settings) { server.settings = r.settings; resetDraft(); }
+      else renderFeedback();
+      if (done) toast(done);
+    } catch (e) { toast(e.message, true); }
+  };
+  const rows = [
+    ...liked.map((f) => row(f, [
+      h("button", { class: "primary", onclick: () => call("POST", `/api/feedback/${f.id}/use`, "已加进示例台词") }, "加为示例台词"),
+      h("button", { onclick: () => call("POST", `/api/feedback/${f.id}/ignore`) }, "忽略")])),
+    ...(disliked.length ? [h("div", { class: "muted small", style: "margin-top:8px" }, "正在提醒别再这么说：")] : []),
+    ...disliked.map((f) => row(f, [h("button", { class: "danger", onclick: () => call("DELETE", `/api/feedback/${f.id}`) }, "删除")])),
+  ];
+  $("#feedback-list").replaceChildren(...(rows.length ? rows : [h("div", { class: "muted small" }, "还没有点过赞或踩。")]));
 }
 
 function renderFollowups() {
@@ -1808,7 +1845,9 @@ function renderStatus(s) {
     h("div", {}, "总控 bot"), h("div", {}, tg.controller ? "@" + tg.controller : "—"),
     h("div", {}, "数据目录"), h("div", { style: "word-break:break-all" }, server.meta.data_dir),
     tg.privacy_warning ? h("div", {}, "注意") : null,
-    tg.privacy_warning ? h("div", { style: "color:var(--warn)" }, "总控 bot 开着 privacy mode，收不到群里的普通消息。请在 @BotFather 执行 /setprivacy → Disable，再把它移出群重新拉入。") : null));
+    tg.privacy_warning ? h("div", { style: "color:var(--warn)" }, "总控 bot 开着 privacy mode，收不到群里的普通消息。请在 @BotFather 执行 /setprivacy → Disable，再把它移出群重新拉入。") : null,
+    tg.reaction_warning ? h("div", {}, "点赞") : null,
+    tg.reaction_warning ? h("div", { style: "color:var(--warn)" }, "总控 bot 不是群管理员，收不到你给成员点的赞和踩。在群设置里把它设为管理员即可（不用给任何权限），然后重启。") : null));
 
   const members = s.members || [];
   $("#status-members").replaceChildren(...(members.length ? members.map((m) =>
@@ -1816,6 +1855,7 @@ function renderStatus(s) {
       h("span", { class: "dot " + m.state }),
       h("b", {}, m.name),
       m.bot_username ? h("span", { class: "muted small" }, "@" + m.bot_username) : null,
+      m.routine ? h("span", { class: "muted small" }, m.routine) : null,
       h("span", { class: "msg" }, m.state === "disabled" ? "已停用" : m.message))) : [h("div", { class: "muted" }, "还没有成员")]));
 
   const rooms = s.rooms || [];

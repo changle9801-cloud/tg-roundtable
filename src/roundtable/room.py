@@ -23,6 +23,7 @@ from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
 from .reactions import extract_reaction
 from .repetition import repeated_bits
+from .routine import ASLEEP, BUSY, BUSY_FACTOR, WAKE_CHANCE, Routines
 from .vision import MAX_IMAGES, can_see_images
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
@@ -59,6 +60,8 @@ class _RoundState:
     closed: bool = False  # the dice said nobody else joins in; only @-mentions now
     # Owed an answer: @-mentioned and not yet spoken, or given an extra turn (e.g. to use a new sticker).
     granted: set[str] = field(default_factory=set)
+    called: set[str] = field(default_factory=set)  # @-ed by the user: wakes up a sleeping member
+    wake_tried: bool = False  # nobody was up: the dice were rolled for waking someone
 
 
 class Sink(Protocol):
@@ -117,6 +120,7 @@ class ChatRoom:
         block_code: bool = False,
         on_draw: DrawHook | None = None,
         reactions: bool = False,
+        routines: Routines | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -138,6 +142,7 @@ class ChatRoom:
         self.block_code = block_code  # drop replies that contain code
         self.on_draw = on_draw  # called when a member takes on a drawing request
         self.reactions = reactions  # members may react to messages with an emoji
+        self.routines = routines  # who is asleep or busy right now; None: everyone is always up
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
         # Models already have the saved history in their own sessions, so nothing is unseen.
@@ -182,8 +187,8 @@ class ChatRoom:
         if reply_to and reply_to not in mentions:
             mentions.insert(0, reply_to)
         message = Message(USER, user_name, text, tuple(mentions), time.time(), tuple(images))
-        self._append(message)
         self._remember_tg(message, tg_id)
+        self._append(message)
         log.info("[%s] %s: %s", self.key, user_name, _preview(text))
         if self.busy:
             # Models already thinking finish their turn; quotas start over and, if there is
@@ -246,6 +251,8 @@ class ChatRoom:
         state = _RoundState(turns or self._fresh_turns(), last_speaker)
         if self.messages:
             state.granted.update(self.messages[-1].mentions)
+            if self.messages[-1].from_user:
+                state.called.update(self.messages[-1].mentions)
         pending: dict[asyncio.Task, _Turn] = {}
         last_start = float("-inf")
         focus: Message | None = None  # message whose mentions decide the next pick
@@ -266,6 +273,7 @@ class ChatRoom:
                     focus = next((m for m in reversed(self.messages) if m.from_user), None)
                     if focus is not None:
                         state.granted.update(focus.mentions)
+                        state.called.update(focus.mentions)
                     last_start = float("-inf")
 
                 speaking = {t.speaker.id for t in pending.values()}
@@ -280,10 +288,14 @@ class ChatRoom:
                     and (not state.closed or p.id in forced)
                     and self._unseen(p)
                 ]
+                candidates = self._awake(candidates, state, latest)
                 room_for_more = bool(candidates) and len(pending) < self.max_parallel
                 if room_for_more and (not pending or loop.time() - last_start >= self.slow_after):
                     owed = [c for c in candidates if c.id in forced]  # whoever was @-ed goes first
-                    speaker = self.moderator.pick(owed or candidates, latest, state.last_speaker)
+                    pool = owed or candidates
+                    if not owed and self.routines is not None:  # those not at work answer first
+                        pool = [c for c in pool if self.routines.status(c) != BUSY] or pool
+                    speaker = self.moderator.pick(pool, latest, state.last_speaker)
                     if speaker.id not in forced and not self._joins_in(speaker, state.started):
                         state.closed = True  # like a real group: most messages get one or two replies
                         continue
@@ -314,12 +326,30 @@ class ChatRoom:
 
     ACTIVITY_FACTOR = {"low": 0.5, "normal": 1.0, "high": 1.5}
 
+    def _awake(self, candidates: list[Participant], state: _RoundState, latest: Message) -> list[Participant]:
+        """Drop sleeping members, unless the user @-ed them; if nobody is up, maybe one wakes."""
+        if self.routines is None:
+            return candidates
+        awake = [c for c in candidates if c.id in state.called or self.routines.status(c) != ASLEEP]
+        if awake or not candidates or state.wake_tried or state.started or not latest.from_user:
+            return awake
+        state.wake_tried = True  # the user says something and everyone is asleep
+        rng = getattr(self.moderator, "rng", random)
+        if rng.random() < WAKE_CHANCE:
+            sleeper = rng.choice(candidates)
+            self.routines.wake(sleeper)
+            log.info("[%s] %s 被吵醒了", self.key, sleeper.name)
+            return [sleeper]
+        return []
+
     def _joins_in(self, speaker: Participant, already: int) -> bool:
         """Whether one more member chimes in after ``already`` replies to the same message."""
         if already == 0:
             return True  # someone always answers the user
         chance = self.follow_up_chance * self.follow_up_decay ** (already - 1)
         chance *= self.ACTIVITY_FACTOR.get(getattr(speaker.cfg, "activity", "normal"), 1.0)
+        if self.routines is not None and self.routines.status(speaker) == BUSY:
+            chance *= BUSY_FACTOR
         rng = getattr(self.moderator, "rng", random)
         return rng.random() < min(chance, 1.0)
 
@@ -338,6 +368,11 @@ class ChatRoom:
         images = self._images_for(speaker, seen)
         if images:
             prompt += "\n（群里发的图片附在这条消息里了，你能直接看到。）"
+        if self.routines is not None:
+            if self.routines.status(speaker) == ASLEEP:  # the user @-ed it
+                self.routines.wake(speaker)
+            notes = [self.routines.group_notes(self.participants, speaker), self.routines.note_for(speaker)]
+            prompt += "".join("\n" + n for n in notes if n)
         self.cursors[speaker.id] = len(self.messages)
 
         def on_activity(text: str) -> None:
@@ -466,6 +501,17 @@ class ChatRoom:
 
     def _tg_id(self, message: Message | None) -> int:
         return self._tg_ids.get((message.speaker_id, message.ts), 0) if message is not None else 0
+
+    def message_for(self, tg_id: int) -> Message | None:
+        """The transcript message posted as Telegram message ``tg_id``."""
+        key = next((k for k, v in self._tg_ids.items() if v == tg_id), None)
+        if key is None:
+            return None
+        return next((m for m in reversed(self.messages) if (m.speaker_id, m.ts) == key), None)
+
+    def note_reaction(self, user_name: str, target: Message, emoji: str) -> None:
+        """The user reacted to a message: the members see it next time they look at the group."""
+        self._append(Message(USER, user_name, f"[给 {target.speaker_name} 的「{_preview(target.text, 20)}」点了 {emoji}]", (), time.time()))
 
     def _remember_tg(self, message: Message, tg_id: int | None) -> None:
         if not tg_id:
@@ -620,8 +666,11 @@ class ChatRoom:
         if self.log_path is not None:
             try:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                data = message.to_json()
+                if self._tg_id(message):
+                    data["tg_id"] = self._tg_id(message)
                 with self.log_path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(message.to_json(), ensure_ascii=False) + "\n")
+                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
             except OSError as e:
                 log.warning("无法写入群聊记录 %s：%s", self.log_path, e)
 
@@ -636,9 +685,12 @@ class ChatRoom:
         messages = []
         for line in lines[-MAX_HISTORY:]:
             with suppress(ValueError, KeyError, TypeError):
-                messages.append(Message.from_json(json.loads(line)))
+                data = json.loads(line)
+                messages.append(Message.from_json(data))
+                self._remember_tg(messages[-1], data.get("tg_id"))
         if len(lines) > 2 * MAX_HISTORY:  # keep the file from growing forever
-            self.log_path.write_text("".join(json.dumps(m.to_json(), ensure_ascii=False) + "\n" for m in messages), encoding="utf-8")
+            self.log_path.write_text("".join(json.dumps({**m.to_json(), **({"tg_id": self._tg_id(m)} if self._tg_id(m) else {})},
+                                                        ensure_ascii=False) + "\n" for m in messages), encoding="utf-8")
         return messages
 
 

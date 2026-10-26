@@ -25,6 +25,7 @@ from .config import (
     load_legacy_toml,
 )
 from .memory import LEARN_MODES
+from .routine import valid_range
 from .tools import build_tools, normalize_tools
 
 SETTINGS_FILE = "settings.json"
@@ -157,7 +158,8 @@ def normalize_participant(raw: dict) -> dict:
                 raise ConfigError(f"成员 {pid} 的历史条数至少为 2")
         if f.name in ("name", "model", "effort", "provider", "base_url", "api_key_env",
                       "tagline", "persona", "style", "relationships", "examples",
-                      "proactive_topics", "proactive_hours", "browse_topics", "browse_hours", "appearance"):
+                      "proactive_topics", "proactive_hours", "browse_topics", "browse_hours", "appearance",
+                      "sleep", "busy", "busy_doing"):
             value = str(value or "").strip()
         if f.name in ("enabled", "web_search", "proactive", "browse", "can_draw", "vision"):
             value = bool(value)
@@ -183,6 +185,10 @@ def normalize_participant(raw: dict) -> dict:
         raise ConfigError(f"成员 {pid} 的主动发言时间段格式不对，应该像「10-23」")
     if parse_hours(out["browse_hours"]) is None:
         raise ConfigError(f"成员 {pid} 的浏览时间段格式不对，应该像「10-23」")
+    if not valid_range(out["sleep"]):
+        raise ConfigError(f"成员 {pid} 的睡觉时间格式不对，应该像「00:30-10:30」")
+    if not valid_range(out["busy"]):
+        raise ConfigError(f"成员 {pid} 的忙碌时间格式不对，应该像「09:30-18:00」")
     if out["journal_keep_days"] < out["journal_days"]:
         out["journal_keep_days"] = out["journal_days"]
     if len(out["tagline"]) > 120:

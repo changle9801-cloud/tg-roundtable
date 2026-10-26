@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -52,10 +53,12 @@ from .journal import JournalStore, browse_once
 from .life import LifeEngine, LifeStore
 from .chronicle import MIN_MESSAGES as CHRONICLE_MIN_MESSAGES, Chronicle
 from .chronicle import build_prompt as build_chronicle_prompt, parse_reply as parse_chronicle
+from .feedback import FeedbackStore, plain_text
 from .followups import FollowUpStore, build_followup_prompt
 from .memes import MemeLibrary
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
+from .routine import ASLEEP, BUSY, GOODNIGHT_CHANCE, MORNING_CHANCE, Routines, busy_doing, goodnight_prompt, wake_prompt
 from .kaomoji import KaomojiLibrary
 from .tools import ToolServer, list_tools, tools_for
 from .reactions import reaction_instructions
@@ -118,6 +121,7 @@ class Runtime:
         self.controller: Bot | None = None
         self.controller_username = ""
         self.privacy_warning = False
+        self.reaction_warning = False  # not a group admin: Telegram does not send it reactions
         self.telegram_state = "未启动"
 
         self.stickers = StickerLibrary(store.data_dir)
@@ -128,6 +132,10 @@ class Runtime:
         self.followups = FollowUpStore(store.data_dir)
         self.chronicle = Chronicle(store.data_dir)
         self._chronicle_running = False
+        self.routines = Routines()
+        self.feedback = FeedbackStore(store.data_dir)
+        self._routine_last: dict[str, str] = {}  # member id -> asleep/busy/online at the last check
+        self._routine_events: list[tuple[str, str, float]] = []  # (member id, "wake"/"sleep", when)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
@@ -204,6 +212,7 @@ class Runtime:
             self.journal.prompt_section(pc.id),
             self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}),
             self.memory.prompt_section(pc.id, config.memory_learn),
+            self.feedback.prompt_section(pc.id),
             self.stickers.prompt_section(limit, pc.id),
             self.kaomoji.prompt_section(pc.id) if config.kaomoji_enabled else "",
             reaction_instructions() if config.reactions_enabled else "",
@@ -264,6 +273,41 @@ class Runtime:
             log.info("%s 记下要跟进：%s", participant.name, "；".join(f"{a.text}" for a in added))
             self.refresh_prompts()
 
+    def on_reaction(self, chat: str, tg_id: int, user_name: str, added: list[str], removed: list[str]) -> None:
+        """The user reacted to a message in the group (or took a reaction back)."""
+        room = self.room(chat)
+        target = room.message_for(self.sink.parts.get((chat, tg_id), tg_id))
+        if target is None or target.from_user:
+            return
+        text = plain_text(target.text)
+        changed = False
+        for emoji in added:
+            item = self.feedback.react(target.speaker_id, text, emoji)
+            if item is not None:
+                log.info("[%s] %s 给 %s 的「%s」点了 %s", chat, user_name, target.speaker_name, text[:30], emoji)
+                changed = changed or item.kind == "disliked"
+        if removed and not added:
+            changed = self.feedback.unreact(target.speaker_id, text)
+        if added:
+            room.note_reaction(user_name, target, added[-1])
+        if changed:
+            self.refresh_prompts()
+
+    async def use_feedback(self, fid: str) -> None:
+        """Turn a liked line into the member's sample line (示例台词)."""
+        item = self.feedback.get(fid)
+        if item.kind != "liked":
+            raise ConfigError("只有点赞的话可以加为示例台词")
+        settings = json.loads(json.dumps(self.settings))
+        member = next((m for m in settings["participants"] if m["id"] == item.member), None)
+        if member is None:
+            raise ConfigError("这个成员已经不在了")
+        lines = [line for line in (member.get("examples") or "").splitlines() if line.strip()]
+        if item.text not in lines:
+            member["examples"] = "\n".join([*lines, item.text])
+            await self.apply(settings)
+        self.feedback.mark(fid, "used")
+
     def _on_meme(self, participant: Participant, found: list[tuple[str, str]]) -> None:
         added = self.memes.add_found(found, participant.name)
         if added:
@@ -298,7 +342,7 @@ class Runtime:
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
-                on_draw=self._on_draw, reactions=self.config.reactions_enabled,
+                on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
             )
         return self.rooms[key]
 
@@ -586,7 +630,10 @@ class Runtime:
         self._chronicle_tick()
         if self.controller is not None:
             await self._followup_tick()
+            await self._routine_tick()
         for p in list(self.participants):
+            if self._asleep(p):  # no browsing, daily life or posts in its sleep
+                continue
             if self._life_enabled(p.id):
                 if self._life_task is None and self.life_schedule.due(self._life_policy(p)) and self._life_idle():
                     self.start_life(p.id)
@@ -599,7 +646,7 @@ class Runtime:
         if self.controller is None:  # Telegram not running: nowhere to post
             return
         for p in list(self.participants):
-            if self._life_enabled(p.id):
+            if self._life_enabled(p.id) or self._asleep(p):
                 continue
             if not self.proactive.due(p.cfg):
                 continue
@@ -720,7 +767,8 @@ class Runtime:
                                 names, self.refresh_prompts, charge=self._life_charge, found=self._life_found)
             can_explore = bool(p.tools) or (p.cfg.web_search and supports_web_search(p.cfg))
             # Friends it can message: the others in daily life with activities left today.
-            peers = [m for m in self.config.life.members if m != pid and self._life_left(m) > 0]
+            awake = {m.id for m in self.participants if not self._asleep(m)}
+            peers = [m for m in self.config.life.members if m != pid and m in awake and self._life_left(m) > 0]
             action = await engine.step(pid, peers, can_explore)
             log.info("%s 完成一次日常活动：%s", p.name, action)
         except asyncio.CancelledError:
@@ -814,18 +862,18 @@ class Runtime:
 
     def _followup_asker(self, item) -> Participant | None:
         """Whoever noted it asks; otherwise someone else, Claude last (it shares the owner's quota)."""
-        started = {p.id: p for p in self.participants}
+        started = {p.id: p for p in self.participants if not self._asleep(p)}
         if item.noted_by in started:
             return started[item.noted_by]
-        others = sorted(self.participants, key=lambda p: p.cfg.kind == "claude_cli")
+        others = sorted(started.values(), key=lambda p: p.cfg.kind == "claude_cli")
         return others[0] if others else None
 
     async def _followup_tick(self) -> None:
         for item in self.followups.due()[:1]:  # at most one per check
             room = self.room(item.chat)
             asker = self._followup_asker(item)
-            if asker is None:
-                self.followups.finish(item, asked=False)
+            if asker is None:  # everyone is asleep: when someone is up; no members at all: drop it
+                self.followups.later(item) if self.participants else self.followups.finish(item, asked=False)
                 continue
             future = None if room.busy else room.start_proactive(
                 asker, lambda unseen, item=item: build_followup_prompt(item, unseen, now_line()), 1)
@@ -840,6 +888,49 @@ class Runtime:
                 posted = None
             self.followups.finish(item, asked=posted is not None)
             self.refresh_prompts()
+
+    # ---- sleeping, waking up ----
+
+    def _routine_label(self, p: Participant) -> str:
+        state = self.routines.status(p)
+        return "💤 在睡觉" if state == ASLEEP else busy_doing(p.cfg) if state == BUSY else ""
+
+    def _asleep(self, p: Participant) -> bool:
+        return self.routines.status(p) == ASLEEP
+
+    async def _routine_tick(self) -> None:
+        """Someone just woke up or is going to bed: it may say so, or answer what it missed."""
+        chat = self.proactive_chat()
+        room = self.room(chat) if chat else None
+        for p, before, after in self.routines.changes(self.participants, self._routine_last):
+            if before == ASLEEP:
+                self._routine_events.append((p.id, "wake", time.time()))
+            elif after == ASLEEP and room is not None and seconds_quiet(room.last_activity) < 1800:
+                if random.random() < GOODNIGHT_CHANCE:
+                    self._routine_events.append((p.id, "sleep", time.time()))
+        self._routine_events = [e for e in self._routine_events if time.time() - e[2] < 7200]
+        if room is None or room.busy or not self._routine_events:
+            return
+        pid, kind, _ = self._routine_events.pop(0)
+        p = next((m for m in self.participants if m.id == pid), None)
+        if p is None:
+            return
+        if kind == "wake":
+            missed = [m for m in room._unseen(p) if m.from_user]
+            # Nothing missed: only sometimes a "morning", and not from Claude (it shares the owner's quota).
+            if not missed and (p.cfg.kind == "claude_cli" or random.random() >= MORNING_CHANCE or not room.messages):
+                return
+            make = lambda unseen: wake_prompt(unseen, now_line(), bool(missed))  # noqa: E731
+        else:
+            make = lambda unseen: goodnight_prompt(unseen, now_line())  # noqa: E731
+        future = room.start_proactive(p, make, 1 if kind == "wake" else 0)
+        if future is None:
+            return
+        log.info("[%s] %s %s", room.key, p.name, "睡醒了，看看群" if kind == "wake" else "要去睡了")
+        try:
+            await asyncio.wait_for(future, self.config.round.call_timeout + 60)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s 的作息发言没成：%s", p.name, e)
 
     # ---- the group's own history ----
 
@@ -1017,6 +1108,7 @@ class Runtime:
 
     def status(self) -> dict:
         members = []
+        running = {p.id: p for p in self.participants}
         for pc in self.config.participants:
             if not pc.enabled:
                 state, message = "disabled", ""
@@ -1033,6 +1125,7 @@ class Runtime:
                 "state": state,
                 "message": message,
                 "bot_username": self.bot_usernames.get(pc.id, ""),
+                "routine": self._routine_label(running[pc.id]) if pc.id in running else "",
             })
         rooms = [
             {
@@ -1049,6 +1142,7 @@ class Runtime:
                 "state": self.telegram_state,
                 "controller": self.controller_username,
                 "privacy_warning": self.privacy_warning,
+                "reaction_warning": self.reaction_warning,
             },
             "members": members,
             "rooms": rooms,
@@ -1102,13 +1196,21 @@ class Runtime:
             self.privacy_warning = not me.can_read_all_group_messages
             if self.privacy_warning:
                 log.warning("总控 bot @%s 开着 privacy mode，收不到群里的普通消息", me.username)
+            self.reaction_warning = False
+            chat = self.proactive_chat()
+            if chat:
+                with suppress(Exception):
+                    member = await asyncio.wait_for(bot.get_chat_member(int(chat), me.id), 20)
+                    self.reaction_warning = member.status not in ("administrator", "creator")
+                if self.reaction_warning:
+                    log.warning("总控 bot @%s 不是群管理员，收不到你在群里点的赞和踩", me.username)
             with suppress(Exception):
                 await bot.set_my_commands(BOT_COMMANDS)
 
             dp = Dispatcher()
             dp.include_router(build_router(self))
             polling = asyncio.create_task(
-                dp.start_polling(bot, handle_signals=False, allowed_updates=["message"])
+                dp.start_polling(bot, handle_signals=False, allowed_updates=["message", "message_reaction"])
             )
             self.telegram_state = "运行中"
             log.info("总控 bot @%s 开始接收消息", me.username)

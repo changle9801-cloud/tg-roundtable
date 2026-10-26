@@ -52,6 +52,10 @@ class ParticipantConfig:
     examples: str = ""  # a few sample lines, one per line; pins the voice down best
     activity: str = "normal"  # low / normal / high: how eagerly it joins in
     appearance: str = ""  # what it looks like; used when someone draws it
+    # Daily routine: "00:30-10:30" asleep; busy on weekdays (work, school), and what it does then.
+    sleep: str = ""
+    busy: str = ""
+    busy_doing: str = ""
     # Drawing stickers for others when asked (Codex CLI only).
     can_draw: bool = False
     # The model is handed the pictures sent in the group (Claude CLI, or API models that take images;
