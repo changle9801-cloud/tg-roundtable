@@ -6,9 +6,10 @@ import asyncio
 import logging
 import random
 import time
-from collections import deque
+from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -31,6 +32,7 @@ from .prompts import (
     build_turn_prompt,
     abilities_section,
     ask_search_instructions,
+    now_line,
     render_role,
     tools_section,
     search_instructions,
@@ -48,6 +50,9 @@ from .drawing import (
 )
 from .journal import JournalStore, browse_once
 from .life import LifeEngine, LifeStore
+from .chronicle import MIN_MESSAGES as CHRONICLE_MIN_MESSAGES, Chronicle
+from .chronicle import build_prompt as build_chronicle_prompt, parse_reply as parse_chronicle
+from .followups import FollowUpStore, build_followup_prompt
 from .memes import MemeLibrary
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
@@ -120,6 +125,9 @@ class Runtime:
         self.seen = SeenCache()
         self.memory = MemoryStore(store.data_dir)
         self.memes = MemeLibrary(store.data_dir)
+        self.followups = FollowUpStore(store.data_dir)
+        self.chronicle = Chronicle(store.data_dir)
+        self._chronicle_running = False
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
@@ -191,6 +199,8 @@ class Runtime:
             sight,
             drawing,
             self.memes.prompt_section(),
+            self.chronicle.prompt_section(),
+            self.followups.prompt_section(),
             self.journal.prompt_section(pc.id),
             self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}),
             self.memory.prompt_section(pc.id, config.memory_learn),
@@ -248,6 +258,12 @@ class Runtime:
 
     stickers_changed = refresh_prompts
 
+    def _on_followup(self, chat: str, participant: Participant, plans: list) -> None:
+        added = [item for when, what in plans if (item := self.followups.add(what, when, chat, participant.id))]
+        if added:
+            log.info("%s 记下要跟进：%s", participant.name, "；".join(f"{a.text}" for a in added))
+            self.refresh_prompts()
+
     def _on_meme(self, participant: Participant, found: list[tuple[str, str]]) -> None:
         added = self.memes.add_found(found, participant.name)
         if added:
@@ -281,7 +297,7 @@ class Runtime:
             self.rooms[key] = ChatRoom(
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
-                log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, block_code=self.config.no_coding,
+                log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled,
             )
         return self.rooms[key]
@@ -567,6 +583,9 @@ class Runtime:
     async def _proactive_tick(self) -> None:
         if self.journal.forget_expired():
             self.refresh_prompts()
+        self._chronicle_tick()
+        if self.controller is not None:
+            await self._followup_tick()
         for p in list(self.participants):
             if self._life_enabled(p.id):
                 if self._life_task is None and self.life_schedule.due(self._life_policy(p)) and self._life_idle():
@@ -790,6 +809,108 @@ class Runtime:
             self.drawings.busy.discard(drawer.id)
             self.drawings.record(Drawing(time.time(), drawer.id, asker, label, description, ok))
             self.refresh_prompts()  # the drawer's remaining count changed
+
+    # ---- asking about things later ----
+
+    def _followup_asker(self, item) -> Participant | None:
+        """Whoever noted it asks; otherwise someone else, Claude last (it shares the owner's quota)."""
+        started = {p.id: p for p in self.participants}
+        if item.noted_by in started:
+            return started[item.noted_by]
+        others = sorted(self.participants, key=lambda p: p.cfg.kind == "claude_cli")
+        return others[0] if others else None
+
+    async def _followup_tick(self) -> None:
+        for item in self.followups.due()[:1]:  # at most one per check
+            room = self.room(item.chat)
+            asker = self._followup_asker(item)
+            if asker is None:
+                self.followups.finish(item, asked=False)
+                continue
+            future = None if room.busy else room.start_proactive(
+                asker, lambda unseen, item=item: build_followup_prompt(item, unseen, now_line()), 1)
+            if future is None:  # the group is busy: a bit later
+                self.followups.later(item)
+                continue
+            log.info("[%s] %s 想起来要问：%s", room.key, asker.name, item.text)
+            try:
+                posted = await asyncio.wait_for(future, self.config.round.call_timeout + 60)
+            except Exception as e:
+                log.warning("跟进没问成：%s", e)
+                posted = None
+            self.followups.finish(item, asked=posted is not None)
+            self.refresh_prompts()
+
+    # ---- the group's own history ----
+
+    def _chronicle_tick(self, now: datetime | None = None) -> None:
+        if self._chronicle_running:
+            return
+        chat = self.proactive_chat()
+        if not chat:
+            return
+        room = self.room(chat)
+        now = now or datetime.now()
+        oldest = (now - timedelta(days=3)).date().isoformat()  # catch up on a few missed days at most
+        days = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts)
+        candidates = [d for d, n in days.items() if n >= CHRONICLE_MIN_MESSAGES and d >= oldest]
+        day = self.chronicle.day_to_write(candidates, now)
+        if day is not None:
+            self._chronicle_running = True
+            self._spawn(self._write_chronicle(room, day))
+
+    def _chronicle_writer(self) -> Participant | None:
+        """The cheapest member to write the day up: an API one, then Codex or Grok, Claude last."""
+        rank = {"api": 0, "codex_cli": 1, "grok_cli": 2, "claude_cli": 3}
+        members = sorted(self.participants, key=lambda p: rank.get(p.cfg.kind, 4))
+        return members[0] if members else None
+
+    async def _write_chronicle(self, room: ChatRoom, day: str) -> list:
+        import uuid
+
+        try:
+            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text[:300]}"
+                     for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
+            writer = self._chronicle_writer()
+            if writer is None or not lines:
+                return []
+            prompt = build_chronicle_prompt(day, lines[-200:], [m.title for m in self.chronicle.moments[-30:]],
+                                            [m.text for m in self.memes.items[-30:]])
+            # A one-off, tool-less run in its own sessions: it must not end up in the member's chat context.
+            actor = participant_class(writer.cfg)(writer.cfg, SessionStore(self.config.data_dir / "chronicle_sessions.json"),
+                                                  self.config.data_dir / "work" / "chronicle" / writer.id,
+                                                  self.config.round.call_timeout)
+            actor.set_system_prompt("你是一个朋友群的记事本，负责记下群里的名场面。只按要求输出 JSON。")
+            key = "__chronicle_" + uuid.uuid4().hex
+            try:
+                raw = await actor.reply(key, prompt)
+            finally:
+                actor.reset(key)
+            moments, memes = parse_chronicle(raw)
+            added = self.chronicle.record(day, moments)
+            new_memes = self.memes.add_found([(t, "") for t in memes], "群里")
+            log.info("%s 的大事记：%s%s", day, "；".join(m.title for m in added) or "没有特别的",
+                     ("；新梗：" + "；".join(m.text for m in new_memes)) if new_memes else "")
+            self.refresh_prompts()
+            return added
+        except Exception as e:  # noqa: BLE001 - a failed write-up must not stop the loop
+            log.warning("%s 的大事记没写成：%s", day, e)
+            self.chronicle.record(day, [])  # don't retry every half minute; 管理页面可以重新整理
+            return []
+        finally:
+            self._chronicle_running = False
+
+    async def write_chronicle_now(self, day: str | None = None) -> list:
+        """Admin "现在整理": write up a day (default: today) right away, even if done before."""
+        chat = self.proactive_chat()
+        if not chat:
+            raise ConfigError("还不知道是哪个群，先在群里聊几句")
+        if self._chronicle_running:
+            raise ConfigError("正在整理，稍等一下")
+        day = day or datetime.now().date().isoformat()
+        self.chronicle.forget_day(day)
+        self._chronicle_running = True
+        return await self._write_chronicle(self.room(chat), day)
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)

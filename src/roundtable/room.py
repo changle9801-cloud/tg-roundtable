@@ -14,6 +14,7 @@ from typing import Callable, Protocol, Sequence
 
 from .config import RoundConfig
 from .drawing import extract_draw_requests
+from .followups import FUTURE_WORDS, extract_followups
 from .memes import extract_memes
 from .memory import extract_memories
 from .moderator import Moderator, RuleModerator
@@ -35,6 +36,7 @@ MAX_TG_IDS = 500  # Telegram message ids remembered per chat, for reactions and 
 
 MemoryHook = Callable[[Participant, list[str]], None]
 MemeHook = Callable[[Participant, list[tuple[str, str]]], None]
+FollowUpHook = Callable[[str, Participant, list], None]  # chat, member, [(when, what)]
 # (room, drawer, (label, description), message that asked for it or None)
 DrawHook = Callable[["ChatRoom", Participant, tuple[str, str], "Message | None"], None]
 
@@ -111,6 +113,7 @@ class ChatRoom:
         log_path: Path | None = None,
         on_memory: MemoryHook | None = None,
         on_meme: MemeHook | None = None,
+        on_followup: FollowUpHook | None = None,
         block_code: bool = False,
         on_draw: DrawHook | None = None,
         reactions: bool = False,
@@ -131,6 +134,7 @@ class ChatRoom:
         self.log_path = log_path  # transcript file (JSON lines); survives restarts
         self.on_memory = on_memory  # called with facts a model asked to remember
         self.on_meme = on_meme  # called with memes a model noted down for the meme library
+        self.on_followup = on_followup  # called with things a model wants to ask about later
         self.block_code = block_code  # drop replies that contain code
         self.on_draw = on_draw  # called when a member takes on a drawing request
         self.reactions = reactions  # members may react to messages with an emoji
@@ -329,6 +333,8 @@ class ChatRoom:
         others = [m.text for m in self.messages[-MAX_UNSEEN:] if m.speaker_id != speaker.id]
         seen = self._unseen(speaker)[-MAX_UNSEEN:]
         prompt = build_turn_prompt(seen, turns_left, self._activity_notes(), repeats=repeated_bits(own, others))
+        if self.on_followup is not None and any(m.from_user and FUTURE_WORDS.search(m.text) for m in seen):
+            prompt += "\n（刚才有人提到了以后的安排；值得之后问问的话，记得在回复末尾加 [跟进:时间|要问的事]。）"
         images = self._images_for(speaker, seen)
         if images:
             prompt += "\n（群里发的图片附在这条消息里了，你能直接看到。）"
@@ -385,6 +391,9 @@ class ChatRoom:
             text, memes = extract_memes(text)
             if memes and self.on_meme is not None:
                 self.on_meme(speaker, memes)
+            text, plans = extract_followups(text)
+            if plans and self.on_followup is not None:
+                self.on_followup(self.key, speaker, plans)
             text, reaction = extract_reaction(text)
             text, draws = extract_draw_requests(text)
             if draws and not text:

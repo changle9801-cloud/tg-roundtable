@@ -322,6 +322,26 @@
       </div>
 
       <div class="card">
+        <h2>要跟进的事 <span class="muted small" id="followup-count"></span></h2>
+        <p class="muted small" style="margin-top:-6px">你在群里提到以后的安排（面试、出差、看病……），成员会记下来，到时候在群里问一句。白天才问，每天最多 3 次。</p>
+        <div class="memory-add">
+          <input id="followup-text" placeholder="例如：阿明今天面试，问问结果">
+          <input id="followup-due" type="datetime-local" style="max-width:220px">
+          <button id="followup-add" class="primary">添加</button>
+        </div>
+        <div id="followup-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="row-between">
+          <h2>群里的大事记 <span class="muted small" id="chronicle-count"></span></h2>
+          <button id="chronicle-write">现在整理今天的</button>
+        </div>
+        <p class="muted small" style="margin-top:-6px">每天晚上 11 点后，挑出当天的名场面记下来，大家聊天时可以翻旧账；当天形成的新梗会放进梗库。</p>
+        <div id="chronicle-list"></div>
+      </div>
+
+      <div class="card">
         <h2>梗库 <span class="muted small" id="meme-count"></span></h2>
         <p class="muted small" style="margin-top:-6px">网上和群里流传的、关于成员和 AI 圈的梗，所有成员都看得到。成员闲逛、搜索时看到新梗会自己记进来（回复里写 [梗:…]，群里看不到）；你也可以手动添加或删掉。</p>
         <div class="memory-add">

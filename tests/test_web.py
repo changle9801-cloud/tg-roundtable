@@ -190,3 +190,29 @@ async def test_member_without_key_shows_error_in_status(admin):
     ds = next(m for m in status["members"] if m["id"] == "ds")
     assert ds["state"] == "error"
     assert "API key" in ds["message"]
+
+
+async def test_followups_and_chronicle(admin):
+    await login(admin)
+    headers = {"Origin": admin.origin}
+    body = {"text": "阿明面试，问问结果", "due": "2026-10-27 18:00"}
+    assert (await admin.post("/api/followups", json=body, headers=headers)).status == 400  # no group yet
+    admin.runtime.proactive_chat = lambda: "-100"
+    assert (await admin.post("/api/followups", json={**body, "due": "2020-01-01"}, headers=headers)).status == 400
+    from datetime import datetime, timedelta
+
+    body["due"] = f"{datetime.now() + timedelta(days=1):%Y-%m-%d} 18:00"
+    resp = await admin.post("/api/followups", json=body, headers=headers)
+    item = (await resp.json())["followups"][0]
+    assert item["chat"] == "-100" and item["status"] == "pending"
+    assert (await admin.post("/api/followups", json=body, headers=headers)).status == 400  # already noted
+    resp = await admin.put(f"/api/followups/{item['id']}", json={"text": "阿明面试结果"}, headers=headers)
+    assert (await resp.json())["followups"][0]["text"] == "阿明面试结果"
+    resp = await admin.delete(f"/api/followups/{item['id']}", headers=headers)
+    assert (await resp.json())["followups"] == []
+
+    moment = admin.runtime.chronicle.record("2026-10-25", [{"title": "洗衣液咖啡", "what": "倒错了", "people": []}])[0]
+    state = await (await admin.get("/api/state")).json()
+    assert state["chronicle"][0]["title"] == "洗衣液咖啡" and state["followups"] == []
+    resp = await admin.delete(f"/api/chronicle/{moment.id}", headers=headers)
+    assert (await resp.json())["chronicle"] == []

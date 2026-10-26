@@ -90,6 +90,12 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     def kaomoji() -> list[dict]:
         return [asdict(k) for k in runtime.kaomoji.items]
 
+    def followups() -> list[dict]:
+        return [asdict(f) for f in runtime.followups.items[-60:]]
+
+    def chronicle() -> list[dict]:
+        return [asdict(m) for m in runtime.chronicle.moments]
+
     def memes() -> list[dict]:
         return [asdict(m) for m in runtime.memes.items]
 
@@ -105,6 +111,8 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             "kaomoji": kaomoji(),
             "memory": memory(),
             "memes": memes(),
+            "followups": followups(),
+            "chronicle": chronicle(),
             "meta": {
                 "memory_instructions": LEARN_INSTRUCTIONS,
                 "sticker_prompt": runtime.sticker_prompt(),
@@ -307,6 +315,44 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         tools = await runtime.list_tool(body.get("tool") or {}, body.get("env") or {}, body.get("headers") or {})
         return web.json_response({"tools": tools})
 
+    def followups_response():
+        runtime.refresh_prompts()
+        return web.json_response({"followups": followups()})
+
+    async def add_followup(request):
+        from datetime import datetime
+
+        from ..followups import parse_when
+
+        body = await request.json()
+        when = parse_when(str(body.get("due", "")), datetime.now())
+        if when is None:
+            raise ConfigError("时间要像 2026-10-27 18:00 这样，而且不能是过去的时间")
+        chat = runtime.proactive_chat()
+        if not chat:
+            raise ConfigError("还不知道是哪个群，先在群里聊几句")
+        if runtime.followups.add(str(body.get("text", "")), when, chat, "") is None:
+            raise ConfigError("已经记过这件事了")
+        return followups_response()
+
+    async def update_followup(request):
+        runtime.followups.update(request.match_info["fid"], await request.json())
+        return followups_response()
+
+    async def delete_followup(request):
+        runtime.followups.delete(request.match_info["fid"])
+        return followups_response()
+
+    async def write_chronicle(request):
+        body = await request.json() if request.can_read_body else {}
+        added = await runtime.write_chronicle_now(str(body.get("day") or "") or None)
+        return web.json_response({"added": len(added), "chronicle": chronicle(), "memes": memes()})
+
+    async def delete_moment(request):
+        runtime.chronicle.delete(request.match_info["mid"])
+        runtime.refresh_prompts()
+        return web.json_response({"chronicle": chronicle()})
+
     async def list_chats(request):
         return web.json_response({"chats": runtime.chat_overview()})
 
@@ -337,6 +383,11 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_put("/api/memes/{mid}", update_meme)
     app.router.add_delete("/api/memes/{mid}", delete_meme)
     app.router.add_post("/api/tools/list", list_tool)
+    app.router.add_post("/api/followups", add_followup)
+    app.router.add_put("/api/followups/{fid}", update_followup)
+    app.router.add_delete("/api/followups/{fid}", delete_followup)
+    app.router.add_post("/api/chronicle/write", write_chronicle)
+    app.router.add_delete("/api/chronicle/{mid}", delete_moment)
     app.router.add_get("/api/chats", list_chats)
     app.router.add_get("/api/chats/{key}", chat_detail)
     app.router.add_post("/api/chats/{key}/reset", reset_chat)

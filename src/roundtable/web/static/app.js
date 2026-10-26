@@ -200,6 +200,8 @@ function renderAll() {
   renderByMember();
   renderMemory();
   renderMemes();
+  renderFollowups();
+  renderChronicle();
   renderTools();
   renderLifeSettings();
   renderStatus(server.status);
@@ -1405,6 +1407,69 @@ function renderMemory() {
     [h("div", { class: "muted small" }, "还没有长期记忆。")]));
 }
 
+function renderFollowups() {
+  const list = server.followups || [];
+  const pending = list.filter((f) => f.status === "pending").sort((a, b) => a.due - b.due);
+  const past = list.filter((f) => f.status !== "pending").slice(-8).reverse();
+  $("#followup-count").textContent = pending.length ? `${pending.length} 件待问` : "";
+  const when = (ts) => new Date(ts * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const row = (f) => h("div", { class: "fact" + (f.status === "pending" ? "" : " off") },
+    h("span", { class: "src" }, f.status === "pending" ? when(f.due) : (f.status === "done" ? "已问 " + when(f.asked_at) : "没问")),
+    h("span", { style: "flex:1" }, f.text),
+    f.noted_by ? h("span", { class: "src" }, `${memberName(f.noted_by)} 记的`) : null,
+    h("button", { class: "danger", onclick: () => followupCall("DELETE", `/api/followups/${f.id}`) }, "删除"));
+  $("#followup-list").replaceChildren(...(pending.length || past.length ? [...pending.map(row), ...past.map(row)]
+    : [h("div", { class: "muted small" }, "还没有要跟进的事。")]));
+}
+
+async function followupCall(method, path, body) {
+  try {
+    server.followups = (await api(method, path, body)).followups;
+    renderFollowups();
+    return true;
+  } catch (e) {
+    toast(e.message, true);
+    return false;
+  }
+}
+
+async function addFollowup() {
+  const text = $("#followup-text").value.trim();
+  const due = $("#followup-due").value.replace("T", " ");
+  if (!text || !due) { toast("写上要问的事和时间", true); return; }
+  if (await followupCall("POST", "/api/followups", { text, due })) { $("#followup-text").value = ""; $("#followup-due").value = ""; }
+}
+
+function renderChronicle() {
+  const list = [...(server.chronicle || [])].sort((a, b) => (a.day < b.day ? 1 : -1));
+  $("#chronicle-count").textContent = list.length ? `${list.length} 件` : "";
+  $("#chronicle-list").replaceChildren(...(list.length ? list.map((m) => h("div", { class: "fact" },
+    h("span", { class: "src" }, m.day.slice(5)),
+    h("span", { style: "flex:1" }, h("b", {}, m.title), "：", m.what),
+    h("button", { class: "danger", onclick: async () => {
+      try { server.chronicle = (await api("DELETE", `/api/chronicle/${m.id}`)).chronicle; renderChronicle(); }
+      catch (e) { toast(e.message, true); }
+    } }, "删除"))) : [h("div", { class: "muted small" }, "还没有大事记。")]));
+}
+
+async function writeChronicle(btn) {
+  btn.disabled = true;
+  btn.textContent = "整理中…";
+  try {
+    const r = await api("POST", "/api/chronicle/write", {});
+    server.chronicle = r.chronicle;
+    server.memes = r.memes;
+    renderChronicle();
+    renderMemes();
+    toast(r.added ? `记下了 ${r.added} 件事` : "今天没有特别值得记的");
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "现在整理今天的";
+  }
+}
+
 function renderMemes() {
   const list = server.memes || [];
   $("#meme-count").textContent = list.length ? `${list.length} 条` : "";
@@ -1820,6 +1885,8 @@ renderAddMenu();
 setupStickerInputs();
 $("#memory-add").onclick = addMemory;
 $("#meme-add").onclick = addMeme;
+$("#followup-add").onclick = addFollowup;
+$("#chronicle-write").onclick = (e) => writeChronicle(e.target);
 $("#meme-text").addEventListener("keydown", (e) => e.key === "Enter" && addMeme());
 $("#memory-text").addEventListener("keydown", (e) => e.key === "Enter" && addMemory());
 showTab(location.hash.slice(1) || "members");
