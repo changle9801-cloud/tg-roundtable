@@ -138,7 +138,7 @@ function blankMember(id) {
     proactive: false, proactive_topics: "", proactive_per_day: 3, proactive_hours: "10-23",
     proactive_idle_minutes: 60, proactive_replies: 1,
     browse: false, browse_topics: "", browse_per_day: 4, browse_hours: "10-23", journal_days: 3, journal_keep_days: 7,
-    appearance: "", can_draw: false, draws_per_day: 5,
+    appearance: "", can_draw: false, draws_per_day: 5, vision: false,
   };
 }
 
@@ -402,6 +402,13 @@ function memberBody(m, isNew) {
       h("small", {}, canSearch
         ? (m.kind === "grok_cli" ? "用 Grok 自带的搜索查网页和 X（推特），只读，不能操作你的电脑" : "用模型自带的搜索查网页，只读，不能操作你的电脑")
         : "这类成员暂不支持（等插件功能）"))));
+
+  if (m.kind === "api") {
+    rows.push(h("label", { class: "field check" },
+      h("input", { type: "checkbox", checked: m.vision, onchange: (e) => { m.vision = e.target.checked; changed(); schedulePreview(); } }),
+      h("span", {}, "能看图",
+        h("small", {}, "模型支持图片输入时打开（例如 DeepSeek、GPT、Claude、Gemini 的多模态模型），群里发的图会直接给它看"))));
+  }
 
   rows.push(field("Bot token", secretField("bots", m.id), "这个成员在 Telegram 里发言用的 bot，在 @BotFather 创建"));
 
@@ -730,11 +737,14 @@ function renderRules() {
   };
   const vision = $("#vision-member");
   const viewers = draft.participants.filter((p) => p.kind === "codex_cli");
+  const pick = draft.vision.member;
   vision.replaceChildren(
-    h("option", { value: "auto", selected: draft.vision.member === "auto" },
-      viewers.length ? `自动（${viewers[0].name || viewers[0].id}）` : "自动（需要一个 Codex 订阅成员）"),
-    ...viewers.map((p) => h("option", { value: p.id, selected: draft.vision.member === p.id }, p.name || p.id)),
-    h("option", { value: "off", selected: draft.vision.member === "off" }, "关闭：模型只知道发了一张图"),
+    h("option", { value: "help", selected: pick === "help" }, "能看图的直接看，看不了的找朋友帮忙（推荐）"),
+    h("option", { value: "auto", selected: pick === "auto" },
+      viewers.length ? `由 ${viewers[0].name || viewers[0].id} 先看一遍，描述给所有人` : "先描述给所有人（需要一个 Codex 订阅成员）"),
+    ...(viewers.length > 1 ? viewers : []).map((p) =>
+      h("option", { value: p.id, selected: pick === p.id }, `由 ${p.name || p.id} 先看一遍，描述给所有人`)),
+    h("option", { value: "off", selected: pick === "off" }, "关闭：模型只知道发了一张图"),
   );
   vision.onchange = (e) => { draft.vision.member = e.target.value; changed(); };
   $("#proactive-chat-current").textContent = server.status.proactive?.chat
@@ -853,6 +863,9 @@ function renderStickerSettings() {
   const max = $("#stickers-max");
   max.value = st.max_per_message;
   max.oninput = (e) => { st.max_per_message = Number(e.target.value); changed(); };
+  const react = $("#reactions-enabled");
+  react.checked = st.reactions;
+  react.onchange = (e) => { st.reactions = e.target.checked; changed(); renderPreview(); };
   const kao = $("#kaomoji-enabled");
   kao.checked = st.kaomoji;
   kao.onchange = (e) => { st.kaomoji = e.target.checked; changed(); renderPreview(); };

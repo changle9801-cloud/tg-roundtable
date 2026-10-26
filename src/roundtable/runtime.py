@@ -48,7 +48,16 @@ from .journal import JournalStore, browse_once
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .kaomoji import KaomojiLibrary
-from .vision import SeenCache, look_prompt, supports_vision
+from .reactions import reaction_instructions
+from .vision import (
+    IMAGE_KEEP_SECONDS,
+    SeenCache,
+    appearance_lines,
+    can_see_images,
+    look_prompt,
+    sight_instructions,
+    supports_vision,
+)
 from .stickers import MAX_FILE_BYTES as MAX_STICKER_BYTES, StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
 from .transcript import USER, Message
@@ -150,19 +159,31 @@ class Runtime:
         abilities = abilities_section(others, self._abilities(pc, config))
         drawing = ""
         drawers = [m for m in config.enabled_participants if m.can_draw and supports_drawing(m)]
-        if pc.can_draw and supports_drawing(pc):
+        is_drawer = pc.can_draw and supports_drawing(pc)
+        if is_drawer:
             looks = appearance_section(config.enabled_participants)
             drawing = drawer_instructions(self.drawings.remaining(pc)) + ("\n" + looks if looks else "")
         elif drawers and limit:
             drawing = requester_instructions(drawers[0].name)
+        sight = looks_of_others = ""
+        if config.vision_member != "off":
+            sees = can_see_images(pc)
+            if config.vision_member == "help" or sees:
+                helpers = [m.name for m in config.enabled_participants if m.id != pc.id and can_see_images(m)]
+                sight = sight_instructions(sees, helpers)
+            if not is_drawer:  # the drawer already has everyone's looks
+                looks_of_others = appearance_lines(config.enabled_participants)
         parts = [
             abilities,
             search,
+            sight,
+            looks_of_others,
             drawing,
             self.journal.prompt_section(pc.id),
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.stickers.prompt_section(limit, pc.id),
             self.kaomoji.prompt_section(pc.id) if config.kaomoji_enabled else "",
+            reaction_instructions() if config.reactions_enabled else "",
         ]
         return "\n\n".join(p for p in parts if p)
 
@@ -174,11 +195,14 @@ class Runtime:
             out.append("联网搜索（也能搜 X/推特上的帖子）" if m.kind == "grok_cli" else "联网搜索")
         if m.can_draw and supports_drawing(m) and config.stickers_enabled:
             out.append("画表情包")
-        viewers = [v for v in config.enabled_participants if supports_vision(v)]
-        viewer = None if config.vision_member == "off" else next(
-            (v for v in viewers if config.vision_member in ("auto", v.id)), None)
-        if viewer is not None and viewer.id == m.id:
-            out.append("看图（群里发的图片都是先由这位看过再说给大家）")
+        mode = config.vision_member
+        if mode != "off":
+            describer = None if mode == "help" else next(
+                (v for v in config.enabled_participants if supports_vision(v) and mode in ("auto", v.id)), None)
+            if describer is not None and describer.id == m.id:
+                out.append("看图（群里发的图片都是先由这位看过再说给大家）")
+            elif can_see_images(m):
+                out.append("看图")
         return out
 
     def preview_prompt(self, draft_settings: dict, member_id: str) -> str:
@@ -199,7 +223,7 @@ class Runtime:
         self.participant_errors = errors
         self.refresh_prompts()
         for room in self.rooms.values():
-            room.update(built, self.config.round, self.sticker_limit, self.config.no_coding)
+            room.update(built, self.config.round, self.sticker_limit, self.config.no_coding, self.config.reactions_enabled)
 
     def refresh_prompts(self) -> None:
         """Settings, stickers or memory changed: rebuild every system prompt (next turn on)."""
@@ -236,7 +260,7 @@ class Runtime:
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, block_code=self.config.no_coding,
-                on_draw=self._on_draw,
+                on_draw=self._on_draw, reactions=self.config.reactions_enabled,
             )
         return self.rooms[key]
 
@@ -413,35 +437,51 @@ class Runtime:
         return added
 
     def viewer(self) -> Participant | None:
-        """The member who looks at pictures for everyone, if any."""
+        """The member who describes every picture for everyone, in that mode; otherwise None."""
         choice = self.config.vision_member
-        if choice == "off":
+        if choice in ("off", "help"):
             return None
         return next((p for p in self.participants if supports_vision(p.cfg) and choice in ("auto", p.id)), None)
 
-    async def look_at(self, bot, chat_key: str, media: tuple[str, str, str], what: str, caption: str) -> str | None:
-        """A short description of a picture sent in the group; ``None`` if nobody can look."""
+    async def keep_image(self, bot, media: tuple[str, str, str]) -> Path | None:
+        """Save a picture sent in the group for a couple of days, so members who can see get it."""
         file_id, unique_id, ext = media
+        folder = self.config.data_dir / "images"
+        folder.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - IMAGE_KEEP_SECONDS
+        for old in folder.iterdir():
+            with suppress(OSError):
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+        path = folder / f"{unique_id}{ext}"
+        if not path.exists():
+            try:
+                file = await bot.get_file(file_id)
+                data = await bot.download_file(file.file_path)
+                path.write_bytes(data.read())
+            except Exception as e:  # the message still goes through, just without the picture
+                log.warning("图片没能下载：%s", e)
+                return None
+        return path
+
+    async def look_at(self, chat_key: str, path: Path, unique_id: str, what: str, caption: str) -> str | None:
+        """A short description of a picture, for the describe-for-everyone mode; ``None`` if nobody can look."""
         cached = self.seen.get(unique_id)
         if cached is not None:
             return cached
         viewer = self.viewer()
         if viewer is None:
             return None
-        folder = self.config.data_dir / "vision"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{unique_id}{ext}"
+        room = self.rooms.get(chat_key)
+        recent = [f"{m.speaker_name}: {m.text}" for m in room.messages[-6:]] if room else []
+        prompt = look_prompt(what, caption, appearance_lines(self.config.enabled_participants), recent)
         await self.sink.activity(chat_key, viewer, "正在看图")
         try:
-            file = await bot.get_file(file_id)
-            data = await bot.download_file(file.file_path)
-            path.write_bytes(data.read())
-            text = await viewer.describe_image(path, look_prompt(what, caption))
+            text = await viewer.describe_image(path, prompt)
         except Exception as e:  # the message still goes through, just without a description
             log.warning("%s 看图失败：%s", viewer.name, e)
             return None
         finally:
-            path.unlink(missing_ok=True)
             await self.sink.clear_activity(chat_key, viewer)
         self.seen.put(unique_id, text)
         log.info("%s 看图：%s", viewer.name, text)

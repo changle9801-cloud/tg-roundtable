@@ -19,7 +19,9 @@ from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
 from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
+from .reactions import extract_reaction
 from .repetition import repeated_bits
+from .vision import MAX_IMAGES, can_see_images
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions
 
@@ -27,6 +29,7 @@ log = logging.getLogger(__name__)
 
 MAX_HISTORY = 400  # messages kept in memory per chat
 MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
+MAX_TG_IDS = 500  # Telegram message ids remembered per chat, for reactions and quotes
 
 MemoryHook = Callable[[Participant, list[str]], None]
 # (room, drawer, (label, description), message that asked for it or None)
@@ -38,6 +41,7 @@ class _Turn:
     speaker: Participant
     task: asyncio.Task
     prev_cursor: int  # restored if the call fails, so the messages count as unseen again
+    seen: list[Message] = field(default_factory=list)  # what the speaker was shown this turn
 
 
 @dataclass
@@ -48,13 +52,18 @@ class _RoundState:
     failed: set[str] = field(default_factory=set)  # errored this round; not retried
     started: int = 0  # replies started since the user last spoke
     closed: bool = False  # the dice said nobody else joins in; only @-mentions now
-    granted: set[str] = field(default_factory=set)  # given an extra turn (e.g. to use a new sticker)
+    # Owed an answer: @-mentioned and not yet spoken, or given an extra turn (e.g. to use a new sticker).
+    granted: set[str] = field(default_factory=set)
 
 
 class Sink(Protocol):
     """Where the room's output goes (Telegram, console, tests)."""
 
-    async def post(self, chat_key: str, participant: Participant, text: str) -> None: ...
+    async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> int | None:
+        """Post ``text`` (quoting message ``reply_to`` if given); returns the sent message's id if known."""
+
+    async def react(self, chat_key: str, participant: Participant, message_id: int, emoji: str) -> None:
+        """Put an emoji reaction on a message, if the sink can."""
 
     async def notice(self, chat_key: str, text: str) -> None: ...
 
@@ -100,6 +109,7 @@ class ChatRoom:
         on_memory: MemoryHook | None = None,
         block_code: bool = False,
         on_draw: DrawHook | None = None,
+        reactions: bool = False,
     ):
         self.key = key
         self.participants = list(participants)
@@ -118,6 +128,8 @@ class ChatRoom:
         self.on_memory = on_memory  # called with facts a model asked to remember
         self.block_code = block_code  # drop replies that contain code
         self.on_draw = on_draw  # called when a member takes on a drawing request
+        self.reactions = reactions  # members may react to messages with an emoji
+        self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
         # Models already have the saved history in their own sessions, so nothing is unseen.
         self.cursors = {p.id: len(self.messages) for p in self.participants}
@@ -133,12 +145,18 @@ class ChatRoom:
         return self._task is not None and not self._task.done()
 
     def update(
-        self, participants: Sequence[Participant], round_cfg: RoundConfig, sticker_limit: int = 0, block_code: bool = False
+        self,
+        participants: Sequence[Participant],
+        round_cfg: RoundConfig,
+        sticker_limit: int = 0,
+        block_code: bool = False,
+        reactions: bool = False,
     ) -> None:
         """Swap in new members or rules; call only while no round is running."""
         self.participants = list(participants)
         self.sticker_limit = sticker_limit
         self.block_code = block_code
+        self.reactions = reactions
         self.max_turns = round_cfg.max_turns_per_model
         self.pass_consumes_turn = round_cfg.pass_consumes_turn
         self.slow_after = round_cfg.slow_after
@@ -148,11 +166,15 @@ class ChatRoom:
         # Newcomers start from the beginning of the kept history (capped by MAX_UNSEEN).
         self.cursors = {p.id: self.cursors.get(p.id, 0) for p in self.participants}
 
-    def add_user_message(self, user_name: str, text: str, reply_to: str | None = None) -> None:
+    def add_user_message(
+        self, user_name: str, text: str, reply_to: str | None = None, tg_id: int = 0, images: Sequence[str] = ()
+    ) -> None:
         mentions = find_mentions(text, self.participants, from_user=True)
         if reply_to and reply_to not in mentions:
             mentions.insert(0, reply_to)
-        self._append(Message(USER, user_name, text, tuple(mentions), time.time()))
+        message = Message(USER, user_name, text, tuple(mentions), time.time(), tuple(images))
+        self._append(message)
+        self._remember_tg(message, tg_id)
         log.info("[%s] %s: %s", self.key, user_name, _preview(text))
         if self.busy:
             # Models already thinking finish their turn; quotas start over and, if there is
@@ -213,6 +235,8 @@ class ChatRoom:
         """
         loop = asyncio.get_running_loop()
         state = _RoundState(turns or self._fresh_turns(), last_speaker)
+        if self.messages:
+            state.granted.update(self.messages[-1].mentions)
         pending: dict[asyncio.Task, _Turn] = {}
         last_start = float("-inf")
         focus: Message | None = None  # message whose mentions decide the next pick
@@ -231,6 +255,8 @@ class ChatRoom:
                     # A model may have posted after the user's new message; still honour
                     # whoever the user addressed, and answer the new message right away.
                     focus = next((m for m in reversed(self.messages) if m.from_user), None)
+                    if focus is not None:
+                        state.granted.update(focus.mentions)
                     last_start = float("-inf")
 
                 speaking = {t.speaker.id for t in pending.values()}
@@ -247,7 +273,8 @@ class ChatRoom:
                 ]
                 room_for_more = bool(candidates) and len(pending) < self.max_parallel
                 if room_for_more and (not pending or loop.time() - last_start >= self.slow_after):
-                    speaker = self.moderator.pick(candidates, latest, state.last_speaker)
+                    owed = [c for c in candidates if c.id in forced]  # whoever was @-ed goes first
+                    speaker = self.moderator.pick(owed or candidates, latest, state.last_speaker)
                     if speaker.id not in forced and not self._joins_in(speaker, state.started):
                         state.closed = True  # like a real group: most messages get one or two replies
                         continue
@@ -295,9 +322,11 @@ class ChatRoom:
         prev_cursor = self.cursors[speaker.id]
         own = [m.text for m in self.messages if m.speaker_id == speaker.id]
         others = [m.text for m in self.messages[-MAX_UNSEEN:] if m.speaker_id != speaker.id]
-        prompt = build_turn_prompt(
-            self._unseen(speaker)[-MAX_UNSEEN:], turns_left, self._activity_notes(), repeats=repeated_bits(own, others)
-        )
+        seen = self._unseen(speaker)[-MAX_UNSEEN:]
+        prompt = build_turn_prompt(seen, turns_left, self._activity_notes(), repeats=repeated_bits(own, others))
+        images = self._images_for(speaker, seen)
+        if images:
+            prompt += "\n（群里发的图片附在这条消息里了，你能直接看到。）"
         self.cursors[speaker.id] = len(self.messages)
 
         def on_activity(text: str) -> None:
@@ -306,9 +335,9 @@ class ChatRoom:
 
         async def speak() -> str:
             async with self.sink.typing(self.key, speaker):
-                return await self._ask(speaker, prompt, turns_left, on_activity)
+                return await self._ask(speaker, prompt, turns_left, on_activity, images)
 
-        return _Turn(speaker, asyncio.create_task(speak()), prev_cursor)
+        return _Turn(speaker, asyncio.create_task(speak()), prev_cursor, seen)
 
     async def _finish_turn(self, turn: _Turn, state: _RoundState) -> None:
         speaker = turn.speaker
@@ -322,7 +351,7 @@ class ChatRoom:
             await self.sink.notice(self.key, f"{speaker.name} 出错了：{e}")
             return
 
-        if await self._publish(speaker, raw) is None:
+        if await self._publish(speaker, raw, turn.seen) is None:
             state.passed.add(speaker.id)
             if self.pass_consumes_turn:
                 state.turns[speaker.id] -= 1
@@ -330,15 +359,25 @@ class ChatRoom:
         state.turns[speaker.id] = state.turns.get(speaker.id, 1) - 1
         state.passed.clear()  # new content: those who passed may want to respond now
         state.last_speaker = speaker.id
+        # Whoever it @-ed is owed an answer, even if others speak first.
+        own = next((m for m in reversed(self.messages) if m.speaker_id == speaker.id), None)
+        if own is not None:
+            state.granted.update(pid for pid in own.mentions if pid != speaker.id)
 
-    async def _publish(self, speaker: Participant, raw: str) -> str | None:
-        """Clean a reply and post it. Returns the transcript text, or None if nothing was posted."""
+    async def _publish(self, speaker: Participant, raw: str, seen: Sequence[Message] = ()) -> str | None:
+        """Clean a reply and post it. Returns the transcript text, or None if nothing was posted.
+
+        ``seen`` is what the speaker was answering: a reaction goes on the message it answered,
+        and the reply quotes that message when the chat has moved on since.
+        """
         text = clean_reply(raw, speaker.name)
         draws: list[tuple[str, str]] = []
+        reaction = None
         if text is not None:
             text, facts = extract_memories(text)
             if facts and self.on_memory is not None:
                 self.on_memory(speaker, facts)
+            text, reaction = extract_reaction(text)
             text, draws = extract_draw_requests(text)
             if draws and not text:
                 text = "行，等我一会儿。"  # it only wrote the tag; still acknowledge the request
@@ -350,23 +389,66 @@ class ChatRoom:
             # Everyday-chat group: a reply with code is dropped, whatever the prompt said.
             log.warning("[%s] %s 的回复里有代码，已拦下：%s", self.key, speaker.name, _preview(text))
             text = None
+        mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id] if text else []
+        target = self._answered(speaker, seen, mentions)
+        target_id = self._tg_id(target)
+        if not (self.reactions and target_id):
+            reaction = None
+        if reaction and text is not None:
+            note = f"[给 {target.speaker_name} 的「{_preview(target.text, 16)}」点了 {reaction}]"
+            transcript = f"{transcript} {note}".strip() if transcript else note
         if text is None or not transcript:
             log.info("[%s] %s: [PASS]", self.key, speaker.name)
             return None
 
-        mentions = [m for m in find_mentions(text, self.participants, from_user=False) if m != speaker.id]
         requester = self._requester_for(speaker) if draws else None
         # The cursor stays where it was before the call: messages that arrived while
         # the model was thinking are still unseen, and _unseen() skips its own post.
-        self._append(Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time()))
+        message = Message(speaker.id, speaker.name, transcript, tuple(mentions), time.time())
+        self._append(message)
         log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
+        if reaction:
+            await self.sink.react(self.key, speaker, target_id, reaction)
         if text:
-            await self.sink.post(self.key, speaker, text)
+            # Quote the answered message when other messages came in after it.
+            moved_on = target is not None and any(m.ts > target.ts and m is not message for m in self.messages)
+            sent = await self.sink.post(self.key, speaker, text, reply_to=target_id if moved_on else None)
+            self._remember_tg(message, sent)
         for sticker in stickers:
             await self.sink.post_sticker(self.key, speaker, sticker)
         if draws and self.on_draw is not None:
             self.on_draw(self, speaker, draws[0], requester)  # one picture at a time
         return transcript
+
+    def _images_for(self, speaker: Participant, seen: Sequence[Message]) -> list[str]:
+        """Pictures to hand to a member who can see: the new ones, or, when it is asked for help, the latest."""
+        if not can_see_images(speaker.cfg):
+            return []
+        paths = [p for m in seen for p in m.images]
+        if not paths and seen and speaker.id in seen[-1].mentions:
+            # Someone asks it about a picture it may have seen before: show it again.
+            recent = next((m for m in reversed(self.messages[-12:]) if m.images), None)
+            paths = list(recent.images) if recent else []
+        return [p for p in paths[-MAX_IMAGES:] if Path(p).exists()]
+
+    def _answered(self, speaker: Participant, seen: Sequence[Message], mentions: Sequence[str]) -> Message | None:
+        """The message a reply answers: the latest one from someone it @-mentions, else the latest it saw."""
+        others = [m for m in reversed(seen) if m.speaker_id != speaker.id]
+        for pid in mentions:
+            hit = next((m for m in others if m.speaker_id == pid), None)
+            if hit is not None:
+                return hit
+        return others[0] if others else None
+
+    def _tg_id(self, message: Message | None) -> int:
+        return self._tg_ids.get((message.speaker_id, message.ts), 0) if message is not None else 0
+
+    def _remember_tg(self, message: Message, tg_id: int | None) -> None:
+        if not tg_id:
+            return
+        self._tg_ids[(message.speaker_id, message.ts)] = tg_id
+        while len(self._tg_ids) > MAX_TG_IDS:
+            del self._tg_ids[next(iter(self._tg_ids))]
 
     def _requester_for(self, drawer: Participant) -> Message | None:
         """Who asked for the drawing: the latest message addressing the drawer, else the latest from someone else."""
@@ -456,15 +538,21 @@ class ChatRoom:
         task.add_done_callback(self._background.discard)
 
     async def _ask(
-        self, speaker: Participant, prompt: str, turns_left: int, on_activity: ActivityHook | None = None
+        self,
+        speaker: Participant,
+        prompt: str,
+        turns_left: int,
+        on_activity: ActivityHook | None = None,
+        images: Sequence[str] = (),
     ) -> str:
         """Get a model's turn, starting a new session if its saved one cannot be resumed.
 
         CLI sessions can disappear (the CLI was reinstalled, or the data folder moved and
         with it the CLI's working folder). The new session gets the recent transcript.
         """
+        extra = {"images": [Path(p) for p in images]} if images else {}
         try:
-            return await speaker.reply(self.key, prompt, on_activity)
+            return await speaker.reply(self.key, prompt, on_activity, **extra)
         except ParticipantError:
             session = self.store.get(self.key, speaker.id)
             if not session:
@@ -472,7 +560,7 @@ class ChatRoom:
             self.store.clear_one(self.key, speaker.id)
             fresh = build_turn_prompt(self.messages[-MAX_UNSEEN:], turns_left, self._activity_notes())
             try:
-                text = await speaker.reply(self.key, fresh, on_activity)
+                text = await speaker.reply(self.key, fresh, on_activity, **extra)
             except ParticipantError:
                 self.store.set(self.key, speaker.id, session)  # not a session problem after all
                 raise

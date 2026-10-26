@@ -13,7 +13,7 @@ from aiogram import F, Router
 from aiogram.enums import ChatAction, ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, ReactionTypeEmoji, ReplyParameters
 from aiogram.types import Message as TgMessage
 
 from .config import ConfigError
@@ -81,21 +81,35 @@ class TelegramSink:
         self.activity_messages: dict[tuple[str, str], int] = {}  # (chat, participant) -> notice id
         self.pacing = True  # human-like typing pauses between messages
 
-    async def post(self, chat_key: str, participant: Participant, text: str) -> None:
+    async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> int | None:
         bot = self.runtime.bots.get(participant.id)
         if bot is None:
             await self.notice(chat_key, f"{participant.name} 没有可用的 bot，发言没能发出去。")
-            return
+            return None
+        last = None
         try:
             for i, bubble in enumerate(bubbles(text)):
                 for chunk in split_text(bubble):
                     with suppress(TelegramAPIError):
                         await bot.send_chat_action(int(chat_key), ChatAction.TYPING)
                     await asyncio.sleep(typing_pause(chunk, first=i == 0) if self.pacing else 0)
-                    await bot.send_message(int(chat_key), chunk)
+                    # Only the first message quotes; if the quoted one is gone, send without the quote.
+                    quote = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to and last is None else None
+                    sent = await bot.send_message(int(chat_key), chunk, reply_parameters=quote)
+                    last = sent.message_id
         except TelegramAPIError as e:
             log.warning("%s could not post: %s", participant.id, e)
             await self.notice(chat_key, f"{participant.name} 的 bot 发不出消息（{e}），请确认它已经被拉进这个群。")
+        return last
+
+    async def react(self, chat_key: str, participant: Participant, message_id: int, emoji: str) -> None:
+        bot = self.runtime.bots.get(participant.id)
+        if bot is None:
+            return
+        try:
+            await bot.set_message_reaction(int(chat_key), message_id, [ReactionTypeEmoji(emoji=emoji)])
+        except TelegramAPIError as e:  # e.g. the group only allows some reactions
+            log.warning("%s could not react %s: %s", participant.id, emoji, e)
 
     async def notice(self, chat_key: str, text: str) -> None:
         controller = self.runtime.controller
@@ -315,11 +329,14 @@ def build_router(runtime: Runtime) -> Router:
         if not allowed(msg):
             return
         async with in_order[msg.chat.id]:
-            seen = None
+            seen, images = None, ()
             target = to_look_at(msg, runtime.stickers)
-            if target is not None:
+            if target is not None and runtime.config.vision_member != "off":
                 media, what = target
-                seen = await runtime.look_at(msg.bot, str(msg.chat.id), media, what, msg.caption or "")
+                path = await runtime.keep_image(msg.bot, media)
+                if path is not None:
+                    images = (str(path),)
+                    seen = await runtime.look_at(str(msg.chat.id), path, media[1], what, msg.caption or "")
             text = describe(msg, runtime.stickers, seen)
             if not text or text.startswith("/"):
                 return
@@ -331,6 +348,8 @@ def build_router(runtime: Runtime) -> Router:
             replied = msg.reply_to_message
             if replied and replied.from_user:
                 reply_to = runtime.bot_user_ids.get(replied.from_user.id)
-            runtime.room(msg.chat.id).add_user_message(msg.from_user.first_name, text, reply_to)
+            runtime.room(msg.chat.id).add_user_message(
+                msg.from_user.first_name, text, reply_to, tg_id=msg.message_id, images=images
+            )
 
     return r

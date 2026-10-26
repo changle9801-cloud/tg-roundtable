@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -89,31 +90,54 @@ def runtime_with(tmp_path, viewer):
     rt = Runtime(SettingsStore(tmp_path))
     rt.participants = [viewer]
     rt.sink = Sink()
+    rt.config.vision_member = "auto"  # the describe-for-everyone mode
     return rt
 
 
-async def test_look_at_describes_once_and_cleans_up(tmp_path):
+async def test_pictures_are_kept_for_a_while(tmp_path):
+    import os
+    import time
+
+    rt = Runtime(SettingsStore(tmp_path))
+    path = await rt.keep_image(Bot(), ("P800", "PU800", ".jpg"))
+    assert path == tmp_path / "images" / "PU800.jpg" and path.read_bytes() == JPG
+    stale = tmp_path / "images" / "old.jpg"
+    stale.write_bytes(JPG)
+    os.utime(stale, (time.time() - 3 * 86400,) * 2)
+    await rt.keep_image(Bot(), ("P9", "PU9", ".jpg"))
+    assert not stale.exists() and path.exists()
+
+
+async def test_look_at_describes_once_with_context(tmp_path):
     viewer = Viewer()
     rt = runtime_with(tmp_path, viewer)
-    text = await rt.look_at(Bot(), "-1", ("P800", "PU800", ".jpg"), "图片", "笑死")
+    rt.config = replace(rt.config, vision_member="auto", participants=[
+        ParticipantConfig(id="claude", name="Claude", kind="claude_cli", appearance="橘色长发的学姐"),
+        ParticipantConfig(id="deepseek", name="DeepSeek", kind="api", appearance="蓝发女仆鲸鱼娘"),
+    ])
+    image = tmp_path / "a.jpg"
+    image.write_bytes(JPG)
+    text = await rt.look_at("-1", image, "PU800", "图片", "笑死")
     assert text == "一只橘猫把头卡在纸巾盒里"
-    assert viewer.calls[0][0] == JPG and "还说了：「笑死」" in viewer.calls[0][1]
+    prompt = viewer.calls[0][1]
+    assert "还说了：「笑死」" in prompt and "- Claude：橘色长发的学姐" in prompt and "直接说是谁" in prompt
     assert rt.sink.events == [("show", "codex", "正在看图"), ("clear", "codex")]
-    assert not any((tmp_path / "vision").iterdir())  # the download is deleted
-    assert await rt.look_at(Bot(), "-1", ("P800", "PU800", ".jpg"), "图片", "") == text
+    assert await rt.look_at("-1", image, "PU800", "图片", "") == text
     assert len(viewer.calls) == 1  # cached
 
 
-async def test_look_at_failure_or_off(tmp_path):
+async def test_look_at_failure_or_other_modes(tmp_path):
+    image = tmp_path / "a.jpg"
+    image.write_bytes(JPG)
     rt = runtime_with(tmp_path, Viewer(fail=True))
-    assert await rt.look_at(Bot(), "-1", ("P1", "PU1", ".jpg"), "图片", "") is None
+    assert await rt.look_at("-1", image, "PU1", "图片", "") is None
     assert rt.sink.events[-1] == ("clear", "codex")
 
     rt = runtime_with(tmp_path, Viewer())
-    rt.config.vision_member = "off"
-    assert await rt.look_at(Bot(), "-1", ("P2", "PU2", ".jpg"), "图片", "") is None
-    rt.config.vision_member = "someone-else"
-    assert rt.viewer() is None
+    for mode in ("off", "help", "someone-else"):
+        rt.config.vision_member = mode
+        assert rt.viewer() is None
+    assert await rt.look_at("-1", image, "PU2", "图片", "") is None
     rt.config.vision_member = "codex"
     assert rt.viewer() is not None
 
@@ -121,8 +145,9 @@ async def test_look_at_failure_or_off(tmp_path):
 def test_vision_setting_is_checked():
     s = normalize_settings({"participants": [{"id": "codex", "name": "Codex", "kind": "codex_cli"}], "vision": {"member": "codex"}})
     assert s["vision"] == {"member": "codex"}
-    assert normalize_settings({"vision": {"member": "gone"}})["vision"] == {"member": "auto"}
-    assert normalize_settings({})["vision"] == {"member": "auto"}
+    assert normalize_settings({"vision": {"member": "gone"}})["vision"] == {"member": "help"}
+    assert normalize_settings({"vision": {"member": "auto"}})["vision"] == {"member": "auto"}
+    assert normalize_settings({})["vision"] == {"member": "help"}
 
 
 async def test_codex_describe_command(tmp_path, monkeypatch):

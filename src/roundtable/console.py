@@ -15,8 +15,11 @@ CHAT_KEY = "console"
 
 
 class ConsoleSink:
-    async def post(self, chat_key: str, participant: Participant, text: str) -> None:
+    async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> None:
         print(f"\n[{participant.name}] {text}\n", flush=True)
+
+    async def react(self, chat_key: str, participant: Participant, message_id: int, emoji: str) -> None:
+        print(f"（{participant.name} 点了 {emoji}）", flush=True)
 
     async def notice(self, chat_key: str, text: str) -> None:
         print(f"\n[系统] {text}\n", flush=True)

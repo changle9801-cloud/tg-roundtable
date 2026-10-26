@@ -42,6 +42,18 @@ async def test_an_at_mention_always_gets_an_answer(make, store):
     assert [pid for pid, _ in sink.posts] == ["a", "b"]
 
 
+async def test_an_earlier_mention_is_still_answered(make, store):
+    # The user asks A and B; A then hands over to C. B was asked first and still answers.
+    a = make("a", ["@C 你来"])
+    b = make("b", ["我也觉得"])
+    c = make("c", ["好"])
+    d = make("d", ["d0"])
+    room, sink = room_for([a, b, c, d], store, chance=0.0, decay=0.0)
+    room.add_user_message("me", "@A @B 你们说说")
+    await room.wait_idle()
+    assert {pid for pid, _ in sink.posts} == {"a", "b", "c"}  # d was not asked and nobody chimes in
+
+
 async def test_full_chance_lets_everyone_speak(make, store):
     room, sink = room_for(four(make), store, chance=1.0, decay=1.0)
     room.add_user_message("me", "hi")

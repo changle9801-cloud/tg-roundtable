@@ -72,6 +72,19 @@ async def test_reply_sends_system_prompt_and_keeps_history(tmp_path, store, fake
     assert len(again.load_history("chat")) == 4
 
 
+async def test_pictures_go_with_the_request_not_the_history(tmp_path, store, fake_api):
+    import base64
+
+    p = make_api(tmp_path, store, fake_api["url"], vision=True)
+    image = tmp_path / "a.png"
+    image.write_bytes(b"\x89PNG data")
+    await p.reply("chat", "[发送了一张图片] 看这个", images=[image])
+    sent = fake_api["requests"][-1]["messages"][-1]["content"]
+    assert sent[0] == {"type": "text", "text": "[发送了一张图片] 看这个"}
+    assert sent[1]["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(b"\x89PNG data").decode()
+    assert p.load_history("chat")[0]["content"] == "[发送了一张图片] 看这个"  # text only on disk
+
+
 async def test_history_is_trimmed_to_start_on_a_user_turn(tmp_path, store, fake_api):
     p = make_api(tmp_path, store, fake_api["url"], max_history=3)
     for i in range(4):

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
+from typing import Sequence
 
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
@@ -48,7 +50,9 @@ class GrokCLI(Participant):
             cmd += ["--resume", session_id]
         return cmd
 
-    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+    async def reply(
+        self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
+    ) -> str:
         # Grok does not read prompts from stdin; rooms may call concurrently, so use a unique file.
         prompt_path = self.work_dir / f"prompt-{uuid.uuid4().hex}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")

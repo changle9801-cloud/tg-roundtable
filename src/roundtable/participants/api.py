@@ -7,10 +7,12 @@ keeps no conversation state, so the history lives here.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Sequence
 
 import aiohttp
 
@@ -29,6 +31,14 @@ PROVIDERS = {
     # Not OpenAI-compatible: served by AnthropicAPI through the official SDK.
     "anthropic": ("https://api.anthropic.com", "ANTHROPIC_API_KEY"),
 }
+
+
+IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def image_data(path: Path) -> tuple[str, str]:
+    """(media type, base64 data) of a picture file."""
+    return IMAGE_TYPES.get(path.suffix.lower(), "image/jpeg"), base64.b64encode(path.read_bytes()).decode()
 
 
 class HistoryParticipant(Participant):
@@ -76,13 +86,21 @@ class HistoryParticipant(Participant):
     def reset(self, chat_key: str) -> None:
         self._history_path(chat_key).unlink(missing_ok=True)
 
-    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+    async def reply(
+        self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
+    ) -> str:
         history = self.load_history(chat_key)
         history.append({"role": "user", "content": prompt})
-        text = await self.complete(history)
+        # Pictures go with this request only; the saved history keeps the text.
+        request = history[:-1] + [{"role": "user", "content": self.with_images(prompt, images)}] if images else history
+        text = await self.complete(request)
         history.append({"role": "assistant", "content": text})
         self.save_history(chat_key, history)
         return text
+
+    def with_images(self, prompt: str, images: Sequence[Path]) -> str | list[dict]:
+        """A user message holding the text and the pictures, in this API's format."""
+        return prompt
 
     async def complete(self, history: list[dict]) -> str:
         """Send the system prompt plus ``history`` and return the reply text."""
@@ -100,6 +118,13 @@ class OpenAICompatAPI(HistoryParticipant):
                 f"参与者 {self.cfg.id}：未知的 provider {self.cfg.provider!r}，"
                 f"请填写 base_url，或使用 {sorted(PROVIDERS)} 之一。"
             )
+
+    def with_images(self, prompt: str, images: Sequence[Path]) -> list[dict]:
+        parts: list[dict] = [{"type": "text", "text": prompt}]
+        for image in images:
+            mime, data = image_data(image)
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        return parts
 
     def build_payload(self, history: list[dict]) -> dict:
         payload = {

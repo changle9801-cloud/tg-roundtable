@@ -20,21 +20,25 @@ class Message:
     # Participant ids addressed by this message, in the order they appear.
     mentions: tuple[str, ...] = field(default=())
     ts: float = 0.0  # unix time; 0 when unknown
+    images: tuple[str, ...] = field(default=())  # saved picture files sent with the message
 
     def to_json(self) -> dict:
-        return {
+        data = {
             "speaker_id": self.speaker_id,
             "speaker_name": self.speaker_name,
             "text": self.text,
             "mentions": list(self.mentions),
             "ts": self.ts,
         }
+        if self.images:
+            data["images"] = list(self.images)
+        return data
 
     @classmethod
     def from_json(cls, data: dict) -> Message:
         return cls(
             data["speaker_id"], data["speaker_name"], data["text"],
-            tuple(data.get("mentions") or ()), float(data.get("ts") or 0),
+            tuple(data.get("mentions") or ()), float(data.get("ts") or 0), tuple(data.get("images") or ()),
         )
 
     @property

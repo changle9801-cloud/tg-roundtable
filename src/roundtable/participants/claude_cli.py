@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Sequence
 
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
@@ -40,7 +42,9 @@ class ClaudeCLI(Participant):
             cmd += ["--resume", session_id]
         return cmd
 
-    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+    async def reply(
+        self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
+    ) -> str:
         session_id = self.store.get(chat_key, self.id)
         out = await run_cli(
             self.build_command(session_id), prompt, self.work_dir, self.timeout,

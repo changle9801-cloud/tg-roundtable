@@ -65,7 +65,7 @@
         </label>
         <p class="muted small" id="proactive-chat-current" style="margin-top:-6px"></p>
         <label class="field">
-          <span>谁来看图 <small>群里发的图片和库里没有的静态贴纸，先由它看一遍，把内容写成一两句话给所有成员</small></span>
+          <span>群里发的图片 <small>包括库里没有的静态贴纸；能不能看图在「成员」里设置，Codex 订阅自带</small></span>
           <select id="vision-member"></select>
         </label>
       </div>
@@ -160,7 +160,10 @@
             <span>每条消息最多几个表情</span>
             <input id="stickers-max" type="number" min="1" max="3">
           </label>
-          <div></div>
+          <label class="field check">
+            <input id="reactions-enabled" type="checkbox">
+            <span>允许给消息点表情回应 <small>像真人一样点个 🤣👍，不用每次都回一句</small></span>
+          </label>
         </div>
       </div>
       <div class="grid2">

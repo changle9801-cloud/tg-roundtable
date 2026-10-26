@@ -12,7 +12,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from ..config import ConfigError, ParticipantConfig
 
@@ -87,11 +87,14 @@ class Participant(ABC):
         """Forget the conversation; the session store is cleared by the room."""
 
     @abstractmethod
-    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+    async def reply(
+        self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
+    ) -> str:
         """Send one turn to the model and return its raw text answer.
 
         ``on_activity`` is called with a short description (e.g. "正在 X 上搜索") when the
-        model starts using a tool, so the group can see what is taking so long.
+        model starts using a tool, so the group can see what is taking so long. ``images``
+        are pictures sent in the group, for members whose model can look at them.
         """
 
 

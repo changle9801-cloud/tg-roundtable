@@ -6,7 +6,7 @@ import logging
 
 import anthropic
 
-from .api import HistoryParticipant
+from .api import HistoryParticipant, image_data
 from .base import ParticipantError
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,13 @@ class AnthropicAPI(HistoryParticipant):
     def uses_fallbacks(self) -> bool:
         # Only on the first-party API: a custom base_url may be a proxy without the beta.
         return self.cfg.model in FALLBACK_MODELS and not self.cfg.base_url
+
+    def with_images(self, prompt, images) -> list[dict]:
+        blocks: list[dict] = []
+        for image in images:
+            mime, data = image_data(image)
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
+        return [*blocks, {"type": "text", "text": prompt}]
 
     def build_request(self, history: list[dict]) -> dict:
         request = {

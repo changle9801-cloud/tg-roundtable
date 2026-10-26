@@ -23,7 +23,8 @@ def test_clean_reply_strips_own_name_prefix():
 def test_clean_reply_uses_chinese_punctuation_after_chinese():
     assert clean_reply("周日上午就开始发愁了,这种难受?其实挺常见的!", "Claude") == "周日上午就开始发愁了，这种难受？其实挺常见的！"
     assert clean_reply("看这个 https://a.com/x?y=1, ok", "Claude") == "看这个 https://a.com/x?y=1, ok"
-    assert clean_reply("比分 3:2,还行", "Claude") == "比分 3:2,还行"  # only right after Chinese
+    assert clean_reply("医学上叫 zoopsia,酒精戒断很经典", "Claude") == "医学上叫 zoopsia，酒精戒断很经典"
+    assert clean_reply("比分 3:2, ok", "Claude") == "比分 3:2, ok"  # nothing Chinese around it
 
 
 def test_clean_reply_unwraps_a_bracketed_message():

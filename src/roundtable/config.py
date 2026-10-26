@@ -54,6 +54,8 @@ class ParticipantConfig:
     appearance: str = ""  # what it looks like; used when someone draws it
     # Drawing stickers for others when asked (Codex CLI only).
     can_draw: bool = False
+    # The model is handed the pictures sent in the group (API models that take images; Codex always can).
+    vision: bool = False
     draws_per_day: int = 5
     max_turns: int = 0  # turns per round; 0 = the group's default
     # Read-only web search with the model's own built-in tool (Grok's also covers X).
@@ -93,10 +95,13 @@ class Config:
     scene: str = ""  # shared setting for the whole group, e.g. "you are housemates"
     no_coding: bool = True  # everyday chat only: decline programming help
     proactive_chat_id: int = 0  # group for proactive posts; 0 = the most recently active one
-    vision_member: str = "auto"  # who looks at pictures for everyone: auto (first Codex), off, or a member id
+    # Pictures: "help" (members who can see get them, the others ask a friend), "auto" or a member id
+    # (that member describes every picture for everyone first), or "off".
+    vision_member: str = "help"
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message
     kaomoji_enabled: bool = True
+    reactions_enabled: bool = True  # members may put emoji reactions on messages
     memory_learn: str = "review"  # off / review / auto: what happens to [记住:…] from models
 
     @property

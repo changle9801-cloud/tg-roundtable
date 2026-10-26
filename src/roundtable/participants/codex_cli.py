@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Sequence
 
 from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
 
@@ -28,10 +29,12 @@ class CodexCLI(Participant):
         super().__init__(*args, **kwargs)
         self.command = resolve_command("codex", self.cfg.command)
 
-    def build_command(self, session_id: str | None) -> list[str]:
+    def build_command(self, session_id: str | None, images: Sequence[Path] = ()) -> list[str]:
         cmd = [*self.command, "exec"]
         if session_id:
             cmd.append("resume")
+        for image in images:  # each followed by another option, so "-" is never read as an image
+            cmd += ["--image", str(image)]
         cmd += [
             "--json",
             "--skip-git-repo-check",
@@ -57,7 +60,9 @@ class CodexCLI(Participant):
         cmd.append("-")  # prompt from stdin
         return cmd
 
-    async def reply(self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None) -> str:
+    async def reply(
+        self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
+    ) -> str:
         session_id = self.store.get(chat_key, self.id)
 
         def watch(line: str) -> None:
@@ -65,7 +70,7 @@ class CodexCLI(Participant):
             if on_activity is not None and '"web_search"' in line and '"item.started"' in line:
                 on_activity("正在联网搜索")
 
-        out = await run_cli(self.build_command(session_id), prompt, self.work_dir, self.timeout, on_line=watch)
+        out = await run_cli(self.build_command(session_id, images), prompt, self.work_dir, self.timeout, on_line=watch)
         text, thread_id = parse_events(out)
         if thread_id:
             self.store.set(chat_key, self.id, thread_id)

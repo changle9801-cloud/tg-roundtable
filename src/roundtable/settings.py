@@ -83,10 +83,10 @@ def default_settings() -> dict:
         "telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""},
         "round": asdict(RoundConfig()),
         "prompts": {"system_template": "", "scene": "", "no_coding": True},
-        "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True},
+        "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True, "reactions": True},
         "memory": {"learn": "review"},
         "proactive": {"chat_id": 0},
-        "vision": {"member": "auto"},
+        "vision": {"member": "help"},
         "web": {"port": DEFAULT_PORT},
         "participants": [],
     }
@@ -152,7 +152,7 @@ def normalize_participant(raw: dict) -> dict:
                       "tagline", "persona", "style", "relationships", "examples",
                       "proactive_topics", "proactive_hours", "browse_topics", "browse_hours", "appearance"):
             value = str(value or "").strip()
-        if f.name in ("enabled", "web_search", "proactive", "browse", "can_draw"):
+        if f.name in ("enabled", "web_search", "proactive", "browse", "can_draw", "vision"):
             value = bool(value)
         if f.name in PROACTIVE_RANGES:
             low, high, label = PROACTIVE_RANGES[f.name]
@@ -225,7 +225,7 @@ def normalize_settings(raw: dict) -> dict:
     stickers = {**base["stickers"], **(raw.get("stickers") or {})}
     try:
         stickers = {"enabled": bool(stickers["enabled"]), "max_per_message": int(stickers["max_per_message"]),
-                    "kaomoji": bool(stickers["kaomoji"])}
+                    "kaomoji": bool(stickers["kaomoji"]), "reactions": bool(stickers["reactions"])}
     except (TypeError, ValueError):
         raise ConfigError("每条消息的表情数必须是数字") from None
     if not 1 <= stickers["max_per_message"] <= 3:
@@ -238,7 +238,7 @@ def normalize_settings(raw: dict) -> dict:
         proactive = {"chat_id": int((raw.get("proactive") or {}).get("chat_id") or 0)}
     except (TypeError, ValueError):
         raise ConfigError("主动发言的目标群 ID 必须是数字") from None
-    vision = {"member": str((raw.get("vision") or {}).get("member") or "auto").strip() or "auto"}
+    vision = {"member": str((raw.get("vision") or {}).get("member") or "help").strip() or "help"}
     web = {**base["web"], **(raw.get("web") or {})}
     web = {"port": int(web.get("port") or DEFAULT_PORT)}
 
@@ -248,8 +248,8 @@ def normalize_settings(raw: dict) -> dict:
         raise ConfigError("成员 ID 不能重复")
     if tg["controller_participant"] and tg["controller_participant"] not in ids:
         tg["controller_participant"] = ""
-    if vision["member"] not in ("auto", "off") and vision["member"] not in ids:
-        vision["member"] = "auto"
+    if vision["member"] not in ("help", "auto", "off") and vision["member"] not in ids:
+        vision["member"] = "help"
 
     return {
         "telegram": tg,
@@ -357,6 +357,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],
         kaomoji_enabled=settings["stickers"]["kaomoji"],
+        reactions_enabled=settings["stickers"]["reactions"],
         memory_learn=settings["memory"]["learn"],
     )
 

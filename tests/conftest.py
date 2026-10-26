@@ -17,11 +17,13 @@ class FakeParticipant(Participant):
         super().__init__(cfg, store, work_dir, timeout=5)
         self.replies = list(replies)
         self.prompts: list[str] = []
+        self.images: list[list[str]] = []  # pictures handed over, per call
         self.delay = delay
         self.activity = activity  # reported (like a search starting) before each delay
 
-    async def reply(self, chat_key: str, prompt: str, on_activity=None) -> str:
+    async def reply(self, chat_key: str, prompt: str, on_activity=None, images=()) -> str:
         self.prompts.append(prompt)
+        self.images.append([str(i) for i in images])
         if self.activity and on_activity is not None:
             on_activity(self.activity)
         if self.delay:
@@ -38,6 +40,9 @@ class FakeSink:
         self.stickers: list[tuple[str, str]] = []
         self.notices: list[str] = []
         self.activities: list[tuple[str, str, str]] = []  # (event, member, text)
+        self.reactions: list[tuple[str, int, str]] = []  # (member, message id, emoji)
+        self.quotes: list[tuple[str, int | None]] = []  # (member, quoted message id) per post
+        self.next_id = 1000  # Telegram-like message ids handed out by post()
 
     async def activity(self, chat_key, participant, text):
         self.activities.append(("show", participant.id, text))
@@ -48,8 +53,14 @@ class FakeSink:
     async def post_sticker(self, chat_key, participant, sticker):
         self.stickers.append((participant.id, sticker.label))
 
-    async def post(self, chat_key, participant, text):
+    async def post(self, chat_key, participant, text, reply_to=None):
         self.posts.append((participant.id, text))
+        self.quotes.append((participant.id, reply_to))
+        self.next_id += 1
+        return self.next_id
+
+    async def react(self, chat_key, participant, message_id, emoji):
+        self.reactions.append((participant.id, message_id, emoji))
 
     async def notice(self, chat_key, text):
         self.notices.append(text)

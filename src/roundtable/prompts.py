@@ -321,7 +321,7 @@ _PASS_RE = re.compile(r"^\[?\s*pass\s*\]?[\s.。!！]*$", re.IGNORECASE)
 
 # Half-width punctuation right after Chinese text (some models type "好的,我来" ) reads off in a chat.
 _FULL_WIDTH = {",": "，", "?": "？", "!": "！", ";": "；", ":": "："}
-_CJK_PUNCT = re.compile(r"([一-鿿])([,?!;:])(?!//)")
+_CJK_PUNCT = re.compile(r"([一-鿿])([,?!;:])(?!//)|()([,;])(?=[一-鿿])")
 
 
 def clean_reply(raw: str, name: str) -> str | None:
@@ -332,7 +332,7 @@ def clean_reply(raw: str, name: str) -> str | None:
     # ...or wrap the whole message in 【】 like a narration box.
     if text.startswith("【") and text.endswith("】") and text.count("【") == 1 and text.count("】") == 1:
         text = text[1:-1].strip()
-    text = _CJK_PUNCT.sub(lambda m: m.group(1) + _FULL_WIDTH[m.group(2)], text)
+    text = _CJK_PUNCT.sub(lambda m: (m.group(1) or "") + _FULL_WIDTH[m.group(2) or m.group(4)], text)
     if not text or _PASS_RE.match(text):
         return None
     return text
