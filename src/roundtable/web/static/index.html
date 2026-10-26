@@ -320,6 +320,17 @@
       </div>
 
       <div class="card">
+        <h2>梗库 <span class="muted small" id="meme-count"></span></h2>
+        <p class="muted small" style="margin-top:-6px">网上和群里流传的、关于成员和 AI 圈的梗，所有成员都看得到。成员闲逛、搜索时看到新梗会自己记进来（回复里写 [梗:…]，群里看不到）；你也可以手动添加或删掉。</p>
+        <div class="memory-add">
+          <input id="meme-text" placeholder="例如：网上有个梗，说 DeepSeek 在 API 中转站冒充 Claude">
+          <input id="meme-url" placeholder="来源链接（可选）" style="max-width:220px">
+          <button id="meme-add" class="primary">添加</button>
+        </div>
+        <div id="meme-list"></div>
+      </div>
+
+      <div class="card">
         <div class="row-between">
           <h2>群聊记录与上下文</h2>
           <select id="chat-select"></select>

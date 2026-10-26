@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
+from .base import ActivityHook, Participant, ParticipantError, image_data, resolve_command, run_cli
 
 
 class ClaudeCLI(Participant):
@@ -19,10 +19,12 @@ class ClaudeCLI(Participant):
         super().set_system_prompt(prompt)
         self._prompt_file.write_text(prompt, encoding="utf-8")
 
-    def build_command(self, session_id: str | None) -> list[str]:
+    def build_command(self, session_id: str | None, with_images: bool = False) -> list[str]:
         cmd = [
             *self.command,
             "-p",
+            # Pictures need the JSON message format on stdin; plain chat stays plain text.
+            *(["--input-format", "stream-json"] if with_images else []),
             # Streamed events show when a web search starts; the last line is the result.
             "--output-format", "stream-json",
             "--verbose",
@@ -46,13 +48,24 @@ class ClaudeCLI(Participant):
         self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
     ) -> str:
         session_id = self.store.get(chat_key, self.id)
+        stdin = image_message(prompt, images) if images else prompt
         out = await run_cli(
-            self.build_command(session_id), prompt, self.work_dir, self.timeout,
+            self.build_command(session_id, bool(images)), stdin, self.work_dir, self.timeout,
             on_line=_activity_reader(on_activity),
         )
         text, new_session = parse_output(out)
         self.store.set(chat_key, self.id, new_session)
         return text
+
+
+def image_message(prompt: str, images: Sequence[Path]) -> str:
+    """One user message with pictures, as a line of --input-format stream-json."""
+    content = []
+    for image in images:
+        mime, data = image_data(image)
+        content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
+    content.append({"type": "text", "text": prompt})
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n"
 
 
 def _activity_reader(on_activity: ActivityHook | None):

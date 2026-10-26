@@ -45,6 +45,7 @@ from .drawing import (
     supports_drawing,
 )
 from .journal import JournalStore, browse_once
+from .memes import MemeLibrary
 from .memory import MemoryStore
 from .proactive import ProactiveScheduler, seconds_quiet
 from .kaomoji import KaomojiLibrary
@@ -114,6 +115,7 @@ class Runtime:
         self.kaomoji = KaomojiLibrary(store.data_dir)
         self.seen = SeenCache()
         self.memory = MemoryStore(store.data_dir)
+        self.memes = MemeLibrary(store.data_dir)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
@@ -165,20 +167,18 @@ class Runtime:
             drawing = drawer_instructions(self.drawings.remaining(pc)) + ("\n" + looks if looks else "")
         elif drawers and limit:
             drawing = requester_instructions(drawers[0].name)
-        sight = looks_of_others = ""
+        sight = ""
         if config.vision_member != "off":
             sees = can_see_images(pc)
             if config.vision_member == "help" or sees:
                 helpers = [m.name for m in config.enabled_participants if m.id != pc.id and can_see_images(m)]
                 sight = sight_instructions(sees, helpers)
-            if not is_drawer:  # the drawer already has everyone's looks
-                looks_of_others = appearance_lines(config.enabled_participants)
         parts = [
             abilities,
             search,
             sight,
-            looks_of_others,
             drawing,
+            self.memes.prompt_section(),
             self.journal.prompt_section(pc.id),
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.stickers.prompt_section(limit, pc.id),
@@ -232,6 +232,12 @@ class Runtime:
 
     stickers_changed = refresh_prompts
 
+    def _on_meme(self, participant: Participant, found: list[tuple[str, str]]) -> None:
+        added = self.memes.add_found(found, participant.name)
+        if added:
+            log.info("%s 在梗库里记下了：%s", participant.name, "；".join(m.text for m in added))
+            self.refresh_prompts()
+
     def _on_memory(self, participant: Participant, facts: list[str]) -> None:
         added = self.memory.suggest(facts, participant.id, self.config.memory_learn)
         if any(f.status == "active" for f in added):
@@ -259,7 +265,7 @@ class Runtime:
             self.rooms[key] = ChatRoom(
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
-                log_path=self.chat_log_path(key), on_memory=self._on_memory, block_code=self.config.no_coding,
+                log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled,
             )
         return self.rooms[key]
@@ -603,16 +609,21 @@ class Runtime:
         if not (pc.web_search and supports_web_search(pc)):
             self.browsing.record(pc, None)
             return []
-        prompt = build_browse_prompt(pc.browse_topics or pc.proactive_topics, pc.kind == "grok_cli", self.journal.known_urls(pc.id))
+        names = [m.name for m in self.config.enabled_participants]
+        prompt = build_browse_prompt(
+            pc.browse_topics or pc.proactive_topics, pc.kind == "grok_cli", self.journal.known_urls(pc.id), names
+        )
         log.info("%s 开始浏览……", p.name)
+        memes_before = len(self.memes.items)
         try:
-            added = await browse_once(p, self.journal, prompt)
+            added = await browse_once(p, self.journal, prompt, self.memes)
         except ParticipantError as e:
             log.warning("%s 浏览失败：%s", p.id, e)
             added = []
         self.browsing.record(pc, "found" if added else None)
         if added:
             log.info("%s 记下了 %d 条见闻：%s", p.name, len(added), "；".join(e.title for e in added))
+        if added or len(self.memes.items) != memes_before:
             self.refresh_prompts()
         return added
 

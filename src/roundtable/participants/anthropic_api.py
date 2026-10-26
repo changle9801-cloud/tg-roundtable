@@ -6,8 +6,8 @@ import logging
 
 import anthropic
 
-from .api import HistoryParticipant, image_data
-from .base import ParticipantError
+from .api import HistoryParticipant
+from .base import ParticipantError, image_data
 
 log = logging.getLogger(__name__)
 

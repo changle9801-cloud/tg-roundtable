@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .config import ConfigError, ParticipantConfig
+from .memes import extract_memes
 
 log = logging.getLogger(__name__)
 
@@ -154,14 +155,19 @@ class JournalStore:
 BROWSE_CHAT = "__browse__"  # a throwaway session, separate from every group chat
 
 
-async def browse_once(participant, journal: JournalStore, prompt: str) -> list[Entry]:
-    """Run one private browsing session and keep what it found."""
+async def browse_once(participant, journal: JournalStore, prompt: str, memes=None) -> list[Entry]:
+    """Run one private browsing session and keep what it found (memes go to ``memes``)."""
     try:
         raw = await participant.reply(BROWSE_CHAT, prompt)
     finally:
         # A fresh session each time: browsing should not pile up into one long context.
         participant.store.clear_one(BROWSE_CHAT, participant.id)
         participant.reset(BROWSE_CHAT)
+    raw, found = extract_memes(raw)  # before the JSON is parsed: the tags would break it
+    if found and memes is not None:
+        added = memes.add_found(found, participant.cfg.name)
+        if added:
+            log.info("%s 在梗库里记下了：%s", participant.cfg.name, "；".join(m.text for m in added))
     return journal.add(participant.cfg, parse_findings(raw))
 
 

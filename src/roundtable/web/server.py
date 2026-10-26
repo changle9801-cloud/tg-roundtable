@@ -88,6 +88,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     def kaomoji() -> list[dict]:
         return [asdict(k) for k in runtime.kaomoji.items]
 
+    def memes() -> list[dict]:
+        return [asdict(m) for m in runtime.memes.items]
+
     def memory() -> list[dict]:
         return [asdict(f) for f in runtime.memory.items]
 
@@ -99,6 +102,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             "stickers": stickers(),
             "kaomoji": kaomoji(),
             "memory": memory(),
+            "memes": memes(),
             "meta": {
                 "memory_instructions": LEARN_INSTRUCTIONS,
                 "sticker_prompt": runtime.sticker_prompt(),
@@ -269,6 +273,24 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         runtime.memory.delete(request.match_info["fid"])
         return memory_response()
 
+    def memes_response():
+        runtime.refresh_prompts()
+        return web.json_response({"memes": memes()})
+
+    async def add_meme(request):
+        body = await request.json()
+        if runtime.memes.add(str(body.get("text", "")), str(body.get("url", "")), "你") is None:
+            raise ConfigError("梗库里已经有这条了")
+        return memes_response()
+
+    async def update_meme(request):
+        runtime.memes.update(request.match_info["mid"], await request.json())
+        return memes_response()
+
+    async def delete_meme(request):
+        runtime.memes.delete(request.match_info["mid"])
+        return memes_response()
+
     async def list_chats(request):
         return web.json_response({"chats": runtime.chat_overview()})
 
@@ -293,6 +315,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/memory", add_memory)
     app.router.add_put("/api/memory/{fid}", update_memory)
     app.router.add_delete("/api/memory/{fid}", delete_memory)
+    app.router.add_post("/api/memes", add_meme)
+    app.router.add_put("/api/memes/{mid}", update_meme)
+    app.router.add_delete("/api/memes/{mid}", delete_meme)
     app.router.add_get("/api/chats", list_chats)
     app.router.add_get("/api/chats/{key}", chat_detail)
     app.router.add_post("/api/chats/{key}/reset", reset_chat)

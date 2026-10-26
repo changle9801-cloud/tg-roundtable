@@ -206,7 +206,7 @@ def build_proactive_prompt(
     return now_line() + "\n" + "\n".join(lines)
 
 
-def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str]) -> str:
+def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str], members: Sequence[str] = ()) -> str:
     """A private browsing session: findings go into the member's journal, not the group."""
     where = "X（推特）和网上" if covers_x else "网上"
     lines = [
@@ -222,6 +222,11 @@ def build_browse_prompt(topics: str, covers_x: bool, known_urls: Sequence[str]) 
         "要求：只记你真的搜到的内容，链接必须是原帖或原文，不要编造；避开政治、色情、血腥、谣言和容易引战的话题。",
         "什么都没找到就回复 []。",
     ]
+    if members:
+        lines.append(
+            f"顺便：如果刷到关于群里成员（{'、'.join(members)}）或 AI 圈的网络梗，在 JSON 后面另起一行写 "
+            "[梗:梗的内容|来源链接] 记进梗库（梗库里已有的不用再记）。"
+        )
     if known_urls:
         lines.append("这些你最近已经记过了，不要重复：")
         lines += [f"  {u}" for u in known_urls[-30:]]

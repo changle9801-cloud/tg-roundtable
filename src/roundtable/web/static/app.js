@@ -197,6 +197,7 @@ function renderAll() {
   renderKaomoji();
   renderByMember();
   renderMemory();
+  renderMemes();
   renderStatus(server.status);
 }
 
@@ -403,11 +404,13 @@ function memberBody(m, isNew) {
         ? (m.kind === "grok_cli" ? "用 Grok 自带的搜索查网页和 X（推特），只读，不能操作你的电脑" : "用模型自带的搜索查网页，只读，不能操作你的电脑")
         : "这类成员暂不支持（等插件功能）"))));
 
-  if (m.kind === "api") {
+  if (m.kind === "api" || m.kind === "claude_cli") {
     rows.push(h("label", { class: "field check" },
       h("input", { type: "checkbox", checked: m.vision, onchange: (e) => { m.vision = e.target.checked; changed(); schedulePreview(); } }),
       h("span", {}, "能看图",
-        h("small", {}, "模型支持图片输入时打开（例如 DeepSeek、GPT、Claude、Gemini 的多模态模型），群里发的图会直接给它看"))));
+        h("small", {}, m.kind === "api"
+          ? "模型支持图片输入时打开（例如 DeepSeek、GPT、Claude、Gemini 的多模态模型），群里发的图会直接给它看"
+          : "群里发的图会直接给它看；有人发图时会多用一些 Claude 订阅额度，平时聊天不受影响"))));
   }
 
   rows.push(field("Bot token", secretField("bots", m.id), "这个成员在 Telegram 里发言用的 bot，在 @BotFather 创建"));
@@ -1219,6 +1222,44 @@ function renderMemory() {
     [h("div", { class: "muted small" }, "还没有长期记忆。")]));
 }
 
+function renderMemes() {
+  const list = server.memes || [];
+  $("#meme-count").textContent = list.length ? `${list.length} 条` : "";
+  $("#meme-list").replaceChildren(...(list.length ? [...list].reverse().map((m) => {
+    const text = h("input", { value: m.text });
+    text.addEventListener("change", () => text.value.trim() !== m.text && memeCall("PUT", `/api/memes/${m.id}`, { text: text.value }));
+    text.addEventListener("keydown", (e) => e.key === "Enter" && text.blur());
+    return h("div", { class: "fact" + (m.enabled ? "" : " off") },
+      h("input", { type: "checkbox", checked: m.enabled, title: "启用", onchange: (e) => memeCall("PUT", `/api/memes/${m.id}`, { enabled: e.target.checked }) }),
+      text,
+      m.url ? h("a", { class: "src", href: m.url, target: "_blank", rel: "noreferrer" }, "来源") : null,
+      h("span", { class: "src" }, m.added_by ? `${m.added_by} 记的` : ""),
+      h("button", { class: "danger", onclick: () => confirm("删除这条梗？") && memeCall("DELETE", `/api/memes/${m.id}`) }, "删除"));
+  }) : [h("div", { class: "muted small" }, "梗库还是空的。")]));
+}
+
+async function memeCall(method, path, body) {
+  try {
+    server.memes = (await api(method, path, body)).memes;
+    renderMemes();
+    renderPreview();
+    return true;
+  } catch (e) {
+    toast(e.message, true);
+    renderMemes();
+    return false;
+  }
+}
+
+async function addMeme() {
+  const text = $("#meme-text");
+  if (!text.value.trim()) return;
+  if (await memeCall("POST", "/api/memes", { text: text.value, url: $("#meme-url").value })) {
+    text.value = "";
+    $("#meme-url").value = "";
+  }
+}
+
 async function memoryCall(method, path, body) {
   try {
     const r = await api(method, path, body);
@@ -1474,6 +1515,8 @@ window.addEventListener("beforeunload", (e) => {
 renderAddMenu();
 setupStickerInputs();
 $("#memory-add").onclick = addMemory;
+$("#meme-add").onclick = addMeme;
+$("#meme-text").addEventListener("keydown", (e) => e.key === "Enter" && addMeme());
 $("#memory-text").addEventListener("keydown", (e) => e.key === "Enter" && addMemory());
 showTab(location.hash.slice(1) || "members");
 load()

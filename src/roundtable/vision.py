@@ -23,8 +23,11 @@ def supports_vision(pc: ParticipantConfig) -> bool:
 
 
 def can_see_images(pc: ParticipantConfig) -> bool:
-    """The model itself is handed the pictures sent in the group."""
-    return pc.kind == "codex_cli" or (pc.kind == "api" and getattr(pc, "vision", False))
+    """The model itself is handed the pictures sent in the group.
+
+    Codex always; Claude CLI and API members when 能看图 is on (it costs a bit more).
+    """
+    return pc.kind == "codex_cli" or (pc.kind in ("claude_cli", "api") and getattr(pc, "vision", False))
 
 
 def appearance_lines(members: Sequence[ParticipantConfig]) -> str:
@@ -36,8 +39,9 @@ def sight_instructions(sees: bool, helpers: Sequence[str]) -> str:
     if sees:
         return (
             "看图：\n"
-            "- 群里发的图片你能直接看到（会附在消息里）。\n"
-            "- 朋友请你帮忙看图时，用一两句话说清图里有什么、是什么梗；图里的人像群里谁，就直接说是谁。"
+            "- 群里发的图片你能直接看到（会附在消息里）。看到图就像平时那样直接反应，别像解说一样把图里的内容挨个描述一遍。\n"
+            "- 图里画的是群里的谁，就 @ 一下本人，比如「@Claude 这不就是你吗」，让本人也来看看。\n"
+            "- 朋友请你帮忙看图时，再用一两句话说清图里有什么、画的是谁。图里的梗你心里知道就行，不用点破。"
         )
     lines = ["看图：", "- 群里发的图片你看不到，只知道有人发了图；别瞎猜图里是什么。"]
     if helpers:

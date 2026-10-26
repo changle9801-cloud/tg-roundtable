@@ -7,7 +7,6 @@ keeps no conversation state, so the history lives here.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -17,7 +16,7 @@ from typing import Sequence
 import aiohttp
 
 from ..config import ConfigError
-from .base import ActivityHook, Participant, ParticipantError
+from .base import ActivityHook, Participant, ParticipantError, image_data
 
 log = logging.getLogger(__name__)
 
@@ -31,14 +30,6 @@ PROVIDERS = {
     # Not OpenAI-compatible: served by AnthropicAPI through the official SDK.
     "anthropic": ("https://api.anthropic.com", "ANTHROPIC_API_KEY"),
 }
-
-
-IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
-
-
-def image_data(path: Path) -> tuple[str, str]:
-    """(media type, base64 data) of a picture file."""
-    return IMAGE_TYPES.get(path.suffix.lower(), "image/jpeg"), base64.b64encode(path.read_bytes()).decode()
 
 
 class HistoryParticipant(Participant):

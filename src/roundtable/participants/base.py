@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -63,6 +64,14 @@ class SessionStore:
 
 
 ActivityHook = Callable[[str], None]
+
+
+IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def image_data(path: Path) -> tuple[str, str]:
+    """(media type, base64 data) of a picture file."""
+    return IMAGE_TYPES.get(path.suffix.lower(), "image/jpeg"), base64.b64encode(path.read_bytes()).decode()
 
 
 class Participant(ABC):

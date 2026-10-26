@@ -33,8 +33,9 @@ def test_who_sees_and_who_asks(tmp_path):
     p = prompts_for(tmp_path)
     assert "群里发的图片你看不到" in p["claude"] and "@Codex、@DeepSeek" in p["claude"]
     assert "群里发的图片你能直接看到" in p["deepseek"] and "群里发的图片你能直接看到" in p["codex"]
+    assert "@ 一下本人" in p["deepseek"] and "别像解说一样" in p["deepseek"]
     assert "- DeepSeek：看图" in p["claude"]  # in the friends' abilities list
-    assert "群里成员的样子" in p["grok"] and "- Claude：橘色长发的学姐" in p["grok"]
+    assert "群里成员的样子" not in p["grok"]  # looks are kept as shared memories instead
 
 
 def test_describe_mode_and_off(tmp_path):
@@ -43,7 +44,7 @@ def test_describe_mode_and_off(tmp_path):
     assert "群里发的图片你能直接看到" in p["deepseek"]
     assert "看图（群里发的图片都是先由这位看过再说给大家）" in p["claude"]
     off = prompts_for(tmp_path / "off", "off")
-    assert all("看图：" not in text and "群里成员的样子" not in text for text in off.values())
+    assert all("看图：" not in text for text in off.values())
 
 
 class InOrder(RuleModerator):
@@ -74,6 +75,40 @@ async def test_missing_files_are_not_handed_over(make, store, round_cfg, tmp_pat
     room.add_user_message("阿明", "[发送了一张图片]", images=[str(tmp_path / "gone.jpg")])
     await room.wait_idle()
     assert ds.images == [[]] and "附在这条消息里" not in ds.prompts[0]
+
+
+async def test_claude_cli_gets_pictures_as_a_json_message(tmp_path, monkeypatch):
+    import json
+
+    from roundtable.participants import claude_cli
+    from roundtable.participants.claude_cli import ClaudeCLI
+    from roundtable.vision import can_see_images
+
+    pc = ParticipantConfig(id="claude", name="Claude", kind="claude_cli", command=["claude"])
+    assert not can_see_images(pc)
+    pc.vision = True
+    assert can_see_images(pc)
+    claude = ClaudeCLI(pc, SessionStore(tmp_path / "s.json"), tmp_path, timeout=30)
+    claude.set_system_prompt("SYSTEM")
+    calls = []
+
+    async def fake_run(cmd, stdin, cwd, timeout, **kw):
+        calls.append((cmd, stdin))
+        return json.dumps({"type": "result", "result": "看到了", "session_id": "s1"})
+
+    monkeypatch.setattr(claude_cli, "run_cli", fake_run)
+    image = tmp_path / "a.png"
+    image.write_bytes(b"\x89PNG")
+    assert await claude.reply("chat", "看这个", images=[image]) == "看到了"
+    cmd, stdin = calls[0]
+    assert cmd[cmd.index("--input-format") + 1] == "stream-json"
+    content = json.loads(stdin)["message"]["content"]
+    assert content[0]["type"] == "image" and content[0]["source"]["media_type"] == "image/png"
+    assert content[-1] == {"type": "text", "text": "看这个"}
+
+    await claude.reply("chat", "就聊天")  # no pictures: plain text as before
+    cmd, stdin = calls[1]
+    assert "--input-format" not in cmd and stdin == "就聊天"
 
 
 def test_codex_attaches_pictures(tmp_path):

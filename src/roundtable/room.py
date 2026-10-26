@@ -14,6 +14,7 @@ from typing import Callable, Protocol, Sequence
 
 from .config import RoundConfig
 from .drawing import extract_draw_requests
+from .memes import extract_memes
 from .memory import extract_memories
 from .moderator import Moderator, RuleModerator
 from .participants import Participant, ParticipantError, SessionStore
@@ -32,6 +33,7 @@ MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
 MAX_TG_IDS = 500  # Telegram message ids remembered per chat, for reactions and quotes
 
 MemoryHook = Callable[[Participant, list[str]], None]
+MemeHook = Callable[[Participant, list[tuple[str, str]]], None]
 # (room, drawer, (label, description), message that asked for it or None)
 DrawHook = Callable[["ChatRoom", Participant, tuple[str, str], "Message | None"], None]
 
@@ -107,6 +109,7 @@ class ChatRoom:
         sticker_limit: int = 0,
         log_path: Path | None = None,
         on_memory: MemoryHook | None = None,
+        on_meme: MemeHook | None = None,
         block_code: bool = False,
         on_draw: DrawHook | None = None,
         reactions: bool = False,
@@ -126,6 +129,7 @@ class ChatRoom:
         self.moderator = moderator or RuleModerator()
         self.log_path = log_path  # transcript file (JSON lines); survives restarts
         self.on_memory = on_memory  # called with facts a model asked to remember
+        self.on_meme = on_meme  # called with memes a model noted down for the meme library
         self.block_code = block_code  # drop replies that contain code
         self.on_draw = on_draw  # called when a member takes on a drawing request
         self.reactions = reactions  # members may react to messages with an emoji
@@ -377,6 +381,9 @@ class ChatRoom:
             text, facts = extract_memories(text)
             if facts and self.on_memory is not None:
                 self.on_memory(speaker, facts)
+            text, memes = extract_memes(text)
+            if memes and self.on_meme is not None:
+                self.on_meme(speaker, memes)
             text, reaction = extract_reaction(text)
             text, draws = extract_draw_requests(text)
             if draws and not text:

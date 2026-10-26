@@ -54,7 +54,8 @@ class ParticipantConfig:
     appearance: str = ""  # what it looks like; used when someone draws it
     # Drawing stickers for others when asked (Codex CLI only).
     can_draw: bool = False
-    # The model is handed the pictures sent in the group (API models that take images; Codex always can).
+    # The model is handed the pictures sent in the group (Claude CLI, or API models that take images;
+    # Codex always can).
     vision: bool = False
     draws_per_day: int = 5
     max_turns: int = 0  # turns per round; 0 = the group's default
