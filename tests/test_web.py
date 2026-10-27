@@ -216,3 +216,25 @@ async def test_followups_and_chronicle(admin):
     assert state["chronicle"][0]["title"] == "洗衣液咖啡" and state["followups"] == []
     resp = await admin.delete(f"/api/chronicle/{moment.id}", headers=headers)
     assert (await resp.json())["chronicle"] == []
+
+
+async def test_group_upgrade_moves_everything(admin):
+    rt = admin.runtime
+    settings = {**rt.settings, "telegram": {**rt.settings["telegram"], "allowed_chat_ids": [-5]}, "proactive": {"chat_id": -5}}
+    await rt.apply(settings)
+    room = rt.room("-5")
+    room._append(Message("user", "阿明", "升级前说的", (), 1.0))
+    rt.sessions.set("-5", "grok", "abc")
+    history = admin.data_dir / "work" / "ds" / "history"
+    history.mkdir(parents=True)
+    (history / "-5.json").write_text("[]", encoding="utf-8")
+    from datetime import datetime, timedelta
+
+    item = rt.followups.add("问问面试", datetime.now() + timedelta(days=1), "-5", "grok")
+
+    assert await rt.migrate_chat(-5, -1009)
+    assert not await rt.migrate_chat(-5, -1009)  # Telegram tells both groups; once is enough
+    assert rt.config.telegram.allowed_chat_ids == [-1009] and rt.config.proactive_chat_id == -1009
+    assert [m.text for m in rt.room("-1009").messages] == ["升级前说的"]
+    assert rt.sessions.get("-1009", "grok") == "abc" and rt.sessions.get("-5", "grok") is None
+    assert (history / "-1009.json").exists() and item.chat == "-1009"

@@ -258,12 +258,16 @@ def build_router(runtime: Runtime) -> Router:
 
     def allowed(msg: TgMessage) -> bool:
         tg = runtime.config.telegram
-        return (
+        ok = (
             msg.from_user is not None
             and not msg.from_user.is_bot
             and msg.from_user.id in tg.allowed_user_ids
             and (not tg.allowed_chat_ids or msg.chat.id in tg.allowed_chat_ids)
         )
+        if not ok:  # otherwise a message nobody answers leaves no trace at all
+            who = f"{msg.from_user.first_name}（{msg.from_user.id}）" if msg.from_user else "未知发送者"
+            log.info("忽略了一条消息：%s 在群 %s 发的，不在允许的用户或群里", who, msg.chat.id)
+        return ok
 
     @r.message(F.chat.type == ChatType.PRIVATE)
     async def private(msg: TgMessage):
@@ -330,6 +334,16 @@ def build_router(runtime: Runtime) -> Router:
         except (ConfigError, TelegramAPIError) as e:
             text = f"收藏失败：{e}"
         await msg.reply(text)
+
+    @r.message(F.migrate_from_chat_id)
+    async def upgraded(msg: TgMessage):
+        # The group became a supergroup with a new id; Telegram says so in the new one.
+        if await runtime.migrate_chat(msg.migrate_from_chat_id, msg.chat.id):
+            await msg.answer("群升级成了超级群，设置和大家的记忆都搬过来了，接着聊吧。")
+
+    @r.message(F.migrate_to_chat_id)
+    async def upgrading(msg: TgMessage):
+        await runtime.migrate_chat(msg.chat.id, msg.migrate_to_chat_id)
 
     @r.message_reaction()
     async def reacted(event: MessageReactionUpdated):

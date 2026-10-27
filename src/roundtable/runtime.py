@@ -483,6 +483,40 @@ class Runtime:
             "members": members,
         }
 
+    async def migrate_chat(self, old: int, new: int) -> bool:
+        """The group was upgraded to a supergroup and got a new id: move settings, history and context over."""
+        old_key, new_key = str(old), str(new)
+        allowed = self.config.telegram.allowed_chat_ids
+        if old_key == new_key or (allowed and old not in allowed):
+            return False
+        room = self.rooms.pop(old_key, None)
+        if room is not None:
+            await room.stop()
+        self.rooms.pop(new_key, None)  # rebuilt from the moved transcript
+        chats = self.config.data_dir / "chats"
+        if (chats / f"{old_key}.jsonl").exists():
+            target = chats / f"{new_key}.jsonl"
+            moved = (chats / f"{old_key}.jsonl").read_text(encoding="utf-8")
+            later = target.read_text(encoding="utf-8") if target.exists() else ""
+            target.write_text(moved + later, encoding="utf-8")
+            (chats / f"{old_key}.jsonl").unlink()
+        self.sessions.rename(old_key, new_key)
+        for history in (self.config.data_dir / "work").glob(f"*/history/{old_key}.json"):
+            with suppress(OSError):
+                history.replace(history.with_name(f"{new_key}.json"))
+        for item in self.followups.items:
+            if item.chat == old_key:
+                item.chat = new_key
+        self.followups.save()
+        settings = json.loads(json.dumps(self.settings))
+        tg = settings["telegram"]
+        tg["allowed_chat_ids"] = [new if c == old else c for c in tg.get("allowed_chat_ids", [])]
+        if int(settings.get("proactive", {}).get("chat_id") or 0) == old:
+            settings["proactive"]["chat_id"] = new
+        log.warning("群 %s 升级成了超级群 %s，设置、聊天记录和大家的上下文都搬过去了", old, new)
+        await self.apply(settings)
+        return True
+
     async def reset_member_context(self, key: str, pid: str) -> None:
         room = self.room(key)
         await room.stop()

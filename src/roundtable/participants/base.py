@@ -56,6 +56,12 @@ class SessionStore:
     def chats(self) -> list[str]:
         return list(self._data)
 
+    def rename(self, old: str, new: str) -> None:
+        """The chat got a new id (a group upgraded to a supergroup): keep its sessions."""
+        if old in self._data:
+            self._data[new] = {**self._data.pop(old), **self._data.get(new, {})}
+            self._save()
+
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
