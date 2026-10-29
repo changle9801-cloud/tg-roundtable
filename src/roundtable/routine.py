@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 ONLINE, BUSY, ASLEEP = "online", "busy", "asleep"
 WOKEN_MINUTES = 30  # woken by an @: stays up this long
 WAKE_CHANCE = 0.25  # the user speaks and nobody is up: chance one sleeper wakes to answer
+FRIEND_WAKE_CHANCE = 0.7  # a member @-s someone asleep: chance the phone wakes them
+FRIEND_NAME_WAKE_CHANCE = 0.4  # ...or only calls them by name or nickname
 BUSY_FACTOR = 0.4  # how much less a busy member chimes in
 MORNING_CHANCE = 0.3  # wakes up with nothing missed: chance it still says something
 GOODNIGHT_CHANCE = 0.5  # goes to sleep while the group is chatting: chance it says so

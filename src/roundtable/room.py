@@ -25,7 +25,7 @@ from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
 from .reactions import extract_reaction
 from .repetition import repeated_bits
-from .routine import ASLEEP, BUSY, BUSY_FACTOR, WAKE_CHANCE, Routines
+from .routine import ASLEEP, BUSY, BUSY_FACTOR, FRIEND_NAME_WAKE_CHANCE, FRIEND_WAKE_CHANCE, WAKE_CHANCE, Routines
 from .vision import MAX_IMAGES, can_see_images
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions, find_recheck_targets
@@ -73,6 +73,7 @@ class _RoundState:
     granted: set[str] = field(default_factory=set)
     called: set[str] = field(default_factory=set)  # @-ed by the user: wakes up a sleeping member
     wake_tried: bool = False  # nobody was up: the dice were rolled for waking someone
+    wake_checked: set[int] = field(default_factory=set)  # members' messages already rolled for waking a friend
     to_all: bool = False  # the user's message spoke to everyone ("你们", "大家")
     discussion_author: str | None = None
     discussion_peer: str | None = None
@@ -324,6 +325,7 @@ class ChatRoom:
                     and self._unseen(p)
                 ]
                 candidates = self._awake(candidates, state, latest)
+                forced |= state.granted  # a friend just woken by this message answers it
                 if state.discussion_next and not pending:
                     target = next((p for p in candidates if p.id == state.discussion_next), None)
                     if target is None:
@@ -382,6 +384,9 @@ class ChatRoom:
         if self.routines is None:
             return candidates
         awake = [c for c in candidates if c.id in state.called or self.routines.status(c) != ASLEEP]
+        if not latest.from_user and not state.discussion_author and id(latest) not in state.wake_checked:
+            state.wake_checked.add(id(latest))
+            awake += self._woken_by(latest, [c for c in candidates if c not in awake], state)
         if awake or not candidates or state.wake_tried or state.started or not latest.from_user:
             return awake
         state.wake_tried = True  # the user says something and everyone is asleep
@@ -392,6 +397,21 @@ class ChatRoom:
             log.info("[%s] %s 被吵醒了", self.key, sleeper.name)
             return [sleeper]
         return []
+
+    def _woken_by(self, message: Message, sleepers: list[Participant], state: _RoundState) -> list[Participant]:
+        """A member talks to a friend who is asleep (@ or by name): the phone may wake them."""
+        named = set(find_mentions(message.text, sleepers, from_user=True))
+        rng = getattr(self.moderator, "rng", random)
+        woken = []
+        for p in sleepers:
+            if p.id == message.speaker_id or p.id not in named:
+                continue
+            if rng.random() < (FRIEND_WAKE_CHANCE if p.id in message.mentions else FRIEND_NAME_WAKE_CHANCE):
+                self.routines.wake(p)
+                state.granted.add(p.id)  # woken to answer it
+                woken.append(p)
+                log.info("[%s] %s 被 %s 吵醒了", self.key, p.name, message.speaker_name)
+        return woken
 
     def _answering(self, pool: list[Participant], latest: Message) -> Participant | None:
         """Who the user is most likely talking to without an @ or a reply: whoever spoke just

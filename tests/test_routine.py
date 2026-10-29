@@ -103,6 +103,35 @@ async def test_when_everyone_sleeps_one_may_wake(make, store, round_cfg):
     assert quiet.sink.posts == []  # nobody up: no answer until morning
 
 
+async def test_a_friend_can_wake_a_sleeper(make, store, round_cfg):
+    a, b = make("a", []), make("b", ["……被你吵醒了"])
+    b.cfg.sleep = "00:00-23:59"
+    b.aliases.append("大肥鱼")
+    routines = Routines()
+    room = room_with(make, store, round_cfg, routines, a, b, rng=Dice(0.0))
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="早，大肥鱼还活着吗")
+    await room.wait_idle()
+    assert room.sink.posts[-1] == ("b", "……被你吵醒了")
+    assert "刚被群里吵醒" in b.prompts[0] and routines.status(b) == ONLINE
+
+
+async def test_an_at_wakes_more_easily_than_a_name(make, store, round_cfg):
+    def sleeper_answers(text):
+        a, b = make("a", []), make("b", ["唔"])
+        b.cfg.sleep = "00:00-23:59"
+        room = room_with(make, store, round_cfg, Routines(), a, b, rng=Dice(0.5))
+
+        async def run():
+            await room.start_proactive(a, lambda unseen: "", 1, prepared_text=text)
+            await room.wait_idle()
+            return bool(b.prompts)
+        return run()
+
+    assert await sleeper_answers("@B 起床了")
+    assert not await sleeper_answers("B 估计还在睡")
+    assert not await sleeper_answers("有人醒着吗")
+
+
 async def test_busy_members_answer_after_free_ones(make, store, round_cfg):
     a, b = make("a", ["我在上班，晚点说"]), make("b", ["来了"])
     a.cfg.busy, a.cfg.busy_doing = "00:00-23:59", "在上班"
