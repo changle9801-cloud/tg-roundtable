@@ -421,11 +421,12 @@ class Runtime:
             self.store.save(settings, secrets)
             self.settings, self.secrets = self.store.load()
             self.config = build_config(self.settings, self.secrets, self.store.data_dir)
-            for room in self.rooms.values():
-                await room.stop()
+            cut_off = [room for room in self.rooms.values() if await room.stop()]
             self.memory.drop_scope({p.id for p in self.config.participants})
             self._rebuild_participants()
             await self._sync_bots()
+            for room in cut_off:
+                room.resume()  # a reply that was on its way is not lost
             self._changed.set()
         log.info("配置已更新")
 
@@ -1392,7 +1393,8 @@ class Runtime:
             make = lambda unseen: wake_prompt([m for m in unseen if m.ts >= since], now_line(), bool(missed))  # noqa: E731
         else:
             make = lambda unseen: goodnight_prompt(unseen, now_line())  # noqa: E731
-        future = room.start_proactive(p, make, 1 if kind == "wake" else 0)
+        future = room.start_proactive(p, make, 1 if kind == "wake" else 0,
+                                      show_images_since=since if kind == "wake" else None)
         if future is None:
             return
         log.info("[%s] %s %s", room.key, p.name, "睡醒了，看看群" if kind == "wake" else "要去睡了")

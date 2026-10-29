@@ -191,3 +191,15 @@ async def test_talking_to_everyone_brings_more_replies(make, round_cfg, store):
     assert not room._joins_in(b, 1)
     assert room._joins_in(b, 1, to_all=True)
     assert not room._joins_in(b, 2, to_all=True)  # 0.9 * 0.55: still fewer for each further one
+
+
+async def test_a_cut_off_round_picks_up_again(make, round_cfg, store):
+    # Settings saved while a reply was on its way: the round stops, then resumes after the rebuild.
+    a = make("a", ["嗯，在呢"], delay=0.3)
+    room, sink = room_with([a], round_cfg, store)
+    room.add_user_message("me", "有人吗")
+    await asyncio.sleep(0.05)
+    assert await room.stop() and sink.posts == []
+    room.resume()
+    await room.wait_idle()
+    assert sink.posts == [("a", "嗯，在呢")]

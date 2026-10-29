@@ -152,7 +152,7 @@ class FakeRoom:
     def _unseen(self, p):
         return self.unseen
 
-    def start_proactive(self, speaker, make_prompt, reply_turns):
+    def start_proactive(self, speaker, make_prompt, reply_turns, show_images_since=None):
         self.prompts.append((speaker.id, make_prompt(self.unseen), reply_turns))
         future = asyncio.get_event_loop().create_future()
         future.set_result("早")

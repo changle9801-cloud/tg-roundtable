@@ -42,6 +42,12 @@ ANSWERING_STREAK = 2  # unless it already answered first this many times in a ro
 TO_ALL = re.compile(r"你们|大家|各位|所有人|都在")
 TO_ALL_CHANCE = 0.9  # chance the next member joins in after the first reply...
 TO_ALL_DECAY = 0.55  # ...shrinking by this much for each further one
+TALK_BACK_CHANCE = 0.6  # a member names a friend or answers right after her: chance she answers back
+
+
+def _draws_everyone(message: Message) -> bool:
+    """The user talks to everyone ("你们", "大家") or shows a picture: more friends join in."""
+    return bool(TO_ALL.search(message.text) or message.images)
 MAX_TG_IDS = 500  # Telegram message ids remembered per chat, for reactions and quotes
 
 MemoryHook = Callable[[Participant, list[str]], None]
@@ -74,7 +80,9 @@ class _RoundState:
     called: set[str] = field(default_factory=set)  # @-ed by the user: wakes up a sleeping member
     wake_tried: bool = False  # nobody was up: the dice were rolled for waking someone
     wake_checked: set[int] = field(default_factory=set)  # members' messages already rolled for waking a friend
-    to_all: bool = False  # the user's message spoke to everyone ("你们", "大家")
+    talk_back_checked: set[int] = field(default_factory=set)  # members' messages already rolled for a comeback
+    talked_back: set[str] = field(default_factory=set)  # one comeback each per round, so two can't go on forever
+    to_all: bool = False  # the user's message spoke to everyone ("你们", "大家") or showed a picture
     discussion_author: str | None = None
     discussion_peer: str | None = None
     discussion_left: int = 2
@@ -224,6 +232,12 @@ class ChatRoom:
         else:
             self._task = asyncio.create_task(self._run_round())
 
+    def resume(self, within: float = 300) -> None:
+        """Pick up a round that was cut off (settings were saved mid-reply): whoever has not seen
+        the latest messages may still answer them."""
+        if not self.busy and self.messages and time.time() - self.messages[-1].ts < within:
+            self._task = asyncio.create_task(self._run_round(last_speaker=self.messages[-1].speaker_id))
+
     async def stop(self) -> bool:
         if not self.busy:
             return False
@@ -282,7 +296,7 @@ class ChatRoom:
             state.granted.update(self.messages[-1].mentions)
             if self.messages[-1].from_user:
                 state.called.update((*self.messages[-1].mentions, *self.messages[-1].recheck_targets))
-                state.to_all = bool(TO_ALL.search(self.messages[-1].text))
+                state.to_all = _draws_everyone(self.messages[-1])
                 state.recheck = list(self.messages[-1].recheck_targets)
                 state.recheck_request = self.messages[-1]
         pending: dict[asyncio.Task, _Turn] = {}
@@ -306,7 +320,7 @@ class ChatRoom:
                     if focus is not None:
                         state.granted.update(focus.mentions)
                         state.called.update((*focus.mentions, *focus.recheck_targets))
-                        state.to_all = bool(TO_ALL.search(focus.text))
+                        state.to_all = _draws_everyone(focus)
                         state.recheck = list(focus.recheck_targets)
                         state.recheck_request = focus
                     last_start = float("-inf")
@@ -343,9 +357,16 @@ class ChatRoom:
                     if not owed and self.routines is not None:  # those not at work answer first
                         pool = [c for c in pool if self.routines.status(c) != BUSY] or pool
                     priority = next((p for pid in state.recheck for p in pool if p.id == pid), None)
-                    speaker = priority or (None if owed or state.started else self._answering(pool, latest)) \
+                    back = None
+                    if not (priority or owed or state.discussion_author) and id(latest) not in state.talk_back_checked:
+                        state.talk_back_checked.add(id(latest))
+                        back = self._talking_back([c for c in candidates if c.id not in state.talked_back], latest)
+                        if back is not None:
+                            state.talked_back.add(back.id)
+                    speaker = priority or back or (None if owed or state.started else self._answering(pool, latest)) \
                         or self.moderator.pick(pool, latest, state.last_speaker)
-                    if speaker.id not in forced and speaker.id != state.discussion_next and not self._joins_in(speaker, state.started, state.to_all):
+                    if speaker is not back and speaker.id not in forced and speaker.id != state.discussion_next \
+                            and not self._joins_in(speaker, state.started, state.to_all):
                         state.closed = True  # like a real group: most messages get one or two replies
                         continue
                     focus = None
@@ -375,6 +396,7 @@ class ChatRoom:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
             for turn in pending.values():
+                self.cursors[turn.speaker.id] = min(turn.prev_cursor, len(self.messages))  # cut off: not answered
                 await self._end_activity(turn.speaker)
 
     ACTIVITY_FACTOR = {"low": 0.5, "normal": 1.0, "high": 1.5}
@@ -412,6 +434,25 @@ class ChatRoom:
                 woken.append(p)
                 log.info("[%s] %s 被 %s 吵醒了", self.key, p.name, message.speaker_name)
         return woken
+
+    def _talking_back(self, candidates: list[Participant], latest: Message) -> Participant | None:
+        """A member's message names a friend, or goes right after (and maybe against) what she said:
+        that friend often answers back, which is how friends bicker."""
+        if latest.from_user:
+            return None
+        i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
+        before = self.messages[i - 1] if i > 0 else None
+        named = find_mentions(latest.text, candidates, from_user=True)
+        if before is not None and not before.from_user:
+            named.append(before.speaker_id)
+        target = next((p for pid in named for p in candidates if p.id == pid and pid != latest.speaker_id), None)
+        if target is None:
+            return None
+        chance = TALK_BACK_CHANCE * self.ACTIVITY_FACTOR.get(getattr(target.cfg, "activity", "normal"), 1.0)
+        if self.routines is not None and self.routines.status(target) == BUSY:
+            chance *= BUSY_FACTOR
+        rng = getattr(self.moderator, "rng", random)
+        return target if rng.random() < min(chance, 1.0) else None
 
     def _answering(self, pool: list[Participant], latest: Message) -> Participant | None:
         """Who the user is most likely talking to without an @ or a reply: whoever spoke just
@@ -712,9 +753,11 @@ class ChatRoom:
         sources=(),
         discussion: bool = False,
         image_path=None, image_description='',
+        show_images_since: float | None = None,
     ) -> asyncio.Future | None:
         """Let a member speak unprompted, then give the others ``reply_turns`` each to react.
 
+        ``show_images_since``: hand over the unseen pictures sent since then (catching up after sleep).
         Returns a future with the posted text (None if the member passed), or None if a
         round is already running.
         """
@@ -722,20 +765,26 @@ class ChatRoom:
             return None
         result = asyncio.get_running_loop().create_future()
         self._task = asyncio.create_task(self._run_proactive(speaker, make_prompt, reply_turns, result, prepared_text, sources,
-                                                           discussion, image_path, image_description))
+                                                           discussion, image_path, image_description,
+                                                           show_images_since))
         return result
 
     async def _run_proactive(self, speaker, make_prompt, reply_turns: int, result: asyncio.Future,
                              prepared_text: str | None = None, sources=(), discussion: bool = False,
-                             image_path=None, image_description='') -> None:
+                             image_path=None, image_description='', show_images_since: float | None = None) -> None:
         try:
             prev_cursor = self.cursors[speaker.id]
             try:
                 # No typing indicator: most checks end in a quiet [PASS].
                 if prepared_text is None:
-                    prompt = make_prompt(self._catch_up(speaker))
+                    unseen = self._catch_up(speaker)
+                    prompt = make_prompt(unseen)
+                    images = [] if show_images_since is None else self._images_for(
+                        speaker, [m for m in unseen if m.ts >= show_images_since])
+                    if images:
+                        prompt += "\n（你睡着时群里发的图片附在这条消息里了，你能直接看到。）"
                     self.cursors[speaker.id] = len(self.messages)
-                    raw = await self._ask(speaker, prompt, 1)
+                    raw = await self._ask(speaker, prompt, 1, images=images)
                 else:
                     # A background author has not read the public session's unseen messages.
                     raw = prepared_text

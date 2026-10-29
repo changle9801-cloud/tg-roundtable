@@ -68,8 +68,30 @@ async def test_default_chances_keep_it_short(make, store):
         room.add_user_message("me", "hi")
         await room.wait_idle()
         counts.append(len(sink.posts))
-    assert 1.2 < mean(counts) < 2.0  # about 1 + 0.5 + 0.1
-    assert max(counts) <= 4
+    # About 1 + 0.5 + 0.1, plus a comeback each now and then when two get talking.
+    assert 1.5 < mean(counts) < 2.5
+    assert max(counts) <= 6
+
+
+async def test_a_friend_talks_back(make, store):
+    # The user asks Codex to redo Grok's card; one says no, the other does it anyway: each answers back once.
+    grok = make("grok", ["别加，就这样", "我说了不要"])
+    codex = make("codex", ["嗯，这次补齐", "行吧"])
+    room, sink = room_for([grok, codex], store, chance=0.0, decay=0.0)
+    room.moderator.rng.random = lambda: 0.3  # under the comeback chance (0.6), over the usual one (0)
+    room.add_user_message("me", "@Codex 给 @Grok 重做一张")
+    await room.wait_idle()
+    order = [pid for pid, _ in sink.posts]
+    assert len(order) == 4 and order[0] != order[1] and order[:2] == order[2:]  # one comeback each, then done
+
+
+async def test_naming_a_friend_draws_her_in(make, store):
+    a, b, c = make("a", ["哈哈"]), make("b", ["在这"]), make("c", ["不该接"])
+    room, sink = room_for([a, b, c], store, chance=0.0, decay=0.0)
+    room.moderator.rng.random = lambda: 0.3
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="早，B 你那张卡呢")
+    await room.wait_idle()
+    assert [pid for pid, _ in sink.posts] == ["a", "b", "a"]  # B answers, A gets a word back; C stays out
 
 
 async def test_a_new_user_message_starts_a_fresh_chain(make, store):

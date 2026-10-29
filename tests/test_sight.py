@@ -13,6 +13,7 @@ from roundtable.participants.codex_cli import CodexCLI
 from roundtable.room import ChatRoom
 from roundtable.runtime import Runtime
 from roundtable.settings import SettingsStore, build_config, normalize_settings
+from roundtable.transcript import Message
 
 MEMBERS = [
     {"id": "claude", "name": "Claude", "kind": "claude_cli", "appearance": "橘色长发的学姐"},
@@ -66,6 +67,38 @@ async def test_pictures_reach_only_those_who_can_see(make, store, round_cfg, tmp
     assert blind.images and not any(blind.images)  # never handed a picture
     # Asked for help after it already saw the picture: it gets the picture again.
     assert ds.images[1] == [str(image)]
+
+
+async def test_waking_up_shows_the_pictures_missed_in_sleep(make, store, round_cfg, tmp_path):
+    old, new = tmp_path / "old.jpg", tmp_path / "new.jpg"
+    for f in (old, new):
+        f.write_bytes(b"jpg")
+    ds = make("ds", ["哈哈，学姐的身份证"])
+    ds.cfg.kind, ds.cfg.vision = "api", True
+    room = ChatRoom("chat", [ds], FakeSink(), round_cfg, store)
+    room._append(Message("user", "阿明", "[发送了一张图片] 昨晚的", (), 100.0, (str(old),)))
+    room._append(Message("user", "阿明", "[发送了一张图片] claude 看你的身份卡", (), 200.0, (str(new),)))
+    await room.start_proactive(ds, lambda unseen: "早", 1, show_images_since=150.0)
+    await room.wait_idle()
+    assert ds.images[0] == [str(new)] and "你睡着时群里发的图片" in ds.prompts[0]
+
+
+async def test_a_picture_brings_more_friends_over(make, store, round_cfg, tmp_path):
+    a, b = make("a", ["是我"]), make("b", ["哈哈"])
+    room = ChatRoom("chat", [a, b], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
+    room.follow_up_chance, room.follow_up_decay = 0.5, 0.4
+    room.moderator.rng.random = lambda: 0.7  # between the usual chance (0.5) and the boosted one (0.9)
+    room.add_user_message("阿明", "@A 你看", images=[str(tmp_path / "card.jpg")])
+    await room.wait_idle()
+    assert [pid for pid, _ in room.sink.posts] == ["a", "b"]
+
+    c, d = make("c", ["嗯"]), make("d", ["不该接"])
+    plain = ChatRoom("chat2", [c, d], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
+    plain.follow_up_chance, plain.follow_up_decay = 0.5, 0.4
+    plain.moderator.rng.random = lambda: 0.7
+    plain.add_user_message("阿明", "@C 你看")
+    await plain.wait_idle()
+    assert [pid for pid, _ in plain.sink.posts] == ["c"]
 
 
 async def test_missing_files_are_not_handed_over(make, store, round_cfg, tmp_path):

@@ -21,7 +21,8 @@ from .config import ParticipantConfig
 
 log = logging.getLogger(__name__)
 
-TAG_RE = re.compile(r"\[\s*画\s*[:：]\s*([^|｜\]\n]{1,20}?)\s*[|｜]\s*([^\]]{1,400}?)\s*\]")
+TAG_RE = re.compile(r"\[\s*画\s*[:：]\s*([^|｜\]\n]{1,20}?)\s*[|｜]\s*([^\]]{1,2000}?)\s*\]")
+MAX_DESCRIPTION = 600  # a long description is still a drawing (cut down), not raw text in the group
 KEPT = 200
 
 STYLE = (
@@ -36,7 +37,7 @@ def supports_drawing(pc: ParticipantConfig) -> bool:
 
 def extract_draw_requests(text: str) -> tuple[str, list[tuple[str, str]]]:
     """Remove [画:名称|描述] tags; return (text without them, [(label, description)])."""
-    found = [(m.group(1).strip(), m.group(2).strip()) for m in TAG_RE.finditer(text)]
+    found = [(m.group(1).strip(), m.group(2).strip()[:MAX_DESCRIPTION]) for m in TAG_RE.finditer(text)]
     if not found:
         return text, []
     rest = TAG_RE.sub(" ", text)
@@ -52,7 +53,7 @@ def drawer_instructions(remaining: int) -> str:
         "- 你会画表情包。群里有人请你画图或画表情包时，如果你愿意，就在回复末尾写 [画:表情名|画面描述]，"
         "群里看不到这个标记，图会在后台画好（大约一分钟），存进群表情库，之后大家用 [表情:表情名] 就能发。\n"
         "- 一定要用这个标记让它真的画出来；不要用文字、符号或方框拼一个假的「图」糊弄。\n"
-        "- 表情名 2 到 8 个字；画面描述要具体：画谁、什么动作和表情、图上写什么字。画群里成员时按下面的外形来。\n"
+        "- 表情名 2 到 8 个字；画面描述要具体（300 字以内）：画谁、什么动作和表情、图上写什么字。画群里成员时按下面的外形来。\n"
         "- 回复里正常说一句接活的话就行（比如「行，等我一会儿」），不要提什么标记或系统。一次只画一张。\n"
         f"- 只在有人请你时才画，不要主动给人画。只画 Q 版卡通表情包，内容健康，不画真人。今天你还能画 {remaining} 张。"
     )

@@ -31,6 +31,8 @@ def test_extract_draw_requests():
     assert draws == [("我不是肥鱼", "鲸鱼娘抱着尾巴，写着我不是肥鱼")]
     assert extract_draw_requests("[画：委屈｜一只哭的鲸鱼]")[1] == [("委屈", "一只哭的鲸鱼")]
     assert extract_draw_requests("没有标记") == ("没有标记", [])
+    text, draws = extract_draw_requests("这次补齐 [画:新版卡|" + "黑金边框，" * 150 + "]")
+    assert text == "这次补齐" and len(draws[0][1]) == 600  # long: still drawn, cut down
 
 
 def test_prompts():
