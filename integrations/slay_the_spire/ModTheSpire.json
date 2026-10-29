@@ -1,0 +1,9 @@
+{
+  "modid": "roundtable-control",
+  "name": "Roundtable Control",
+  "author_list": ["Local Roundtable"],
+  "description": "Normal save/resume menu actions and visible card descriptions for owner-authorized local play.",
+  "version": "0.2.0",
+  "mts_version": "3.30.0",
+  "dependencies": ["basemod", "CommunicationMod"]
+}

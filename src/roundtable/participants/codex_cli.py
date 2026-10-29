@@ -66,6 +66,7 @@ class CodexCLI(Participant):
         self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
     ) -> str:
         session_id = self.store.get(chat_key, self.id)
+        prompt = self.with_turn_context(prompt)
 
         names = {s.id: s.name for s in self.tools}
 

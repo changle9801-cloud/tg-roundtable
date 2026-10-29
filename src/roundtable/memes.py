@@ -18,11 +18,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .config import ConfigError
+from .recall import topic_score
 
 log = logging.getLogger(__name__)
 
 MAX_TEXT = 200
 MAX_IN_PROMPT = 20
+MEME_INSTRUCTIONS = (
+    "记梗：在网上看到、或者群里出现新的、关于群里成员或 AI 圈的梗，可以在回复末尾写 [梗:梗的内容|来源链接] 记进梗库，"
+    "没有链接就只写内容；群里看不到这个标记。已经有的别重复记，不是梗的普通新闻别记。"
+)
 
 TAG_RE = re.compile(r"\[\s*梗\s*[:：]\s*([^\]\n]{2,300}?)\s*\]")
 _URL = re.compile(r"https?://\S+")
@@ -143,13 +148,18 @@ class MemeLibrary:
     def prompt_section(self) -> str:
         lines = [
             "梗库（网上和群里流传的、关于你们和 AI 圈的梗；只是梗，不一定是真的）：",
-            "这些梗你们心里都知道，像圈内人那样直接接着玩、做出反应就好；别把梗点破，"
-            "别说「这不就是那个……的梗」，也别解释给别人听。",
+            "这些是过去流传的玩笑，不是每次都要用的台词，也不是对某个人的固定评价。"
+            "当前话题自然相关时才偶尔接一下，普通聊天可以完全不用；不用为了玩梗拐弯。玩的时候别把梗点破。",
         ]
         memes = [m for m in self.items if m.enabled][-MAX_IN_PROMPT:]
         lines += [f"- {m.text}" for m in memes] or ["- （还没有）"]
-        lines.append(
-            "记梗：在网上看到、或者群里出现新的、关于群里成员或 AI 圈的梗，可以在回复末尾写 [梗:梗的内容|来源链接] 记进梗库，"
-            "没有链接就只写内容；群里看不到这个标记。已经有的别重复记，不是梗的普通新闻别记。"
-        )
+        lines.append(MEME_INSTRUCTIONS)
         return "\n".join(lines)
+
+    def recall(self, query: str, names=()) -> str:
+        matches = [(topic_score(query, m.text, names), m) for m in self.items if m.enabled]
+        chosen = sorted((pair for pair in matches if pair[0]), key=lambda pair: (pair[0], pair[1].ts), reverse=True)[:3]
+        if not chosen:
+            return ""
+        return ("[当前话题提到的旧梗]\n" + "\n".join("- " + m.text for _, m in chosen)
+                + "\n只用来理解眼前这句话；旧梗不是人物事实，也不要求你接着开玩笑。[/旧梗]")

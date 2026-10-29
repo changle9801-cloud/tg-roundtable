@@ -9,7 +9,9 @@ from conftest import FakeSink
 
 from roundtable.moderator import RuleModerator
 from roundtable.room import ChatRoom
-from roundtable.routine import ASLEEP, BUSY, ONLINE, Routines, describe_routine, parse_range, status_at, valid_range
+from roundtable.routine import (
+    ASLEEP, BUSY, ONLINE, Routines, describe_routine, fell_asleep, parse_range, status_at, valid_range,
+)
 from roundtable.runtime import Runtime
 from roundtable.settings import SettingsStore, normalize_settings
 from roundtable.transcript import Message
@@ -134,7 +136,9 @@ async def test_waking_up_answers_what_was_missed(tmp_path):
     cfg = type("C", (), {"kind": "api", "sleep": "01:00-09:00", "busy": "", "busy_doing": ""})()
     member = type("P", (), {"id": "ds", "name": "DeepSeek", "cfg": cfg})()
     rt.participants = [member]
-    room = FakeRoom([Message("user", "阿明", "你们睡了吗", (), 2.0)])
+    before_bed = datetime(2026, 10, 27, 0, 30).timestamp()  # talked about before it slept: not missed
+    room = FakeRoom([Message("user", "阿明", "辞职算了", (), before_bed),
+                     Message("user", "阿明", "你们睡了吗", (), datetime(2026, 10, 27, 3, 0).timestamp())])
     rt.room = lambda chat: room
     rt.proactive_chat = lambda: "-1"
     clock = [datetime(2026, 10, 27, 8, 59)]
@@ -144,6 +148,14 @@ async def test_waking_up_answers_what_was_missed(tmp_path):
     clock[0] = datetime(2026, 10, 27, 9, 1)
     await rt._routine_tick()
     assert room.prompts[0][0] == "ds" and "你睡着时群里的消息" in room.prompts[0][1] and "你们睡了吗" in room.prompts[0][1]
+    assert "辞职算了" not in room.prompts[0][1]
+
+
+def test_fell_asleep_is_the_latest_bedtime():
+    assert fell_asleep(Cfg(sleep="23:30-07:30"), datetime(2026, 10, 27, 7, 0)) == datetime(2026, 10, 26, 23, 30)
+    assert fell_asleep(Cfg(sleep="01:00-10:30"), datetime(2026, 10, 27, 11, 0)) == datetime(2026, 10, 27, 1, 0)
+    assert fell_asleep(Cfg(), datetime(2026, 10, 27, 11, 0)) is None
+
 
 async def test_sleeping_members_skip_their_own_plans(tmp_path):
     rt = Runtime(SettingsStore(tmp_path))

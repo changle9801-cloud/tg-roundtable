@@ -99,9 +99,10 @@ class LifeConfig:
     hours: str = "10-23"
     shares_per_day: int = 2
     quiet_minutes: int = 30
-    # Activities a day per member, being messaged by a friend included; Claude defaults to 1
-    # since it shares the owner's subscription.
+    # Self-initiated activities; 0 means no daily cap, with normal spacing retained.
     member_days: dict = field(default_factory=dict)
+    passive_per_day: int = 4
+    passive_member_days: dict = field(default_factory=dict)
 
 
 @dataclass

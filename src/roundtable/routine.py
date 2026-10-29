@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 ONLINE, BUSY, ASLEEP = "online", "busy", "asleep"
 WOKEN_MINUTES = 30  # woken by an @: stays up this long
@@ -56,6 +56,15 @@ def status_at(cfg, now: datetime) -> str:
     if busy and now.weekday() < 5 and _inside(busy, now):
         return BUSY
     return ONLINE
+
+
+def fell_asleep(cfg, now: datetime) -> datetime | None:
+    """When the member's latest sleep began, by its routine; None without one."""
+    sleep = parse_range(getattr(cfg, "sleep", ""))
+    if not sleep:
+        return None
+    start = now.replace(hour=sleep[0] // 60, minute=sleep[0] % 60, second=0, microsecond=0)
+    return start if start <= now else start - timedelta(days=1)
 
 
 def busy_doing(cfg) -> str:

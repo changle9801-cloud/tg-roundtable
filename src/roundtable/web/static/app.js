@@ -202,6 +202,7 @@ function renderAll() {
   renderMemory();
   renderMemes();
   renderFeedback();
+  renderGameMemories();
   renderFollowups();
   renderChronicle();
   renderTools();
@@ -1381,18 +1382,27 @@ function factRow(f) {
   const text = h("input", { value: f.text });
   text.addEventListener("change", () => text.value.trim() !== f.text && memoryCall("PUT", `/api/memory/${f.id}`, { text: text.value }));
   text.addEventListener("keydown", (e) => e.key === "Enter" && text.blur());
+  const when = f.said_at ? new Date(f.said_at * 1000).toLocaleDateString() : "";
+  const from = f.source === "整理" ? `从 ${when} 的聊天整理` : `${memberName(f.source)} 提议`;
+  const proof = f.quote ? `你的原话：「${f.quote}」` : "";
+  const old = f.replaces ? (server.memory || []).find((o) => o.id === f.replaces) : null;
   if (f.status === "pending") {
-    return h("div", { class: "fact" },
+    return h("div", { class: "fact", title: proof },
       text,
-      h("span", { class: "src" }, `${memberName(f.source)} 提议`),
+      old ? h("span", { class: "src", title: old.text }, "更新旧的一条") : null,
+      h("span", { class: "src" }, from),
       h("button", { class: "primary", onclick: () => memoryCall("PUT", `/api/memory/${f.id}`, { text: text.value, status: "active" }) }, "记住"),
       h("button", { onclick: () => memoryCall("DELETE", `/api/memory/${f.id}`) }, "忽略"));
   }
   return h("div", { class: "fact" + (f.enabled ? "" : " off") },
     h("input", { type: "checkbox", checked: f.enabled, title: "启用", onchange: (e) => memoryCall("PUT", `/api/memory/${f.id}`, { enabled: e.target.checked }) }),
     text,
+    f.enabled && !f.in_prompt ? h("span", { class: "src", title: "记忆太多，这条不放进提示词，聊到相关话题时才想起来" }, "聊到才想起") : null,
+    h("button", { class: f.core ? "primary" : "", title: "常驻：不管记忆多少都放进提示词",
+      onclick: () => memoryCall("PUT", `/api/memory/${f.id}`, { core: !f.core }) }, f.core ? "📌 常驻" : "常驻"),
     scopeSelect(f.scope, (e) => memoryCall("PUT", `/api/memory/${f.id}`, { scope: e.target.value })),
-    f.source !== "manual" ? h("span", { class: "src" }, `来自 ${memberName(f.source)}`) : null,
+    f.source === "整理" ? h("span", { class: "src", title: proof }, `${when} 的聊天`) :
+      f.source !== "manual" ? h("span", { class: "src" }, `来自 ${memberName(f.source)}`) : null,
     h("button", { class: "danger", onclick: () => confirm("删除这条记忆？") && memoryCall("DELETE", `/api/memory/${f.id}`) }, "删除"));
 }
 
@@ -1406,12 +1416,25 @@ function renderMemory() {
   scope.replaceChildren(...scopeSelect(keep, null).children);
   scope.value = keep;
 
+  $("#memory-consolidate").onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api("POST", "/api/memory/consolidate", {});
+      server.memory = r.memory;
+      renderMemory();
+      renderStatus(r.status);
+      toast(r.added ? `整理出 ${r.added} 条` : "今天的聊天里没有新的值得记的事");
+    } catch (err) { toast(err.message, true); }
+    finally { e.target.disabled = false; }
+  };
   const items = server.memory || [];
   const pending = items.filter((f) => f.status === "pending");
   $("#memory-pending").replaceChildren(...(pending.length ? [h("div", { class: "pending-box" },
     h("div", { class: "small", style: "margin-bottom:4px" }, `模型提议记住 ${pending.length} 条，确认后才会生效：`),
     ...pending.map(factRow))] : []));
   const active = items.filter((f) => f.status === "active");
+  const used = active.filter((f) => f.enabled).reduce((n, f) => n + f.text.length, 0);
+  $("#memory-budget").textContent = `启用的记忆共 ${used} 字。超过 1500 字后，提示词里只放常驻的、你自己写的和最近的，其余聊到相关话题时才想起来。`;
   $("#memory-list").replaceChildren(...(active.length ? active.map(factRow) :
     [h("div", { class: "muted small" }, "还没有长期记忆。")]));
 }
@@ -1442,6 +1465,52 @@ function renderFeedback() {
     ...disliked.map((f) => row(f, [h("button", { class: "danger", onclick: () => call("DELETE", `/api/feedback/${f.id}`) }, "删除")])),
   ];
   $("#feedback-list").replaceChildren(...(rows.length ? rows : [h("div", { class: "muted small" }, "还没有点过赞或踩。")]));
+}
+
+function renderGameMemories() {
+  const data = server.game_memories || { items: [], opinions: {} };
+  const select = $("#game-memory-member");
+  const members = [...new Set(data.items.map((m) => m.member).concat(Object.keys(data.opinions)))];
+  const chosen = members.includes(select.value) ? select.value : "";
+  select.replaceChildren(h("option", { value: "" }, "全部成员"),
+    ...members.map((id) => h("option", { value: id }, memberName(id))));
+  select.value = chosen;
+  select.onchange = renderGameMemories;
+  const shown = data.items.filter((m) => !chosen || m.member === chosen);
+  $("#game-memory-count").textContent = data.items.length ? `${data.items.length} 条` : "";
+  const call = async (method, path, body) => {
+    try {
+      const r = await api(method, path, body);
+      server.game_memories = r.game_memories;
+      renderGameMemories();
+    } catch (e) { toast(e.message, true); }
+  };
+  const opinions = Object.entries(data.opinions).filter(([id]) => !chosen || id === chosen);
+  $("#game-opinions").replaceChildren(...opinions.filter(([, o]) => o.lines.length || o.climbs).map(([id, o]) =>
+    h("div", { style: "margin:6px 0" },
+      h("b", {}, memberName(id)), ` 打了 ${o.climbs} 局，最远第 ${o.best_floor} 层`,
+      o.lines.length ? "：" + o.lines.join("；") : "",
+      o.plan ? h("div", {}, "🎯 " + o.plan) : "",
+      ...o.subjects.map((s) => h("button", { class: "small", style: "margin-left:6px",
+        title: "清空这个主题的统计", onclick: () => confirm(`清空 ${memberName(id)} 关于「${s}」的统计？`) &&
+          call("DELETE", `/api/game-opinions/${encodeURIComponent(id)}/${encodeURIComponent(s)}`) }, `✕ ${s}`)))));
+  const row = (m) => {
+    const bar = h("span", { class: "strength", title: `当前强度 ${m.strength}` },
+      h("span", { style: `width:${Math.round(m.strength * 100)}%` }));
+    const story = h("input", { type: "text", value: m.story });
+    return h("div", { class: "fact" + (m.status === "hidden" ? " off" : "") },
+      h("span", { class: "src" }, `${m.icon} ${memberName(m.member)}${m.watched ? `（看 ${m.watched}）` : ""}`),
+      story, bar,
+      h("span", { class: "src" }, new Date(m.at * 1000).toLocaleDateString()),
+      h("button", { onclick: () => call("PUT", `/api/game-memories/${m.id}`, { story: story.value }) }, "保存"),
+      h("button", { onclick: () => call("POST", `/api/game-memories/${m.id}/${m.status === "pinned" ? "active" : "pinned"}`) },
+        m.status === "pinned" ? "取消钉住" : "📌 钉住"),
+      h("button", { onclick: () => call("POST", `/api/game-memories/${m.id}/${m.status === "hidden" ? "active" : "hidden"}`) },
+        m.status === "hidden" ? "取消隐藏" : "隐藏"),
+      h("button", { class: "danger", onclick: () => call("DELETE", `/api/game-memories/${m.id}`) }, "删除"));
+  };
+  $("#game-memory-list").replaceChildren(...(shown.length ? shown.map(row) :
+    [h("div", { class: "muted small" }, "还没有游戏记忆。成员打完一整局（死掉或通关）后才会记下。")]));
 }
 
 function renderFollowups() {
@@ -1569,7 +1638,7 @@ async function addMemory() {
 // ---------- continuing daily life ----------
 
 let lifeData = null;
-const LIFE_ACTIONS = { idle: "先歇着", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
+const LIFE_ACTIONS = { idle: "先歇着", work: "推进个人目标", play: "实际玩游戏", blocked: "这次没做成", browse: "随手看看", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
 
 function renderLifeSettings() {
   const box = $("#life-settings");
@@ -1579,21 +1648,25 @@ function renderLifeSettings() {
     return;
   }
   cfg.member_days ||= {};
+  cfg.passive_member_days ||= {};
   const memberRows = draft.participants.filter((p) => p.enabled).map((p) => {
     const on = cfg.members.includes(p.id);
     const fallback = p.kind === "claude_cli" ? 1 : cfg.per_day; // Claude shares your own subscription
-    return h("div", { class: "tool-member" },
+    return h("div", { class: "tool-member life-quota-row" },
       h("label", {},
         h("input", { type: "checkbox", checked: on, onchange: (e) => {
           cfg.members = e.target.checked ? [...cfg.members, p.id] : cfg.members.filter((x) => x !== p.id);
-          if (e.target.checked && !cfg.member_days[p.id]) cfg.member_days[p.id] = fallback;
+          if (e.target.checked && cfg.member_days[p.id] == null) cfg.member_days[p.id] = fallback;
           changed(); renderLifeSettings();
         } }),
         p.name || p.id),
-      on ? h("label", { class: "row-gap small" }, "每天最多",
-        h("input", { type: "number", min: 1, max: 8, style: "width:70px", value: cfg.member_days[p.id] || fallback,
+      on ? h("label", { class: "row-gap small" }, "个人活动 / 天",
+        h("input", { type: "number", min: 0, max: 8, style: "width:70px", value: cfg.member_days[p.id] ?? fallback,
           oninput: (e) => { cfg.member_days[p.id] = Number(e.target.value); changed(); } }),
-        "次", p.kind === "claude_cli" ? h("small", { class: "muted" }, "（用你的 Claude 订阅额度，建议少一点）") : null) : null);
+        "次") : null,
+      on ? h("label", { class: "row-gap small" }, "被动私聊 / 天",
+        h("input", { type: "number", min: 0, max: 12, style: "width:70px", value: cfg.passive_member_days[p.id] ?? cfg.passive_per_day ?? 4,
+          oninput: (e) => { cfg.passive_member_days[p.id] = Number(e.target.value); changed(); } }), "次") : null);
   });
   const numberField = (key, label, min, max) => field(label, h("input", {
     type: "number", min, max, value: cfg[key],
@@ -1609,12 +1682,12 @@ function renderLifeSettings() {
   box.replaceChildren(
     h("label", { class: "check" }, h("input", { type: "checkbox", checked: cfg.enabled,
       onchange: (e) => { cfg.enabled = e.target.checked; changed(); } }), " 开启日常"),
-    field("谁参加", h("div", {}, memberRows), "至少选两位。主动活动和被群友找去私聊都算一次"),
+    field("谁参加", h("div", {}, memberRows), "至少选两位。两份额度独立：自己发起一次活动算个人活动；被朋友找去的一段私聊只算被动私聊。0 表示不限次数。"),
     h("div", { class: "life-grid" }, numberField("per_day", "新加入成员的默认次数", 1, 8),
       field("活动与分享时间段", textInput(cfg.hours, (v) => { cfg.hours = v; }, { placeholder: "10-23" }))),
     h("div", { class: "life-grid" }, numberField("shares_per_day", "每人每天最多发群里几次", 1, 4),
       numberField("quiet_minutes", "群里安静多少分钟后才分享", 0, 1440)),
-    h("p", { class: "muted small" }, "次数是上限，不是任务。选中的成员会用这套安排接替原来的定时闲逛和主动发言，继续使用已分配的工具，看到的东西照样记进「见闻」。"));
+    h("p", { class: "muted small" }, "次数是上限，不是任务。不限次数时仍约每小时安排一次个人活动，遵守作息和活动时间。角色自己选目标，阅读回执和作品实际保存后才算成果，可以继续、暂停或收尾。"));
   if (location.hash === "#life") loadLife();
 }
 
@@ -1640,25 +1713,34 @@ function renderLife() {
   const openThreads = new Set([...document.querySelectorAll(".life-thread[open]")].map((el) => el.dataset.threadId));
   const name = (pid) => names[pid] || pid;
   const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "";
+  const quota = (used, limit) => `${used || 0} / ${limit === 0 ? "不限" : limit}`;
   const status = { active: "正在关注", paused: "先放着", done: "告一段落" };
   const cards = d.settings.members.map((pid) => {
     const items = d.interests.filter((i) => i.owner === pid).sort((a, b) => b.updated_at - a.updated_at);
     const plan = d.plans[pid] || {};
+    const artifacts = (d.artifacts || []).filter((a) => a.owner === pid).slice(-6).reverse();
     return h("div", { class: "card life-member" },
       h("div", { class: "row-between" }, h("h2", {}, `${name(pid)} 的近况`),
-        h("span", { class: "pill" }, d.running === pid ? "活动中" : d.settings.enabled ? "自由安排" : "已暂停")),
-      h("p", { class: "muted small" }, `今天活动 ${plan.posts_today || 0}/${plan.limit || d.settings.per_day} 次 · 分享 ${plan.shares_today || 0}/${d.settings.shares_per_day} 次`),
-      h("button", { class: "life-step", disabled: !!d.running || !d.settings.enabled,
-        onclick: () => stepLife(pid) }, `让 ${name(pid)} 自己安排一次`),
+        h("span", { class: "pill" }, d.games?.running === pid ? "玩游戏中" : d.running === pid ? "活动中" : d.settings.enabled ? "自由安排" : "已暂停")),
+      h("p", { class: "muted small" }, `个人活动 ${quota(plan.posts_today, plan.limit ?? d.settings.per_day)} 次 · 被动私聊 ${quota(plan.passive_today, plan.passive_limit ?? d.settings.passive_per_day)} 次 · 分享 ${plan.shares_today || 0}/${d.settings.shares_per_day} 次`),
+      h("button", { class: "life-step", disabled: !!d.running || !!d.games?.running || !d.settings.enabled || !!plan.done_for_today,
+        onclick: () => stepLife(pid) }, plan.done_for_today ? "今天个人活动次数已用完" : `让 ${name(pid)} 自己安排一次`),
       ...items.map((i) => h("div", { class: "life-interest" },
         h("div", { class: "row-between" }, h("b", {}, i.title), h("span", { class: "muted small" }, status[i.status] || i.status)),
         h("p", { class: "muted small" }, i.why), h("p", {}, i.progress),
+        i.goal ? h("p", { class: "small" }, h("b", {}, "想得到："), i.goal) : null,
+        i.review_due ? h("p", { class: "muted small" }, "已推进几次，下次会重新考虑继续、收尾或换方向。") : null,
         h("p", { class: "small" }, h("b", {}, "下次想做："), i.next_step || "还没决定"),
         ...i.sources.slice(0, 3).map((s) => h("p", { class: "small" },
           h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title || "查看来源"),
           " · ", s.read_level || "阅读程度未说明")),
         h("div", { class: "muted small" }, `最近进展 ${when(i.updated_at)}`))),
-      !items.length ? h("p", { class: "muted" }, "还没有持续事项。下次活动时，它可以从最近的兴趣和见闻里挑一件。") : null);
+      !items.length ? h("p", { class: "muted" }, "还没有个人目标。下次活动时，由它自己从兴趣中选择想做的事。") : null,
+      h("h3", {}, "实际留下的成果"),
+      ...(artifacts.length ? artifacts.map((a) => h("p", { class: "small" },
+        h("a", { href: `/api/life/artifacts/${encodeURIComponent(a.id)}`, target: "_blank", rel: "noopener noreferrer" }, a.title),
+        h("span", { class: "muted" }, ` · ${{reading: "阅读回执", note: "笔记", collection: "收藏", creative: "创作", game: "游玩回执"}[a.kind] || a.kind} · ${when(a.created_at)}`)))
+        : [h("p", { class: "muted small" }, "尚无执行成果。口头计划和未核实的旧记录不计入这里。")]));
   });
   const threads = [...d.threads].reverse().map((t) => h("details", { class: "card life-thread", "data-thread-id": t.id, open: openThreads.has(t.id) },
     h("summary", {}, `${t.members.map(name).join(" ↔ ")} · ${t.subject} · ${t.messages.length} 条`),
@@ -1676,6 +1758,7 @@ function renderLife() {
       h("p", { class: "muted small" }, source.read_level || "未记录阅读范围"),
       source.excerpt ? h("p", { class: "small" }, source.excerpt) : null))));
   $("#life-content").replaceChildren(
+    renderGamePanel(d),
     h("div", { class: "life-grid" }, ...cards),
     h("h2", {}, "分享到群里的内容"),
     h("p", { class: "muted small" }, "仅记录实际发出的分享。群友会收到这些来源摘记，是否接话由各自决定；未分享的事项和私聊仍各自保留。"),
@@ -1683,6 +1766,63 @@ function renderLife() {
     h("h2", {}, "私聊"), ...(threads.length ? threads : [h("p", { class: "muted" }, "目前没有私聊。有想说给对方的话时，他们才会开始聊。")]),
     h("div", { class: "card" }, h("h2", {}, "最近活动"),
       events.length ? h("ul", { class: "life-events" }, ...events) : h("p", { class: "muted" }, "活动会记录在这里，留在心里或暂时不说也算一次。")));
+}
+
+let gameDraft = null, gameDraftDirty = false;
+
+function renderGamePanel(d) {
+  if (!d.games) return h("div");
+  const g = d.games, names = d.names;
+  const socialReady = (g.interface_version || 1) >= 2;
+  if (!gameDraftDirty) gameDraft = JSON.parse(JSON.stringify(g.settings));
+  const cfg = gameDraft;
+  const expanded = !!document.querySelector("#game-permissions[open]");
+  const mark = (key, value) => { cfg[key] = value; gameDraftDirty = true; };
+  const check = (key, label) => h("label", { class: "check" },
+    h("input", { type: "checkbox", checked: cfg[key], onchange: (e) => mark(key, e.target.checked) }), label);
+  const number = (key, label, min, max) => h("label", {}, label,
+    h("input", { type: "number", value: cfg[key], min, max,
+      oninput: (e) => mark(key, Number(e.target.value)) }));
+  const action = async (path) => {
+    try { await api("POST", path); await loadLife(); }
+    catch (error) { toast(error.message, true); }
+  };
+  const save = async () => {
+    try {
+      await api("PUT", "/api/games", cfg);
+      gameDraftDirty = false;
+      await loadLife(); toast("游戏授权已保存");
+    } catch (error) { toast(error.message, true); }
+  };
+  const state = g.latest || {};
+  return h("section", { class: "card" },
+    h("div", { class: "row-between" }, h("h2", {}, "玩一会儿《杀戮尖塔》"),
+      h("span", { class: "pill" }, g.running ? `${names[g.running] || g.running} 正在玩${g.social?.companion ? ` · ${names[g.social.companion] || g.social.companion} 陪聊` : ""}` : g.settings.enabled ? "已授权" : "未启用")),
+    h("p", { class: "muted small" }, "可以找朋友一起看，边玩边商量，也可以闲聊或先歇着。有意思时自行决定发一张游戏截图到群里，大家的回复会回到正在玩的这一局。自主游玩遵守作息和电脑空闲条件。"),
+    !socialReady ? h("p", { class: "pill" }, "服务还未加载陪玩功能，需要重启后再启用。") : null,
+    g.running ? h("p", {}, `已执行 ${state.actions || 0} 步${state.floor != null ? ` · 第 ${state.floor} 层 · 生命 ${state.current_hp}/${state.max_hp}` : " · 正在准备游戏"}`) : null,
+    h("div", { class: "row" },
+      ...g.settings.members.map((pid) => h("button", { disabled: !socialReady || !!g.running || !!d.running || !g.settings.enabled,
+        onclick: () => action(`/api/games/${encodeURIComponent(pid)}/start`) }, `让 ${names[pid] || pid} 玩一会儿`)),
+      h("button", { disabled: !g.running, onclick: () => action("/api/games/stop") }, "保存并暂停")),
+    ...(g.social?.messages || []).slice(-6).map((m) => h("p", { class: "small" }, h("b", {}, `${m.name}：`), m.text)),
+    g.social?.notice ? h("p", { class: "muted small" }, g.social.notice) : null,
+    h("details", { id: "game-permissions", open: expanded }, h("summary", {}, "游戏授权与时长"),
+      check("enabled", "允许使用这款游戏"), check("autoplay", "电脑空闲时，允许成员自己决定是否游玩"),
+      check("companions", "可以邀请朋友陪玩和聊天"), check("share_to_group", "有意思时，可以把游戏截图和自己的话发群里"),
+      h("div", { class: "life-grid" }, number("minutes", "每次最多几分钟", 1, 30),
+        number("decisions", "每次最多多少步", 1, 150), number("sessions_per_day", "每天额外上限（0 不另限）", 0, 10),
+        number("idle_minutes", "电脑空闲几分钟后可自行开始", 1, 60)),
+      h("div", { class: "row" }, ...d.settings.members.map((pid) => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: cfg.members.includes(pid), onchange: (e) => {
+          mark("members", e.target.checked ? [...new Set([...cfg.members, pid])] : cfg.members.filter((x) => x !== pid));
+        } }), names[pid] || pid))),
+      h("p", { class: "muted small" }, "操作者计一次个人活动，受邀朋友计一次被动私聊，同一局里继续聊不重复计数。群分享沿用每日分享额度，每次游玩最多两次。"),
+      h("button", { disabled: !socialReady || !!g.running, onclick: save }, "保存游戏授权")),
+    ...g.receipts.slice(0, 6).map((r) => h("p", { class: "small" },
+      h("a", { href: `/api/games/runs/${encodeURIComponent(r.id)}`, target: "_blank", rel: "noopener noreferrer" },
+        `${r.publication_target === "local_preview" ? "本地回放 · " : ""}${names[r.member] || r.member}${r.companions?.length ? ` 和 ${r.companions.map((p) => names[p] || p).join("、")}` : ""} · ${r.private_messages || 0} 条聊天 · ${r.shared_moments || 0} 次分享 · ${r.actions} 步`),
+      h("span", { class: "muted" }, ` · ${new Date(r.started_at * 1000).toLocaleString()} · ${r.status === "error" ? "中途停止，查看原因" : r.checkpoint_available ? "已留存档" : "已结束"}`))));
 }
 
 // ---------- journal ----------

@@ -15,6 +15,10 @@ CHAT_KEY = "console"
 
 
 class ConsoleSink:
+    async def post_photo(self, chat_key, participant, path, caption, reply_to=None):
+        print(f'\n[{participant.name}] {caption}\n〔游戏截图：{path}〕\n', flush=True)
+        return 1
+
     async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> None:
         print(f"\n[{participant.name}] {text}\n", flush=True)
 

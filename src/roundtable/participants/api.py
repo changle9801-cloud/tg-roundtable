@@ -75,6 +75,7 @@ class HistoryParticipant(Participant):
         tmp.replace(path)
 
     def reset(self, chat_key: str) -> None:
+        super().reset(chat_key)
         self._history_path(chat_key).unlink(missing_ok=True)
 
     async def reply(
@@ -82,8 +83,10 @@ class HistoryParticipant(Participant):
     ) -> str:
         history = self.load_history(chat_key)
         history.append({"role": "user", "content": prompt})
-        # Pictures go with this request only; the saved history keeps the text.
-        request = history[:-1] + [{"role": "user", "content": self.with_images(prompt, images)}] if images else history
+        # Pictures and fresh private recall go with this request only. Do not duplicate
+        # the private memory block into every persisted API history turn.
+        current = self.with_turn_context(prompt)
+        request = history[:-1] + [{"role": "user", "content": self.with_images(current, images) if images else current}]
         text = await self.complete(request)
         history.append({"role": "assistant", "content": text})
         self.save_history(chat_key, history)

@@ -176,7 +176,19 @@ def links_in(doc: Document, base: str) -> list[dict]:
     return links
 
 
-def html_content(html: str, url: str, max_chars: int) -> dict:
+def text_slice(content: str, max_chars: int, focus: str = "") -> dict:
+    """Return a bounded passage around literal search words, with honest coverage."""
+    focus = str(focus or "").strip()[:160]
+    positions = []
+    if focus:
+        terms = [focus, *re.split(r"[\s,，、|]+", focus)]
+        positions = [at for term in terms if term and (at := content.casefold().find(term.casefold())) >= 0]
+    start = max(0, positions[0] - 400) if positions else 0
+    return {"content": content[start:start + max_chars], "truncated": start > 0 or len(content) > start + max_chars,
+            "start_char": start, "total_chars": len(content), "focus": focus, "focus_found": bool(positions)}
+
+
+def html_content(html: str, url: str, max_chars: int, focus: str = "") -> dict:
     doc = Document(html)
     titles = doc.nodes(lambda n: n.tag == "title")
     title = tidy(node_text(titles[0]))[:200] if titles else ""
@@ -194,8 +206,11 @@ def html_content(html: str, url: str, max_chars: int) -> dict:
         raise ReadError("页面没有足够的可读正文，可能需要登录或由脚本加载；不能当作已阅读")
     if re.search(r"访问验证|百度安全验证|Just a moment|Access Denied|Verify you are human", title, re.I):
         raise ReadError("网站返回验证页面，本次没有读到原文")
-    return {"title": title, "content": content[:max_chars], "read_level": scope,
-            "truncated": len(content) > max_chars or len(posts) > 20, "links": links_in(doc, url)}
+    passage = text_slice(content, max_chars, focus)
+    if focus:
+        scope += f"；定位词 {focus[:80]}，" + (f"从第 {passage['start_char']} 个字符附近读取" if passage["focus_found"] else "正文未找到定位词")
+    return {"title": title, **passage, "read_level": scope,
+            "truncated": passage["truncated"] or len(posts) > 20, "links": links_in(doc, url)}
 
 
 def x_content(url: str, max_chars: int) -> dict:
@@ -216,7 +231,7 @@ def x_content(url: str, max_chars: int) -> dict:
             "links": links_in(doc, canonical)}
 
 
-def read_post(url: str, max_chars: int = 6000) -> dict:
+def read_post(url: str, max_chars: int = 6000, focus: str = "") -> dict:
     """Read a public post/article URL locally (X, Tieba or another public webpage).
 
     First find links with your existing search. Returns source text and exact reading
@@ -230,11 +245,11 @@ def read_post(url: str, max_chars: int = 6000) -> dict:
         else:
             raw, kind, final = fetch(url)
             if kind in {"text/html", "application/xhtml+xml"}:
-                result = html_content(raw, final, limit)
+                result = html_content(raw, final, limit, focus)
             elif kind == "text/plain":
                 if not raw.strip():
                     raise ReadError("网页没有返回可读文字")
-                result = {"content": raw[:limit], "truncated": len(raw) > limit, "read_level": "纯文本片段", "title": ""}
+                result = {**text_slice(raw, limit, focus), "read_level": "纯文本片段", "title": ""}
             else:
                 raise ReadError("此网址不是可读网页或纯文本；视频请用看视频工具，订阅请用 read_feed")
             result["url"] = final

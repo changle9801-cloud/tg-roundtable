@@ -6,7 +6,9 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
+import uuid
 from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -29,16 +31,19 @@ from .prompts import (
     build_browse_prompt,
     build_proactive_prompt,
     build_share_prompt,
+    build_personal_share_prompt,
     build_system_prompt,
     build_turn_prompt,
     abilities_section,
     ask_search_instructions,
     now_line,
     render_role,
+    chat_style_context,
     tools_section,
     search_instructions,
 )
 from .room import ChatRoom
+from .recall import chat_query
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
 from .drawing import (
     DrawLog,
@@ -51,14 +56,25 @@ from .drawing import (
 )
 from .journal import JournalStore, browse_once
 from .life import LifeEngine, LifeStore
+from .life_work import LifeWorkbench
+from .games.spire import GameService, highlights, make_game_actor
+from .games.social import GameConversation
+from .games.story import signals as game_signals, worth_remembering
+from .game_memories import (
+    CHOICES, GameMemoryStore, decision_prompt, fallback_decision, memory_prompt, parse_decision, parse_memories,
+    template_memories,
+)
+from .sources import source_key
 from .chronicle import MIN_MESSAGES as CHRONICLE_MIN_MESSAGES, Chronicle
 from .chronicle import build_prompt as build_chronicle_prompt, parse_reply as parse_chronicle
 from .feedback import FeedbackStore, plain_text
 from .followups import FollowUpStore, build_followup_prompt
-from .memes import MemeLibrary
-from .memory import MemoryStore
+from .memes import MEME_INSTRUCTIONS, MemeLibrary
+from .memory import MIN_USER_MESSAGES, MemoryStore, consolidation_prompt, parse_consolidation
 from .proactive import ProactiveScheduler, seconds_quiet
-from .routine import ASLEEP, BUSY, GOODNIGHT_CHANCE, MORNING_CHANCE, Routines, busy_doing, goodnight_prompt, wake_prompt
+from .routine import (
+    ASLEEP, BUSY, GOODNIGHT_CHANCE, MORNING_CHANCE, Routines, busy_doing, fell_asleep, goodnight_prompt, wake_prompt,
+)
 from .kaomoji import KaomojiLibrary
 from .tools import ToolServer, list_tools, tools_for
 from .reactions import reaction_instructions
@@ -132,6 +148,7 @@ class Runtime:
         self.followups = FollowUpStore(store.data_dir)
         self.chronicle = Chronicle(store.data_dir)
         self._chronicle_running = False
+        self._memory_running = False
         self.routines = Routines()
         self.feedback = FeedbackStore(store.data_dir)
         self._routine_last: dict[str, str] = {}  # member id -> asleep/busy/online at the last check
@@ -140,7 +157,26 @@ class Runtime:
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
         self.life = LifeStore(store.data_dir)
-        self.life_schedule = ProactiveScheduler(store.data_dir / "life_plan.json", prefix="browse")
+        self.life_workbench = LifeWorkbench(store.data_dir, lambda pid, prompt: self._life_ask(pid, prompt))
+        self.games = GameService(store.data_dir, self._game_actor, self._game_social)
+        self.game_memories = GameMemoryStore(store.data_dir)
+        self.games.profile = self.game_memories.profile
+        self._game_last_share = 0.0
+        self._game_task: asyncio.Task | None = None
+        self.life_schedule = ProactiveScheduler(store.data_dir / "life_personal_plan.json", prefix="browse")
+        self.life_private = ProactiveScheduler(store.data_dir / "life_private_plan.json", prefix="browse")
+        # Old plans mixed initiated activities (attempts) with passive replies (extra posts).
+        # Migrate once, preserving timestamps and the old file for recovery.
+        legacy_life = store.data_dir / "life_plan.json"
+        if legacy_life.exists():
+            legacy = ProactiveScheduler(legacy_life, prefix="browse")
+            if not self.life_schedule.path.exists():
+                self.life_schedule.plans = {pid: replace(plan, posts=plan.attempts) for pid, plan in legacy.plans.items()}
+                self.life_schedule.save()
+            if not self.life_private.path.exists():
+                self.life_private.plans = {pid: replace(plan, posts=max(0, plan.posts - plan.attempts), attempts=0)
+                                           for pid, plan in legacy.plans.items()}
+                self.life_private.save()
         self.life_posts = ProactiveScheduler(store.data_dir / "life_shares.json")
         self.life_sessions = SessionStore(store.data_dir / "life_sessions.json")
         self._life_task: asyncio.Task | None = None
@@ -162,7 +198,7 @@ class Runtime:
     def sticker_prompt(self) -> str:
         return self.stickers.prompt_section(self.sticker_limit)
 
-    def system_prompt_for(self, pc, config=None) -> str:
+    def system_prompt_for(self, pc, config=None, *, background: bool = False) -> str:
         """A member's full system prompt: role card, group rules, setting, policy, extras.
 
         ``config`` lets the admin page preview unsaved settings.
@@ -171,10 +207,10 @@ class Runtime:
         others = [o.name for o in config.enabled_participants if o.id != pc.id]
         return build_system_prompt(
             pc.name, others, render_role(pc), config.system_template,
-            self._extra_prompt(pc, config), config.scene, config.no_coding,
+            self._extra_prompt(pc, config, background=background), config.scene, config.no_coding,
         )
 
-    def _extra_prompt(self, pc, config) -> str:
+    def _extra_prompt(self, pc, config, *, background: bool = False) -> str:
         """Search, memory, sticker and kaomoji sections appended to a member's system prompt."""
         if pc.web_search and supports_web_search(pc):
             search = search_instructions(covers_x=pc.kind == "grok_cli")
@@ -206,11 +242,13 @@ class Runtime:
             tools_section(mine),
             sight,
             drawing,
-            self.memes.prompt_section(),
-            self.chronicle.prompt_section(),
+            self.memes.prompt_section() if background else MEME_INSTRUCTIONS,
+            self.chronicle.prompt_section() if background else "",
             self.followups.prompt_section(),
             self.journal.prompt_section(pc.id),
-            self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}),
+            (self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}) if background
+             else self.life.chat_summary(pc.id)),
+            self.game_memories.prompt_section(pc.id),
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.feedback.prompt_section(pc.id),
             self.stickers.prompt_section(limit, pc.id),
@@ -320,7 +358,24 @@ class Runtime:
             self.refresh_prompts()
 
     def _make(self, pc) -> Participant:
-        return participant_class(pc)(pc, self.sessions, self.config.data_dir / "work" / pc.id, self.config.round.call_timeout)
+        actor = participant_class(pc)(pc, self.sessions, self.config.data_dir / "work" / pc.id, self.config.round.call_timeout)
+        actor.turn_context = lambda prompt: self._chat_context(pc, prompt)
+        return actor
+
+    def _chat_context(self, pc, prompt: str) -> str:
+        query = chat_query(prompt)
+        names = [name for p in self.config.participants for name in (p.id, p.name, *p.aliases)]
+        return "\n\n".join(part for part in (
+            self.memes.recall(query, names),
+            self.memory.recall(pc.id, query, names),
+            self.chronicle.recall(query, names),
+            self.life.private_recall(pc.id, prompt, {m.id: m.name for m in self.config.participants}),
+            self.life.artifact_recall(pc.id, prompt),
+            self.life.progress_recall(pc.id, prompt),
+            self.game_memories.recall(pc.id, query, names) or self.life.game_recall(pc.id, query),
+            Runtime._game_chat_context(self, pc.id, query),
+            chat_style_context(pc),
+        ) if part)
 
     def chat_log_path(self, key: str) -> Path | None:
         if key.startswith("__"):  # admin tests and other internal chats are not recorded
@@ -344,6 +399,13 @@ class Runtime:
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
             )
+            # Old life shares predate the explicit origin field. Match public records,
+            # without rewriting the transcript or exposing any private activity.
+            room = self.rooms[key]
+            room.messages = [replace(m, external_to_session=True) if any(
+                s["member"] == m.speaker_id and s["text"] == m.text and abs(s["ts"] - m.ts) <= 120
+                for s in self.life.shares if s.get("external_to_session", True)
+            ) else m for m in room.messages]
         return self.rooms[key]
 
     async def apply(self, settings: dict | None = None, secrets: dict | None = None) -> None:
@@ -355,6 +417,7 @@ class Runtime:
                 tool_ids = {t["id"] for t in settings["tools"]}
                 secrets = prune_secrets(secrets if secrets is not None else self.secrets, ids, tool_ids)
             await self._cancel_life()
+            await self.stop_game()
             self.store.save(settings, secrets)
             self.settings, self.secrets = self.store.load()
             self.config = build_config(self.settings, self.secrets, self.store.data_dir)
@@ -662,6 +725,7 @@ class Runtime:
         if self.journal.forget_expired():
             self.refresh_prompts()
         self._chronicle_tick()
+        self._memory_tick()
         if self.controller is not None:
             await self._followup_tick()
             await self._routine_tick()
@@ -698,20 +762,33 @@ class Runtime:
         return self.config.life.enabled and pid in self.config.life.members
 
     def _life_days(self, pid: str) -> int:
-        return self.config.life.member_days.get(pid) or self.config.life.per_day
+        return self.config.life.member_days.get(pid, self.config.life.per_day)
 
-    def _life_left(self, pid: str) -> int:
-        """Activities left today; being messaged by a friend uses one too."""
+    def _life_left(self, pid: str) -> float:
+        """Personal activities left today, independent of passive private replies."""
         p = next((x for x in self.participants if x.id == pid), None)
         if p is None or not self._life_enabled(pid):
             return 0
-        return self._life_days(pid) - self.life_schedule.plan(self._life_policy(p)).posts
+        limit = self._life_days(pid)
+        return float("inf") if limit == 0 else limit - self.life_schedule.plan(self._life_policy(p)).posts
+
+    def _life_private_limit(self, pid: str) -> int:
+        return self.config.life.passive_member_days.get(pid, self.config.life.passive_per_day)
+
+    def _life_private_left(self, pid: str) -> float:
+        p = next((x for x in self.participants if x.id == pid), None)
+        if p is None or not self._life_enabled(pid):
+            return 0
+        limit = self._life_private_limit(pid)
+        return float("inf") if limit == 0 else limit - self.life_private.plan(self._life_policy(p)).posts
 
     def _life_charge(self, pid: str) -> None:
         p = next((x for x in self.participants if x.id == pid), None)
         if p is not None:
-            self.life_schedule.plan(self._life_policy(p)).posts += 1
-            self.life_schedule.save()
+            if self._life_private_left(pid) <= 0:
+                raise ConfigError("这位朋友今天的被动私聊次数已用完")
+            self.life_private.plan(self._life_policy(p)).posts += 1
+            self.life_private.save()
 
     def _life_found(self, pid: str, item, result: dict) -> None:
         """Progress from a daily-life look-around also goes into the member's 见闻."""
@@ -720,7 +797,7 @@ class Runtime:
         if first is None:
             return
         entry = {
-            "title": result.get("title") or first.get("title") or item.title,
+            "title": result.get("title") or first.get("title") or (item.title if item else "随手看到的内容"),
             "summary": result.get("progress") or "",
             "take": result.get("take") or "",
             "url": first["url"],
@@ -737,7 +814,7 @@ class Runtime:
                        proactive_hours=policy.hours, proactive_idle_minutes=policy.quiet_minutes)
 
     def _life_idle(self) -> bool:
-        return (not any(room.busy for room in self.rooms.values())
+        return (not self.games.running and not any(room.busy for room in self.rooms.values())
                 and not self._browsing_now.intersection(self.config.life.members))
 
     def life_status(self) -> dict:
@@ -748,14 +825,16 @@ class Runtime:
                 policy = self._life_policy(p)
                 plans[p.id] = {**self.life_schedule.describe(policy),
                                "shares_today": self.life_posts.plan(policy).posts,
+                               "passive_today": self.life_private.plan(policy).posts,
+                               "passive_limit": self._life_private_limit(p.id),
                                "limit": self._life_days(p.id)}
-        return {**self.life.public(), "names": names, "settings": asdict(self.config.life),
+        return {**self.life.public(), "names": names, "settings": asdict(self.config.life), "games": self.games.status(),
                 "running": self._life_member, "plans": plans}
 
     def start_life(self, pid: str) -> dict:
         if not self._life_enabled(pid):
             raise ConfigError("请先在日常页开启日常，并把这位成员选进去")
-        if self._life_task is not None or not self._life_idle():
+        if self._life_task is not None or self.games.running or not self._life_idle():
             raise ConfigError("角色或群聊正在忙，稍后再试")
         p = self._member(pid)
         policy = self._life_policy(p)
@@ -767,14 +846,306 @@ class Runtime:
         self._life_task = asyncio.create_task(self._run_life(pid))
         return self.life_status()
 
+    def _game_actor(self, pid: str, folder: Path):
+        return make_game_actor(self._member(pid).cfg, folder, self.config.round.call_timeout)
+
+    def _game_chat_context(self, pid, query):
+        games = getattr(self, 'games', None)
+        if not games or games.running != pid or not games.social:
+            return ''
+        # Public replies get the player's current game facts, never the private conversation.
+        return ('[你正在玩的真实游戏]\n' + games.social.latest_scene
+                + '\n这是当前进度，可以聊眼前局面。私下和朋友聊过的原话不能自动当作群里都知道。[/当前游戏]')
+
+    def _game_peers(self, player):
+        if not self.games.config['companions']:
+            return []
+        return [p.id for p in self.participants if p.id != player and self._life_enabled(p.id)
+                and not self._asleep(p) and self._life_private_left(p.id) > 0]
+
+    def _game_social(self, player, folder, requested_peer=None):
+        actors = {}
+        async def ask(pid, prompt):
+            if pid not in actors:
+                pc = self._member(pid).cfg
+                work = folder / 'conversation' / pid
+                actor = participant_class(pc)(replace(pc, web_search=False, max_history=8),
+                          SessionStore(work / 'sessions.json'), work, min(90, self.config.round.call_timeout))
+                actor.set_system_prompt(self.system_prompt_for(pc) + '\n这次是在朋友身边看游戏，按本轮要求返回 JSON；不使用工具。')
+                actor.turn_context = lambda prompt, pc=pc: self._chat_context(pc, prompt)
+                actors[pid] = actor
+            return await actors[pid].reply('game-company', prompt)
+        def present(pid):
+            return any(p.id == pid and not self._asleep(p) and self._life_enabled(pid) for p in self.participants)
+        def feed(since):
+            chat = self.proactive_chat()
+            room = self.room(chat) if chat else None
+            return [{'speaker': m.speaker_name, 'text': m.text[:1000]} for m in room.messages if m.ts >= since] if room else []
+        async def wait_public():
+            chat = self.proactive_chat()
+            room = self.room(chat) if chat else None
+            if room:
+                count = len(room.messages)
+                for _ in range(100):
+                    if not room.busy or len(room.messages) > count:
+                        break
+                    await asyncio.sleep(0.2)
+        return GameConversation(player, folder, {p.id: p.name for p in self.config.participants},
+            self.life, ask, lambda: self._game_peers(player), self._life_charge,
+            publish=self._game_share, can_share=lambda: self._game_share_ready(player),
+            public_feed=feed, present=present, changed=self.refresh_prompts,
+            requested_peer=requested_peer, wait_public=wait_public)
+
+    def _game_share_ready(self, pid):
+        chat = self.proactive_chat()
+        room = self.room(chat) if chat else None
+        if (not self.games.config['share_to_group'] or not self._life_enabled(pid)
+                or self.controller is None or room is None or room.busy):
+            return False
+        policy = self._life_policy(self._member(pid))
+        plan = self.life_posts.plan(policy)
+        return (self.life_posts.in_hours(policy) and plan.posts < policy.proactive_per_day
+                and plan.attempts < policy.proactive_per_day * 2 and time.time() - self._game_last_share >= 120)
+
+    async def _game_share(self, pid, caption, image, scene):
+        if not self._game_share_ready(pid):
+            return None
+        image = Path(image)
+        run_id = self.games.latest.get('run_id') or self.games.latest.get('id')
+        expected = self.games.root / 'runs' / (run_id or '__missing__') / 'screenshots'
+        if (self.games.running != pid or not image.resolve().is_relative_to(expected.resolve())
+                or image.is_symlink() or image.suffix != '.png' or not image.is_file()):
+            raise ConfigError('只允许分享本次游戏生成的截图')
+        room, speaker = self.room(self.proactive_chat()), self._member(pid)
+        policy = self._life_policy(speaker)
+        self.life_posts.record(policy, None)
+        at = time.time()
+        future = room.start_proactive(speaker, lambda _: '', max(1, speaker.cfg.proactive_replies),
+            prepared_text=caption, discussion=True, image_path=image, image_description=scene)
+        if future is None:
+            return None
+        posted = await asyncio.shield(future)
+        if not posted:
+            return None
+        self.life_posts.plan(policy).posts += 1
+        self.life_posts.save()
+        self._game_last_share = time.time()
+        return {'text': posted, 'at': at}
+
+    def _record_game(self, receipt: dict) -> None:
+        if receipt.get('publication_target') == 'local_preview':
+            return  # Preview chats must not become memories of real Telegram messages.
+        pid, run_id = receipt['member'], receipt['id']
+        if any(a.get('game_run') == run_id for a in self.life.artifacts):
+            return
+        if not receipt['actions']:
+            self.life.event(pid, 'blocked', '游戏没有执行动作：' + receipt['stopped_because'])
+            return
+        events = self.games.events(receipt)
+        moments = highlights(events)
+        last = receipt['last']
+        title = f"《杀戮尖塔》游玩回执：{receipt['actions']} 个实际动作"
+        facts = (f"你实际操作了 {receipt['actions']} 步，耗时 {round(receipt['seconds'])} 秒；"
+                 f"最后记录在第 {last.get('floor')} 层，生命 {last.get('current_hp')}/{last.get('max_hp')}。"
+                 f"已确认打赢的战斗楼层：{receipt['battles_won'] or '尚无'}。"
+                 f"停止原因：{receipt['stopped_because']}；"
+                 + ("已保留游戏自己的房间检查点，可继续。" if receipt['checkpoint_available'] else "本次没有确认可继续的存档。"))
+        content = (f"# {title}\n\n{facts}\n\n" + '\n'.join('- ' + line for line in moments)
+                   + f"\n\n回执 ID：{run_id}\n操作记录 SHA-256：{receipt.get('trace_sha256', '')}\n")
+        artifact = self.life_workbench.save(pid, 'game', title, content)
+        artifact['game_run'] = run_id
+        artifact['game_started_at'] = receipt.get('started_at', artifact['created_at'])
+        artifact['game_facts'] = facts
+        artifact['game_highlights'] = moments
+        self.life.record_artifacts(pid, {'artifacts': [artifact]})
+        self.life.event(pid, 'play', facts)
+        climb, ended = self.game_memories.attach(receipt)
+        if ended:
+            self._spawn(self._remember_climb(climb))  # also decides what next
+        else:
+            self.game_memories.done(pid)  # it played again: the last plan no longer holds
+        self.refresh_prompts()
+
+    async def _remember_climb(self, climb_id: str) -> list:
+        """A climb ended: read what happened from its play sessions and remember it, with feelings."""
+        store = self.game_memories
+        climb = store.climbs.get(climb_id)
+        if not climb or climb.get('remembered'):
+            return []
+        climb['remembered'] = True
+        store.save()
+        member = climb['member']
+        try:
+            receipts = {r['id']: r for r in self.games.receipts(member)}
+            events, watched = [], {}
+            for rid in climb['receipts']:
+                if rid not in receipts:
+                    continue
+                try:
+                    part = self.games.events(receipts[rid])
+                except ConfigError as e:
+                    log.warning('游戏记忆跳过了一段游玩 %s：%s', rid, e)
+                    continue
+                events += part
+                for peer in receipts[rid].get('companions', []):
+                    watched.setdefault(peer, []).extend(part)
+            sig = game_signals(events, climb.get('game_over'))
+            if not worth_remembering(sig):
+                return []
+            sig['stood_out'] = store.record_climb(member, sig)
+            player = self._member(member)
+            added = await self._write_game_memories(player, climb_id, sig)
+            for peer, seen in watched.items():
+                watcher = next((p for p in self.participants if p.id == peer and p.id != member), None)
+                peer_sig = game_signals(seen)
+                if watcher is not None and worth_remembering(peer_sig):
+                    added += await self._write_game_memories(watcher, climb_id, peer_sig, watched=player.name)
+            for text in store.nominations(member, player.name):
+                meme = self.memes.add(text, '', '游戏记忆')
+                if meme is not None:  # waits for the owner to switch it on in the meme library
+                    self.memes.update(meme.id, {'enabled': False})
+            log.info('%s 记住了这局《杀戮尖塔》：%s', player.name, '；'.join(f'{m.feeling} {m.story}' for m in added) or '没什么')
+            await self._decide_next(player, sig)
+            self.refresh_prompts()
+            return added
+        except Exception as e:  # noqa: BLE001 - a failed write-up must not stop the game loop
+            log.warning('游戏记忆没写成：%s', e)
+            return []
+
+    async def _cheap_ask(self, prompt: str, system: str, purpose: str = 'game_memory') -> str | None:
+        """One tool-less answer from the cheapest member, in its own sessions; never Claude."""
+        writer = self._chronicle_writer()
+        if writer is None or writer.cfg.kind == 'claude_cli':
+            return None
+        actor = participant_class(writer.cfg)(writer.cfg, SessionStore(self.config.data_dir / f'{purpose}_sessions.json'),
+                                              self.config.data_dir / 'work' / purpose / writer.id,
+                                              self.config.round.call_timeout)
+        actor.set_system_prompt(system)
+        key = '__game_memory_' + uuid.uuid4().hex
+        try:
+            return await actor.reply(key, prompt)
+        except ParticipantError as e:
+            log.warning('游戏记忆的模型调用失败，改用模板：%s', e)
+            return None
+        finally:
+            actor.reset(key)
+
+    async def _write_game_memories(self, who: Participant, climb_id: str, sig: dict, watched: str = '') -> list:
+        """1–3 memory blocks in the member's voice, by the cheapest model; Claude never writes them."""
+        recent = [m for m in self.game_memories.items(who.id)][-5:]
+        raw = await self._cheap_ask(memory_prompt(who.name, who.cfg.persona, sig, recent, watched),
+                                    '你帮朋友群里的成员记下他们玩游戏的经历和感受。只按要求输出 JSON。')
+        if raw is not None and re.fullmatch(r'\s*\[\s*\]\s*', raw):
+            return []  # nothing worth remembering, by its own judgement
+        blocks = parse_memories(raw or '', sig, who.id, climb_id, watched)
+        if not blocks:
+            blocks = template_memories(sig, who.id, climb_id, watched)
+        return self.game_memories.add(blocks)
+
+    async def _decide_next(self, player: Participant, sig: dict) -> dict:
+        """After a climb the member itself decides what next; that plan is kept and followed."""
+        store = self.game_memories
+        raw = await self._cheap_ask(decision_prompt(player.name, player.cfg.persona, sig, store.mood(player.id),
+                                                    store.opinion_lines(player.id)),
+                                    '你替朋友群里的成员说出她打完游戏后自己的打算。只按要求输出 JSON。')
+        intent = store.decide(player.id, parse_decision(raw or '', sig) or fallback_decision(sig))
+        log.info('%s 打完这局的打算：%s（%s）', player.name, CHOICES[intent['choice']], intent['why'])
+        self.life.event(player.id, 'plan', f"打完《杀戮尖塔》：{CHOICES[intent['choice']]}，{intent['why']}")
+        if intent['say']:
+            self._spawn(self._say_after_game(player, intent['say']))
+        if intent['choice'] == 'again':
+            self._spawn(self._play_again(player.id))
+        return intent
+
+    async def _say_after_game(self, player: Participant, text: str) -> None:
+        """Its own line about the climb (a question for friends, a wish for another game) in the group."""
+        chat = self.proactive_chat()
+        if not chat or self._asleep(player):
+            log.info('%s 想在群里说「%s」，但现在不方便（没有群或在睡觉），没发', player.name, text)
+            return
+        room = self.room(chat)
+        for _ in range(12):  # a quiet moment, up to a minute
+            if not room.busy:
+                break
+            await asyncio.sleep(5)
+        future = room.start_proactive(player, lambda unseen: '', 1, prepared_text=text)
+        if future is not None:
+            with suppress(Exception):
+                await asyncio.wait_for(future, self.config.round.call_timeout + 60)
+
+    async def _play_again(self, pid: str) -> None:
+        """It wanted another round right away: play, if its daily life and the owner's settings allow now."""
+        for _ in range(60):
+            if self._life_task is None and not self.games.running and (self._game_task is None or self._game_task.done()):
+                break
+            await asyncio.sleep(2)
+        else:
+            return
+        if not self.games.available(pid, automatic=True) or not self._life_enabled(pid) or self._life_left(pid) <= 0:
+            log.info('%s 想马上再来一局，但现在不方便（电脑有人在用、没开自主游玩或今天的活动用完了），先记着', pid)
+            return
+        self.life_schedule.record(self._life_policy(self._member(pid)), 'activity')
+        self._game_task = asyncio.create_task(self._play_game(pid, automatic=True))
+
+    async def _play_game(self, pid: str, *, automatic=False, peer=None) -> dict:
+        self._member(pid)  # Recheck enabled membership before launching anything.
+        try:
+            result = await self.games.play(pid, automatic=automatic, peer=peer)
+        except asyncio.CancelledError:
+            if self.games.latest.get('member') == pid and 'ended_at' in self.games.latest:
+                self._record_game(self.games.latest)
+            raise
+        self._record_game(result)
+        return result
+
+    def start_game(self, pid: str, peer=None) -> dict:
+        self._member(pid)
+        if peer is not None and peer not in self._game_peers(pid):
+            raise ConfigError('这位朋友现在不方便一起玩，可以让成员自己邀请其他朋友')
+        if self._game_task is not None and not self._game_task.done():
+            raise ConfigError('已经有成员在玩游戏')
+        if self._life_task is not None or not self.games.available(pid):
+            raise ConfigError('成员正在活动，或游戏未授权、次数已用完')
+        if self._life_enabled(pid):
+            if self._life_left(pid) <= 0:
+                raise ConfigError('这位成员今天的个人活动次数已用完')
+            self.life_schedule.record(self._life_policy(self._member(pid)), 'activity')
+        self._game_task = asyncio.create_task(self._play_game(pid, peer=peer))
+        return self.games.status()
+
+    async def stop_game(self) -> None:
+        life_was_playing = self.games.running and self._life_task is not None
+        self.games.stop()
+        if self._game_task is not None:
+            if not self._game_task.done() and not self.games.running:
+                self._game_task.cancel()  # Stop requested before the queued task could launch.
+            with suppress(asyncio.CancelledError, ConfigError):
+                await self._game_task
+            self._game_task = None
+        if life_was_playing:
+            with suppress(asyncio.CancelledError):
+                await self._life_task
+
     def _life_context(self, pid: str) -> str:
         p = self._member(pid)
         chat = self.proactive_chat()
         room = self.room(chat) if chat else None
         recent = "\n".join(f"{m.speaker_name}：{m.text[:600]}" for m in room.messages[-10:]) if room else "暂无新消息"
         interests = p.cfg.browse_topics or p.cfg.proactive_topics or "按自己的兴趣选择"
-        return (f"你的长期兴趣：{interests}\n最近的公开群聊（不是给你的新任务）：\n{recent}\n"
+        friends = "\n".join(
+            f"- {m.name}（ID {m.id}）：喜欢 {m.browse_topics or m.proactive_topics or '随缘聊天'}；"
+            f"可以 {'、'.join(self._abilities(m, self.config)) or '聊天，依据朋友的转述接话'}"
+            for m in self.config.enabled_participants if m.id != pid
+        )
+        return (f"你的长期兴趣：{interests}\n朋友公开的喜好和能力：\n{friends}\n"
+                "个人行动可让应用代读具体公开网页，或保存笔记、收藏、创作文字。成果归自己保留，分享仍需另行决定。"
+                "没有搜索能力时可请朋友找链接，不能假装已经查到。个人活动与被朋友找去私聊分开计数。\n"
+                f"最近的公开群聊（不是给你的新任务）：\n{recent}\n"
                 f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, room) else '暂不合适，可以先留着，下次再决定'}。")
+
+    def _life_can_browse(self, pid: str) -> bool:
+        p = self._member(pid)
+        return bool(p.tools) or (p.cfg.web_search and supports_web_search(p.cfg))
 
     async def _life_ask(self, pid: str, prompt: str) -> str:
         import uuid
@@ -785,7 +1156,7 @@ class Runtime:
                                         self.config.data_dir / "work" / "life" / pid,
                                         self.config.round.call_timeout)
         actor.tools = tools_for(p.cfg, self.config.tools)
-        actor.set_system_prompt(self.system_prompt_for(p.cfg))
+        actor.set_system_prompt(self.system_prompt_for(p.cfg, background=True))
         key = "__life_" + uuid.uuid4().hex
         try:
             return await actor.reply(key, prompt)
@@ -793,16 +1164,74 @@ class Runtime:
             self.life_sessions.clear_one(key, pid)
             actor.reset(key)
 
+    async def _life_verify(self, pid: str, result: dict) -> dict:
+        return await self.life_workbench.research(pid, result, self.life.prompt_section(pid) + "\n" + self._life_context(pid))
+
+    async def _life_work(self, pid, item, plan):
+        # Continue from actual files, not merely a promise or an old summary.
+        previous = []
+        known = {}
+        for artifact in self.life.artifacts:
+            if artifact["owner"] != pid:
+                continue
+            if artifact["kind"] == "reading":
+                try:
+                    reading = self.life_workbench.read_artifact(artifact)
+                except ConfigError:
+                    continue
+                known.update({source_key(s["url"]): s for s in artifact.get("sources", [])})
+                try:
+                    requested = json.loads(reading).get("requested_url", "")
+                    if source_key(requested) and artifact.get("sources"):
+                        known[source_key(requested)] = artifact["sources"][0]
+                except (ValueError, AttributeError):
+                    pass
+            if artifact.get("interest_id") == item.id and artifact["kind"] != "reading":
+                previous.append(artifact)
+        context = self._life_context(pid)
+        for artifact in previous[-2:]:
+            try:
+                content = self.life_workbench.read_artifact(artifact)
+            except ConfigError:
+                context += "\n此前的成果文件已经不可用，不能假装已重新读过。"
+            else:
+                context += f"\n你自己此前实际保存的作品（可以在此基础上继续）：\n{content[:10000]}"
+        # A legacy sighting is only a candidate. If a chosen document needs it,
+        # perform the missing reads before writing instead of trusting its old summary.
+        selected = plan.get("source_urls") or []
+        if plan.get("operation") == "write" and isinstance(selected, list):
+            missing = list(dict.fromkeys(str(u) for u in selected if source_key(str(u)) not in known))
+            candidates = self.life.known_sources(pid)
+            candidates.update({source_key(e.url): {"url": e.url} for e in self.journal.of(pid)})
+            if missing and len(missing) <= 2 and all(source_key(u) in candidates for u in missing):
+                read = await self.life_workbench.research(pid, {"sources": [{"url": u} for u in missing]},
+                                                        context + f"\n为了写「{item.title}」，先核实这些旧见闻：{item.goal}")
+                self.life.record_artifacts(pid, read, item)
+                if read.get("outcome") != "progress":
+                    return read
+                for artifact in read.get("artifacts", []):
+                    body = json.loads(self.life_workbench.read_artifact(artifact))
+                    for source in artifact.get("sources", []):
+                        known[source_key(source["url"])] = source
+                        if source_key(body.get("requested_url", "")):
+                            known[source_key(body["requested_url"])] = source
+        return await self.life_workbench.work(pid, item, plan, context, known)
+
     async def _run_life(self, pid: str) -> None:
         try:
             p = self._member(pid)
-            names = {m.id: m.name for m in self.config.participants}
+            names = {m.id: m.name for m in self.config.enabled_participants}
             engine = LifeEngine(self.life, self._life_ask, self._life_share, self._life_context,
-                                names, self.refresh_prompts, charge=self._life_charge, found=self._life_found)
-            can_explore = bool(p.tools) or (p.cfg.web_search and supports_web_search(p.cfg))
+                                names, self.refresh_prompts, charge=self._life_charge, found=self._life_found,
+                                can_browse=self._life_can_browse, verify=self._life_verify, work=self._life_work,
+                                play=lambda member, peer=None: self._play_game(member, automatic=True, peer=peer),
+                                can_play=lambda member: (self.games.available(member, automatic=True)
+                                                         and not self.game_memories.resting(member)),
+                                play_note=self.game_memories.play_note)
+            can_explore = self._life_can_browse(pid)
             # Friends it can message: the others in daily life with activities left today.
             awake = {m.id for m in self.participants if not self._asleep(m)}
-            peers = [m for m in self.config.life.members if m != pid and m in awake and self._life_left(m) > 0]
+            peers = [m for m in self.config.life.members if m != pid and m in awake and self._life_private_left(m) > 0]
             action = await engine.step(pid, peers, can_explore)
             log.info("%s 完成一次日常活动：%s", p.name, action)
         except asyncio.CancelledError:
@@ -836,7 +1265,10 @@ class Runtime:
         policy = self._life_policy(p)
         # Sharing is selected by the actor; reserve a bounded attempt before posting.
         self.life_posts.record(policy, None)
-        future = room.start_proactive(p, lambda unseen: "", max(1, p.cfg.proactive_replies), prepared_text=message, sources=sources)
+        future = room.start_proactive(
+            p, lambda unseen: build_personal_share_prompt(unseen, message, sources, me=p.id),
+            max(1, p.cfg.proactive_replies), sources=sources, discussion=True,
+        )
         if future is None:
             return None
         posted = await future
@@ -950,11 +1382,14 @@ class Runtime:
         if p is None:
             return
         if kind == "wake":
-            missed = [m for m in room._unseen(p) if m.from_user]
+            # Only what was said while it slept: after a reset, older talk is unseen too, but not missed.
+            asleep = fell_asleep(p.cfg, self.routines.now())
+            since = asleep.timestamp() if asleep else 0.0
+            missed = [m for m in room._unseen(p) if m.from_user and m.ts >= since]
             # Nothing missed: only sometimes a "morning", and not from Claude (it shares the owner's quota).
             if not missed and (p.cfg.kind == "claude_cli" or random.random() >= MORNING_CHANCE or not room.messages):
                 return
-            make = lambda unseen: wake_prompt(unseen, now_line(), bool(missed))  # noqa: E731
+            make = lambda unseen: wake_prompt([m for m in unseen if m.ts >= since], now_line(), bool(missed))  # noqa: E731
         else:
             make = lambda unseen: goodnight_prompt(unseen, now_line())  # noqa: E731
         future = room.start_proactive(p, make, 1 if kind == "wake" else 0)
@@ -983,6 +1418,65 @@ class Runtime:
         if day is not None:
             self._chronicle_running = True
             self._spawn(self._write_chronicle(room, day))
+
+    # ---- learning about the user from the day's chat ----
+
+    def _memory_tick(self, now: datetime | None = None) -> None:
+        if self._memory_running or self.config.memory_learn not in ('review', 'auto'):
+            return
+        chat = self.proactive_chat()
+        if not chat:
+            return
+        room = self.room(chat)
+        now = now or datetime.now()
+        said = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts and m.from_user)
+        day = self.memory.day_to_consolidate([d for d, n in said.items() if n >= MIN_USER_MESSAGES], now)
+        if day is not None:
+            self._memory_running = True
+            self._spawn(self._consolidate_memory(room, day))
+
+    async def _consolidate_memory(self, room: ChatRoom, day: str) -> list:
+        """Read one day's chat and keep what the user said about himself, with his words as proof."""
+        try:
+            todays = [m for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
+            user_texts = [m.text for m in todays if m.from_user]
+            if not user_texts:
+                self.memory.record_consolidation(day, [], self.config.memory_learn, 0.0)
+                return []
+            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text[:300]}"
+                     for m in todays][-250:]
+            users = sorted({m.speaker_name for m in todays if m.from_user})
+            raw = await self._cheap_ask(consolidation_prompt(day, lines, self.memory.items, users),
+                                        '你帮一个朋友群记下群主自己说过的、值得长期记住的事。只按要求输出 JSON。', 'memory')
+            if raw is None:
+                log.info('%s 的聊天没整理成长期记忆：没有可用的便宜模型（不用 Claude）', day)
+                return []  # not marked as read: tried again later
+            found = parse_consolidation(raw, user_texts, self.memory.items)
+            said_at = max(m.ts for m in todays if m.from_user)
+            added = self.memory.record_consolidation(day, found, self.config.memory_learn, said_at)
+            log.info('%s 的聊天整理出 %d 条长期记忆%s：%s', day, len(added),
+                     '' if self.config.memory_learn == 'auto' else '（待确认）', '；'.join(f.text for f in added) or '没有')
+            if added and self.config.memory_learn == 'auto':
+                self.refresh_prompts()
+            return added
+        except Exception as e:  # noqa: BLE001 - a failed read must not stop the loop
+            log.warning('%s 的聊天没整理成长期记忆：%s', day, e)
+            return []
+        finally:
+            self._memory_running = False
+
+    async def consolidate_memory_now(self, day: str | None = None) -> list:
+        """Admin "现在整理": read a day (default: today) right away, even if read before."""
+        chat = self.proactive_chat()
+        if not chat:
+            raise ConfigError('还没有设置主动发言的群，不知道该整理哪个群的聊天')
+        if self._memory_running:
+            raise ConfigError('正在整理，等一会儿再试')
+        if self.config.memory_learn not in ('review', 'auto'):
+            raise ConfigError('长期记忆的学习方式是「关闭」，先改成「需要我确认」或「自动记住」')
+        day = day or datetime.now().date().isoformat()
+        self._memory_running = True
+        return await self._consolidate_memory(self.room(chat), day)
 
     def _chronicle_writer(self) -> Participant | None:
         """The cheapest member to write the day up: an API one, then Codex or Grok, Claude last."""
@@ -1103,7 +1597,8 @@ class Runtime:
 
         sources = [{"url": entry.url, "title": entry.title, "excerpt": entry.summary,
                     "read_level": entry.read_level or "群友的浏览摘记，未记录具体阅读范围"}] if entry else []
-        future = room.start_proactive(p, make_prompt, pc.proactive_replies, sources=sources)
+        future = room.start_proactive(p, make_prompt, pc.proactive_replies, sources=sources,
+                                      discussion=bool(entry))
         if future is None:
             self.proactive.postpone(pc)
             return None
@@ -1270,6 +1765,7 @@ class Runtime:
 
     async def shutdown(self) -> None:
         await self._cancel_life()
+        await self.stop_game()
         for room in self.rooms.values():
             await room.stop()
         for bot in self.bots.values():

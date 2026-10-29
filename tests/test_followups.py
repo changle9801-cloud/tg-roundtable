@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from conftest import FakeSink
 
@@ -62,7 +62,8 @@ def test_asking_prompt():
 
 
 async def test_room_collects_tags_and_nudges(make, store, round_cfg):
-    a = make("a", ["加油 [跟进:2026-10-27 18:00|阿明面试，问问结果]"])
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")  # a real date still ahead
+    a = make("a", [f"加油 [跟进:{tomorrow} 18:00|阿明面试，问问结果]"])
     noted = []
     sink = FakeSink()
     room = ChatRoom("-1", [a], sink, round_cfg, store, on_followup=lambda chat, p, items: noted.append((chat, p.id, items)))

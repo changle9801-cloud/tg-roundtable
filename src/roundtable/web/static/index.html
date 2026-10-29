@@ -303,14 +303,14 @@
         <h2>长期记忆</h2>
         <div class="grid2">
           <label class="field">
-            <span>模型自己提议记住的内容 <small>模型在回复里写 [记住:…]，群里看不到这个标记</small></span>
+            <span>模型提议记住的内容 <small>模型在回复里写 [记住:…]；另外每天 23 点后会读一遍当天群聊，整理出你自己说过的事（工作、打算、喜好……），带上你的原话。关闭后两样都停</small></span>
             <select id="memory-learn">
               <option value="review">需要我在这里确认（推荐）</option>
               <option value="auto">自动记住</option>
               <option value="off">关闭</option>
             </select>
           </label>
-          <div></div>
+          <div><button id="memory-consolidate">现在整理今天的聊天</button></div>
         </div>
         <div id="memory-pending"></div>
         <div class="memory-add">
@@ -318,6 +318,7 @@
           <select id="memory-scope"></select>
           <button id="memory-add" class="primary">添加</button>
         </div>
+        <p class="muted small" id="memory-budget"></p>
         <div id="memory-list"></div>
       </div>
 
@@ -325,6 +326,14 @@
         <h2>你点过赞和踩的话 <span class="muted small" id="feedback-count"></span></h2>
         <p class="muted small" style="margin-top:-6px">在群里给成员的话点 👍 ❤ 😂 之类的，会出现在这里，觉得好就「加为示例台词」，它以后就照这个味道说话；点 👎 💩 之类的，它马上就会被提醒别再这么说（30 天内有效，删掉就不再提醒）。总控 bot 要是群管理员才收得到点赞。</p>
         <div id="feedback-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>游戏记忆 <span class="muted small" id="game-memory-count"></span></h2>
+        <p class="muted small" style="margin-top:-6px">成员打完一局《杀戮尖塔》后记下的经历和心情。心情过几天就淡了（强度条变短），常发生的事会变成长期看法，也会影响他们下一局怎么玩。打完一局后成员会自己决定下一步（马上再来、过阵子、先放几天、问朋友、想玩别的），🎯 是她现在的打算；说了先放着的，日常里就不会自己去开。📌 钉住的不会淡，隐藏的不再进提示，但还算在看法里。</p>
+        <select id="game-memory-member"></select>
+        <div id="game-opinions" class="muted small"></div>
+        <div id="game-memory-list"></div>
       </div>
 
       <div class="card">
@@ -385,7 +394,7 @@
     <section id="tab-life" class="tab-panel">
       <div class="section-head"><h1>日常</h1></div>
       <p class="muted">参加的成员各自关注一些事，可以继续了解、找群友私聊（会轮流找不同的人），也可以先歇着。
-        事项和私聊跨天保留；看到的东西会记进「见闻」，想分享时才发到群里。参加日常的成员不再单独闲逛和主动发言，由这里统一安排。</p>
+        角色自己选择想做的事，实际阅读或创作后留下成果，跨天继续推进。个人活动与被动私聊分别计数；只有决定分享时才发到群里。</p>
       <div id="life-settings" class="card"></div>
       <div id="life-content"></div>
     </section>

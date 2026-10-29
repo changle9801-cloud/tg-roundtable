@@ -56,6 +56,7 @@ class ClaudeCLI(Participant):
         self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
     ) -> str:
         session_id = self.store.get(chat_key, self.id)
+        prompt = self.with_turn_context(prompt)
         stdin = image_message(prompt, images) if images else prompt
         env = None
         if self.tools:  # slow tools (watching a video) may take minutes

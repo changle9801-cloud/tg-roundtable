@@ -39,7 +39,7 @@ class Script:
         reply = self.replies.pop(0)
         return reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
 
-    async def share(self, pid, text):
+    async def share(self, pid, text, sources=()):
         self.public.append((pid, text))
         return text
 
@@ -163,9 +163,9 @@ def test_a_third_interest_puts_the_oldest_on_hold_and_active_items_stay_in_conte
 async def test_invalid_decisions_end_as_a_quiet_rest(tmp_path, replies):
     script = Script(*replies)
     store = LifeStore(tmp_path)
-    assert await script.engine(store).step("claude", "codex", True) == "idle"
+    assert await script.engine(store).step("claude", "codex", True) == "blocked"
     assert not script.public and not store.threads and not store.interests
-    assert store.events[-1]["action"] == "idle" and "没做成" in store.events[-1]["note"]
+    assert store.events[-1]["action"] == "blocked" and "没做成" in store.events[-1]["note"]
 
 
 async def test_bad_json_gets_one_more_try(tmp_path):
@@ -197,7 +197,7 @@ async def test_friends_take_turns_for_private_chats(tmp_path):
 async def test_no_friend_free_means_no_private_chat(tmp_path):
     script = Script({"action": "private", "message": "在吗"})
     store = LifeStore(tmp_path)
-    assert await script.engine(store).step("codex", [], True) == "idle"
+    assert await script.engine(store).step("codex", [], True) == "blocked"
     assert "这次不能私聊" in script.calls[0][1] and not store.threads
 
 
@@ -257,12 +257,13 @@ async def test_only_one_activity_runs_and_disabling_preserves_completed_progress
     async def ask(pid, prompt):
         nonlocal call
         call += 1
-        if call == 1: return json.dumps({"action": "explore", "interest": IDEA})
+        if call == 1: return json.dumps({"action": "work", "interest": {**IDEA, "goal": "写一份自己的拉链笔记"},
+                                        "work": {"operation": "write", "kind": "note"}})
         entered.set(); await asyncio.Event().wait()
     r._member("claude").cfg.web_search = True
     r._life_ask = ask
     r.start_life("claude")
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 2)
     with pytest.raises(ConfigError, match="忙"):
         r.start_life("codex")
     settings = dict(r.settings, life={**r.settings["life"], "enabled": False})
@@ -295,10 +296,17 @@ async def test_share_gate_and_actor_authored_message_reaches_existing_group_sink
     assert await r._life_share("claude", "不该现在发") is None
     assert not r.sink.posts
     r.config.life.quiet_minutes = 0
-    assert await r._life_share("claude", "我想说这句") == "我想说这句"
+    asked = []
+    async def public_reply(chat, prompt, *args, **kwargs):
+        asked.append((chat, prompt))
+        return "用群聊口吻说这句"
+    r._member("claude").reply = public_reply
+    assert await r._life_share("claude", "我想说这句") == "用群聊口吻说这句"
     await room.wait_idle()
-    assert r.sink.posts == [("claude", "我想说这句")]
-    assert room.messages[-1].text == "我想说这句"
+    assert r.sink.posts == [("claude", "用群聊口吻说这句")]
+    assert room.messages[-1].text == "用群聊口吻说这句"
+    assert asked[0][0] == room.key and "我想说这句" in asked[0][1]
+    assert not room.messages[-1].external_to_session
     r.life_posts.plan(r._life_policy(r._member("claude"))).posts = 2
     assert await r._life_share("claude", "超上限") is None
 
@@ -327,11 +335,11 @@ def test_everyone_may_join_and_claude_does_one_a_day():
     life = normalize_settings({"participants": members, "life": {
         "enabled": True, "members": ["claude", "codex", "grok", "ds"], "per_day": 3, "member_days": {"grok": 5}}})["life"]
     assert life["member_days"] == {"claude": 1, "codex": 3, "grok": 5, "ds": 3}
-    with pytest.raises(ConfigError, match="1 到 8"):
+    with pytest.raises(ConfigError, match="0 到 8"):
         normalize_settings({"participants": members, "life": {"members": ["claude", "codex"], "member_days": {"codex": 9}}})
 
 
-async def test_friends_out_of_activities_are_not_offered(tmp_path):
+async def test_friends_out_of_personal_activities_can_still_reply_privately(tmp_path):
     r = runtime(tmp_path)
     r.config.life.member_days = {"claude": 1, "codex": 2}
     asked = []
@@ -345,7 +353,7 @@ async def test_friends_out_of_activities_are_not_offered(tmp_path):
     await r._life_task
     r.start_life("codex")
     await r._life_task
-    assert "这次不能私聊" in asked[-1]  # Claude used its one activity today
+    assert "Claude（ID claude" in asked[-1]  # personal cap does not use passive replies
     with pytest.raises(ConfigError, match="用完"):
         r.start_life("claude")
 
@@ -364,10 +372,11 @@ async def test_private_state_is_scoped_in_actual_system_prompts(tmp_path):
     thread = r.life.new_thread("claude", "codex", "独有的话题")
     r.life.add_message(thread, "claude", "只有我们知道的进展")
     r.refresh_prompts()
-    assert "只有我们知道的进展" in r._member("codex").system_prompt
+    assert "只有我们知道的进展" in r._member("codex").with_turn_context("刚才私下聊了什么")
     from roundtable.config import ParticipantConfig
     third = ParticipantConfig(id="grok", name="Grok", kind="grok_cli")
     assert "只有我们知道的进展" not in r.system_prompt_for(third)
+    assert "只有我们知道的进展" not in r._chat_context(third, "刚才私下聊了什么")
 
 
 async def test_background_actor_keeps_assigned_tools_and_separate_sessions(tmp_path, monkeypatch):

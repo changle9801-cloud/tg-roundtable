@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .config import ConfigError
+from .recall import topic_score
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ def build_prompt(day: str, lines: Sequence[str], known: Sequence[str], memes: Se
         "- 每个写一句标题和一两句经过（谁、干了什么、怎么收场），用口语，像朋友之间回忆往事那样，不要评价。",
         "- people 写参与的人名。",
         "- 如果这一天群里形成了新的梗（反复出现的说法、外号、名句），写进 memes，一句话说清这个梗是什么；没有就空着。",
+        "- 一次澄清、道歉或忘记内容不自动成为新梗。描述实际反复使用过的说法，不给谁规定固定台词或长期性格。",
         '只输出 JSON：{"moments":[{"title":"一句话标题","what":"经过","people":["名字"]}],"memes":["梗的说明"]}',
     ]
     if known:
@@ -142,3 +144,12 @@ class Chronicle:
             month, day = int(m.day[5:7]), int(m.day[8:10])
             lines.append(f"- {month}月{day}日 {m.title}：{m.what}")
         return "\n".join(lines)
+
+    def recall(self, query: str, names=()) -> str:
+        matches = [(topic_score(query, m.title + " " + m.what, names), m) for m in self.moments]
+        chosen = sorted((pair for pair in matches if pair[0]), key=lambda pair: (pair[0], pair[1].day), reverse=True)[:2]
+        if not chosen:
+            return ""
+        return ("[当前话题相关的群聊往事]\n"
+                + "\n".join(f"- {m.day} {m.title}：{m.what}" for _, m in chosen)
+                + "\n这是当时发生的事，不能据此猜对方现在的动机；只在眼前需要时提及。[/群聊往事]")

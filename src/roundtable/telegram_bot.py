@@ -118,6 +118,19 @@ class TelegramSink:
         except TelegramAPIError as e:  # e.g. the group only allows some reactions
             log.warning("%s could not react %s: %s", participant.id, emoji, e)
 
+    async def post_photo(self, chat_key, participant, path, caption, reply_to=None):
+        bot = self.runtime.bots.get(participant.id)
+        if bot is None:
+            return None
+        try:
+            quote = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
+            sent = await bot.send_photo(int(chat_key), FSInputFile(path), caption=caption[:900], reply_parameters=quote)
+            self.parts[(chat_key, sent.message_id)] = sent.message_id
+            return sent.message_id
+        except TelegramAPIError as error:
+            log.warning('%s could not share game photo: %s', participant.id, error)
+            return None
+
     async def notice(self, chat_key: str, text: str) -> None:
         controller = self.runtime.controller
         if controller is None:

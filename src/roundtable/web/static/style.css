@@ -286,6 +286,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 /* continuing daily life */
 .life-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .life-grid > * { min-width: 0; }
+.life-quota-row { grid-template-columns: minmax(120px, 1fr) repeat(2, minmax(160px, 1fr)); }
+@media (max-width: 760px) { .life-quota-row { grid-template-columns: 1fr; } }
 .life-interest { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--border, #e4e7ec); }
 .life-interest p, .life-message p, .life-events p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .life-interest .row-between { gap: 12px; align-items: flex-start; }
@@ -305,6 +307,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .fact select { width: 150px; flex: none; }
 .fact.off > input:not([type="checkbox"]) { color: var(--muted); text-decoration: line-through; }
 .fact .src { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.strength { display: inline-block; width: 48px; height: 6px; border-radius: 3px; background: var(--border); flex: none; }
+.strength > span { display: block; height: 100%; border-radius: 3px; background: var(--accent, #4a7); }
 .pending-box { background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
 .pending-box .fact { border-top: none; }
 .transcript { max-height: 360px; overflow: auto; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-bottom: 14px; }

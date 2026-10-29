@@ -43,6 +43,7 @@ class FakeSink:
         self.reactions: list[tuple[str, int, str]] = []  # (member, message id, emoji)
         self.quotes: list[tuple[str, int | None]] = []  # (member, quoted message id) per post
         self.next_id = 1000  # Telegram-like message ids handed out by post()
+        self.photos = []
 
     async def activity(self, chat_key, participant, text):
         self.activities.append(("show", participant.id, text))
@@ -58,6 +59,10 @@ class FakeSink:
         self.quotes.append((participant.id, reply_to))
         self.next_id += 1
         return self.next_id
+
+    async def post_photo(self, chat_key, participant, path, caption, reply_to=None):
+        self.photos.append((participant.id, str(path), caption))
+        return await self.post(chat_key, participant, caption, reply_to)
 
     async def react(self, chat_key, participant, message_id, emoji):
         self.reactions.append((participant.id, message_id, emoji))

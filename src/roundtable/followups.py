@@ -148,7 +148,7 @@ class FollowUpStore:
 
     def finish(self, item: FollowUp, asked: bool) -> None:
         item.status = "done" if asked else "skipped"
-        item.asked_at = time.time() if asked else 0.0
+        item.asked_at = self.now().timestamp() if asked else 0.0
         self.save()
 
     def later(self, item: FollowUp, seconds: float = RETRY_SECONDS) -> None:

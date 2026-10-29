@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from collections import Counter
 
 from conftest import FakeSink
@@ -9,6 +10,7 @@ from conftest import FakeSink
 from roundtable.moderator import RuleModerator
 from roundtable.participants import ParticipantError
 from roundtable.room import ChatRoom
+from roundtable.transcript import Message
 
 
 def room_with(participants, round_cfg, store, seed=0):
@@ -138,3 +140,54 @@ async def test_single_model_does_not_talk_to_itself(make, round_cfg, store):
     await room.wait_idle()
 
     assert sink.posts == [("a", "one")]
+
+
+async def test_after_a_reset_a_member_sees_its_own_lines(make, round_cfg, store):
+    a = make("a", ["a again"])
+    b = make("b", ["[PASS]"])
+    room, sink = room_with([a, b], round_cfg, store)
+    room.add_user_message("me", "hi")
+    await room.wait_idle()
+    said = sink.posts[0][1]
+    room.reset_member(a)
+    room.add_user_message("me", "@a still there?", reply_to="a")
+    await room.wait_idle()
+    assert f"A（你自己）: {said}" in a.prompts[-1]
+
+
+async def test_the_member_just_spoken_to_answers_first(make, round_cfg, store):
+    for seed in range(5):
+        a = make("a", ["a says"])
+        b = make("b", ["b says"])
+        room, sink = room_with([a, b], round_cfg, store, seed=seed)
+        room.moderator.rng.random = lambda: 0.0  # always take the hint
+        room._append(Message("b", "B", "b said something", (), time.time()))
+        room.add_user_message("me", "you sure?")  # no @, no reply: still talking to b
+        await room.wait_idle()
+        assert sink.posts[0][0] == "b"
+
+
+async def test_no_one_keeps_the_first_answer_forever(make, round_cfg, store):
+    a, b = make("a", []), make("b", [])
+    room, _ = room_with([a, b], round_cfg, store)
+    room.moderator.rng.random = lambda: 0.0
+    now = time.time()
+    for k, (who, text) in enumerate([("user", "hi"), ("a", "yo"), ("user", "and?"), ("b", "eh")]):
+        room._append(Message(who, who, text, (), now + k))
+    latest = Message("user", "me", "really?", (), now + 5)
+    room._append(latest)
+    assert room._answering([a, b], latest) is b  # answered first once so far
+    room._append(Message("b", "b", "yes", (), now + 6))
+    latest = Message("user", "me", "sure?", (), now + 7)
+    room._append(latest)
+    assert room._answering([a, b], latest) is None  # twice running: back to a random pick
+
+
+async def test_talking_to_everyone_brings_more_replies(make, round_cfg, store):
+    a, b = make("a", []), make("b", [])
+    room, _ = room_with([a, b], round_cfg, store)
+    room.follow_up_chance, room.follow_up_decay = 0.5, 0.4
+    room.moderator.rng.random = lambda: 0.7  # between the usual chance (0.5) and the boosted one (0.9)
+    assert not room._joins_in(b, 1)
+    assert room._joins_in(b, 1, to_all=True)
+    assert not room._joins_in(b, 2, to_all=True)  # 0.9 * 0.55: still fewer for each further one

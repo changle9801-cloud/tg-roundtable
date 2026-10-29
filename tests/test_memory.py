@@ -108,7 +108,7 @@ async def test_lost_session_restarts_with_recent_transcript(make, round_cfg, sto
     assert sink.notices == []
     assert store.get("chat", "a") is None
     fresh_prompt = a.prompts[-1]
-    assert "me（用户）: first" in fresh_prompt and "A: earlier reply" in fresh_prompt
+    assert "me（用户）: first" in fresh_prompt and "A（你自己）: earlier reply" in fresh_prompt
 
 
 async def test_real_errors_keep_the_session(make, round_cfg, store):

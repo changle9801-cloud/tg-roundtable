@@ -275,6 +275,7 @@ def normalize_settings(raw: dict) -> dict:
     if parse_hours(life["hours"]) is None:
         raise ConfigError("日常活动时间段应像「10-23」")
     for key, low, high, label in (("per_day", 1, 8, "每天活动次数"),
+                                  ("passive_per_day", 1, 12, "每天被动私聊次数"),
                                   ("shares_per_day", 1, 4, "每天分享上限"),
                                   ("quiet_minutes", 0, 1440, "分享前安静分钟数")):
         try:
@@ -299,9 +300,21 @@ def normalize_settings(raw: dict) -> dict:
             days = int(days_raw.get(pid, default))
         except (TypeError, ValueError):
             raise ConfigError("每人每天的日常次数必须是数字") from None
-        if not 1 <= days <= 8:
-            raise ConfigError("每人每天的日常次数要在 1 到 8 之间")
+        if not 0 <= days <= 8:
+            raise ConfigError("每人每天的日常次数要在 0 到 8 之间；0 表示不限次数")
         life["member_days"][pid] = days
+    passive_raw = life_raw.get("passive_member_days") or {}
+    if not isinstance(passive_raw, dict):
+        raise ConfigError("每人每天的被动私聊次数格式不对")
+    life["passive_member_days"] = {}
+    for pid in life["members"]:
+        try:
+            days = int(passive_raw.get(pid, life["passive_per_day"]))
+        except (TypeError, ValueError):
+            raise ConfigError("被动私聊次数必须是数字") from None
+        if not 0 <= days <= 12:
+            raise ConfigError("被动私聊次数要在 0 到 12 之间；0 表示不限次数")
+        life["passive_member_days"][pid] = days
     tool_ids = {t["id"] for t in tools}
     for p in participants:  # preferences for tools that are gone
         p["tool_notes"] = {k: v for k, v in p["tool_notes"].items() if k in tool_ids}

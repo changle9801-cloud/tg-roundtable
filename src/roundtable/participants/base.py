@@ -30,6 +30,13 @@ class SessionStore:
     def __init__(self, path: Path):
         self._path = path
         self._data: dict[str, dict[str, str]] = {}
+        self._context_path = path.with_suffix(".context.json")
+        self._context: dict = {}
+        if self._context_path.exists():
+            try:
+                self._context = json.loads(self._context_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                log.warning("上下文回执 %s 损坏，已忽略", self._context_path)
         if path.exists():
             try:
                 self._data = json.loads(path.read_text(encoding="utf-8"))
@@ -46,10 +53,13 @@ class SessionStore:
         self._save()
 
     def clear(self, chat_key: str) -> None:
+        if self._context.pop(chat_key, None) is not None:
+            self._save_context()
         if self._data.pop(chat_key, None) is not None:
             self._save()
 
     def clear_one(self, chat_key: str, participant_id: str) -> None:
+        self.clear_context(chat_key, participant_id)
         if self._data.get(chat_key, {}).pop(participant_id, None) is not None:
             self._save()
 
@@ -61,6 +71,36 @@ class SessionStore:
         if old in self._data:
             self._data[new] = {**self._data.pop(old), **self._data.get(new, {})}
             self._save()
+        if old in self._context:
+            self._context[new] = {**self._context.pop(old), **self._context.get(new, {})}
+            self._save_context()
+
+    def context_seen(self, chat_key: str, participant_id: str, key: str) -> bool:
+        receipt = self._context.get(chat_key, {}).get(participant_id, {})
+        return (receipt.get("session") == self.get(chat_key, participant_id)
+                and key in receipt.get("messages", []))
+
+    def mark_context_seen(self, chat_key: str, participant_id: str, keys: list[str]) -> None:
+        """Acknowledge only after a successful model call, against its resulting session."""
+        if not keys:
+            return
+        session = self.get(chat_key, participant_id)
+        receipt = self._context.get(chat_key, {}).get(participant_id, {})
+        old = receipt.get("messages", []) if receipt.get("session") == session else []
+        self._context.setdefault(chat_key, {})[participant_id] = {
+            "session": session, "messages": list(dict.fromkeys([*old, *keys]))[-100:],
+        }
+        self._save_context()
+
+    def clear_context(self, chat_key: str, participant_id: str) -> None:
+        if self._context.get(chat_key, {}).pop(participant_id, None) is not None:
+            self._save_context()
+
+    def _save_context(self) -> None:
+        self._context_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._context_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._context, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._context_path)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,14 +133,21 @@ class Participant(ABC):
         self.work_dir = work_dir
         self.timeout = timeout
         self.system_prompt = ""
+        self.turn_context: Callable[[str], str] | None = None
         self.tools: list = []  # ToolServer: MCP servers given to this member (CLI members only)
         work_dir.mkdir(parents=True, exist_ok=True)
 
     def set_system_prompt(self, prompt: str) -> None:
         self.system_prompt = prompt
 
+    def with_turn_context(self, prompt: str) -> str:
+        """Deliver changing memory even when a backend resumes an old system prompt."""
+        context = self.turn_context(prompt) if self.turn_context is not None else ""
+        return prompt + "\n\n" + context if context else prompt
+
     def reset(self, chat_key: str) -> None:
         """Forget the conversation; the session store is cleared by the room."""
+        self.store.clear_context(chat_key, self.id)
 
     @abstractmethod
     async def reply(

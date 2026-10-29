@@ -93,6 +93,15 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     def feedback() -> list[dict]:
         return [asdict(f) for f in runtime.feedback.items[-150:]]
 
+    def game_memories() -> dict:
+        from ..game_memories import FEELINGS
+
+        store = runtime.game_memories
+        now = store.now()
+        items = [{**asdict(m), "strength": round(m.strength(now), 2), "icon": FEELINGS.get(m.feeling, "")}
+                 for m in sorted(store.memories, key=lambda m: m.at, reverse=True)[:300]]
+        return {"items": items, "opinions": {pid: store.opinions_view(pid) for pid in store.opinions}}
+
     def followups() -> list[dict]:
         return [asdict(f) for f in runtime.followups.items[-60:]]
 
@@ -103,7 +112,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         return [asdict(m) for m in runtime.memes.items]
 
     def memory() -> list[dict]:
-        return [asdict(f) for f in runtime.memory.items]
+        store = runtime.memory
+        shown = {f.id for pid in ["", *(p.id for p in runtime.config.participants)] for f in store.in_prompt(pid)}
+        return [{**asdict(f), "in_prompt": f.id in shown} for f in store.items]
 
     def state() -> dict:
         return {
@@ -116,6 +127,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             "memes": memes(),
             "followups": followups(),
             "feedback": feedback(),
+            "game_memories": game_memories(),
             "chronicle": chronicle(),
             "meta": {
                 "memory_instructions": LEARN_INSTRUCTIONS,
@@ -170,8 +182,48 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def get_life(request):
         return web.json_response(runtime.life_status())
 
+    async def life_artifact(request):
+        item = next((a for a in runtime.life.artifacts if a["id"] == request.match_info["aid"]), None)
+        if item is None:
+            raise web.HTTPNotFound()
+        return web.Response(text=runtime.life_workbench.read_artifact(item), content_type="text/plain",
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     async def step_life(request):
         return web.json_response(runtime.start_life(request.match_info["pid"]))
+
+    async def get_games(request):
+        return web.json_response(runtime.games.status())
+
+    async def update_games(request):
+        runtime.games.update(await request.json(), {p.id for p in runtime.participants})
+        return web.json_response(runtime.games.status())
+
+    async def start_game(request):
+        data = await request.json() if request.can_read_body else {}
+        return web.json_response(runtime.start_game(request.match_info['pid'], peer=data.get('peer')))
+
+    async def stop_game(request):
+        await runtime.stop_game()
+        return web.json_response(runtime.games.status())
+
+    async def game_trace(request):
+        rid = request.match_info['rid']
+        receipt = next((r for r in runtime.games.receipts() if r['id'] == rid), None)
+        if receipt is None:
+            raise web.HTTPNotFound()
+        lines = [f"{receipt['member']} · 《杀戮尖塔》真实游玩记录", json.dumps(receipt, ensure_ascii=False, indent=2)]
+        social_path = runtime.games.root / 'runs' / rid / 'social.jsonl'
+        if social_path.exists():
+            lines.append('\n共同游玩对话与分享：\n' + social_path.read_text(encoding='utf-8'))
+        if receipt['actions']:
+            for index, step in enumerate(runtime.games.events(receipt), 1):
+                after = step['after'].get('game', {})
+                lines.append(f"\n{index}. {step['command']}\n当时的想法：{step['reason']}\n"
+                             f"实际结果：第 {after.get('floor')} 层，生命 {after.get('current_hp')}，"
+                             f"画面 {after.get('screen_type')}" + (f"\n失败：{step['error']}" if step.get('error') else ''))
+        return web.Response(text='\n'.join(lines), content_type='text/plain',
+                            headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
     async def delete_journal_entry(request):
         runtime.journal.delete(request.match_info["eid"])
@@ -288,6 +340,12 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             raise ConfigError("已经有一条一样的记忆了")
         return memory_response()
 
+    async def consolidate_memory(request):
+        body = await request.json() if request.can_read_body else {}
+        added = await runtime.consolidate_memory_now(body.get("day") or None)
+        runtime.refresh_prompts()
+        return web.json_response({"memory": memory(), "status": runtime.status(), "added": len(added)})
+
     async def update_memory(request):
         runtime.memory.update(request.match_info["fid"], await request.json())
         return memory_response()
@@ -331,6 +389,33 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         runtime.feedback.delete(request.match_info["fid"])
         runtime.refresh_prompts()
         return web.json_response({"feedback": feedback()})
+
+    def game_memories_response():
+        runtime.refresh_prompts()
+        return web.json_response({"game_memories": game_memories()})
+
+    async def list_game_memories(request):
+        data = game_memories()
+        member = request.query.get("member")
+        if member:
+            data["items"] = [m for m in data["items"] if m["member"] == member]
+        return web.json_response({"game_memories": data})
+
+    async def set_game_memory_status(request):
+        runtime.game_memories.set_status(request.match_info["mid"], request.match_info["status"])
+        return game_memories_response()
+
+    async def edit_game_memory(request):
+        runtime.game_memories.edit(request.match_info["mid"], (await request.json()).get("story", ""))
+        return game_memories_response()
+
+    async def delete_game_memory(request):
+        runtime.game_memories.delete(request.match_info["mid"])
+        return game_memories_response()
+
+    async def clear_game_opinion(request):
+        runtime.game_memories.clear_opinion(request.match_info["member"], request.match_info["subject"])
+        return game_memories_response()
 
     def followups_response():
         runtime.refresh_prompts()
@@ -392,8 +477,15 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     app = web.Application(middlewares=[guard], client_max_size=100 * 1024 * 1024)
     app.router.add_get("/api/life", get_life)
+    app.router.add_get('/api/games', get_games)
+    app.router.add_put('/api/games', update_games)
+    app.router.add_post('/api/games/stop', stop_game)
+    app.router.add_post('/api/games/{pid}/start', start_game)
+    app.router.add_get('/api/games/runs/{rid}', game_trace)
+    app.router.add_get("/api/life/artifacts/{aid}", life_artifact)
     app.router.add_post("/api/life/{pid}/step", step_life)
     app.router.add_post("/api/memory", add_memory)
+    app.router.add_post("/api/memory/consolidate", consolidate_memory)
     app.router.add_put("/api/memory/{fid}", update_memory)
     app.router.add_delete("/api/memory/{fid}", delete_memory)
     app.router.add_post("/api/memes", add_meme)
@@ -403,6 +495,11 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/feedback/{fid}/use", use_feedback)
     app.router.add_post("/api/feedback/{fid}/ignore", ignore_feedback)
     app.router.add_delete("/api/feedback/{fid}", delete_feedback)
+    app.router.add_get("/api/game-memories", list_game_memories)
+    app.router.add_post("/api/game-memories/{mid}/{status:pinned|hidden|active}", set_game_memory_status)
+    app.router.add_put("/api/game-memories/{mid}", edit_game_memory)
+    app.router.add_delete("/api/game-memories/{mid}", delete_game_memory)
+    app.router.add_delete("/api/game-opinions/{member}/{subject}", clear_game_opinion)
     app.router.add_post("/api/followups", add_followup)
     app.router.add_put("/api/followups/{fid}", update_followup)
     app.router.add_delete("/api/followups/{fid}", delete_followup)

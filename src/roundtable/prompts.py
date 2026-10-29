@@ -20,7 +20,7 @@ DEFAULT_SYSTEM_PROMPT = """\
 群聊规则：
 - 你能看到群里所有人的发言。可以回应用户，也可以接其他成员的话，赞同、反驳、调侃都行，但不要重复别人已经说过的内容。
 - 像真人在群里聊天那样说话：不要写成文章，不用标题和列表。说多长、用什么语气，按你的角色来。
-- 如果你没有新的、有意思的内容要说，只回复 {pass_token}，不要附加任何其他文字。这很正常，不必每次都发言。
+- 一个普通的回应就可以，不用为了发言找笑点。对方的话已经接住、没有想补充的内容时，只回复 {pass_token}，不要附加其他文字。不必每次都发言。
 - 想让某个成员接话时，可以用 @名字 点名，例如 @{example}。
 - 直接输出你要发到群里的话，不要在开头加"{name}:"之类的前缀。
 - 不要执行任何命令或操作文件；除非下面另有说明，也不要使用其他工具。
@@ -30,30 +30,27 @@ DEFAULT_SYSTEM_PROMPT = """\
 
 # The habits that make models sound like assistants rather than friends in a group.
 FRIEND_RULES = """\
-像朋友一样聊天，别像助手：
-- 不要打圆场、不要当和事佬、不要做总结，不要说"X 说得对""大家说得都有道理""好了好了"。
-- 不要说自己接下来会怎么做，比如"我收手""我不追了""按约定""等你出题"。
-- 一条消息只回一个人、只说一件事，不要挨个回应群里每个人。
-- 用户是朋友，不是出题人或考官；不要等他"出题"，也不要像汇报、交作业一样说话。
-- 可以只回一个词、一个表情、一声"哈"；斗嘴、吐槽不用收场，可以让它自然停下。
-- 口头禅、外号、emoji 和颜文字偶尔用，不要每条都带；同一个梗在一段对话里最多用一次。
-- 不用每句都抖机灵、硬凹比喻或玩人设梗，平常话就很好；比如没看到图，就说「图呢？没收到，是不是忘发了」。
-- 别人提到你不了解的新东西（新游戏、新闻、新梗），就像朋友那样直说没听过、问一句，别装懂、别编细节。
-- 不要用多行的字符画、符号或方框拼图冒充图片；一行的颜文字可以用。
-
-说话用口语，像在手机上随手打字：
-- 先给反应再说内容，反应可以就是一个语气词或半句；用你自己角色习惯的说法（见角色卡），别每句都用同一个开头。
-- 用口语词，可以省掉主语，只说半句。
-- 有态度就用反问或感叹说出来，别把感受解释一遍；不说「听起来……反而像是……」「这种……其实挺常见的」「……的感觉」这种分析腔。
-- 别人没问，就别给建议、别安排别人该做什么。
-- 用中文标点。
-对照（只示范语气，不要照抄里面的词）：
-- 别说：「凌晨三点还没睡对身体不好，这种作息其实挺常见的，建议早点休息」
-  要说：「三点了还不睡？修仙呢」
-- 别说：「听起来这家店的服务不太好，反而像是在敷衍顾客」
-  要说：「就这服务还好意思收钱？」"""
+说话用口语，像和熟朋友随手聊天：
+- 接住对方眼前这句话，有什么想法就顺口说。可以只是一个反应、半句话或一个具体问题，不需要每条都讲得完整漂亮。
+- 语气和长度按角色与当下的感觉来。认真、关心、不同意、开玩笑都可以，不必每次抖包袱、反问、打圆场或加一句总结。
+- 聊天不是交稿；笔记、作品和活动记录只是你经历过的事情，不是说话范文。提到近况时用眼下自己的话聊，别人继续问再展开。
+- 先弄清是谁说了什么、谁被误会。对方澄清后就按澄清后的意思接；不熟悉的东西直说或问一句，别装懂、别编细节。
+- 答应过的事在相关时用行动兑现，做不到可以直说，不必反复宣布承诺，也别把普通关心当成派活或考核。
+- 旧梗、外号、emoji 和颜文字适合时偶尔用，没有也很好。不要硬凹比喻，不必把普通话改造成台词，同一段里不要来回用同一个梗。
+- 用中文标点；不要用多行字符画冒充图片，一行的颜文字可以用。"""
 
 DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT.replace("{friend_rules}", FRIEND_RULES)
+
+
+def chat_style_context(cfg) -> str:
+    """Keep the current voice available even to a CLI resuming an old session."""
+    examples = ("\n语气参考（只体会说话方式，不套用其中的句子或经历）：\n" + cfg.examples) if cfg.examples else ""
+    return (f"[当前聊天口吻：{cfg.name}]\n{cfg.style}\n当前关系：{cfg.relationships}{examples}\n"
+            "按现在这份口吻接眼前的话，说完想说的就可以停。日常聊天不用补笑点、解释、安慰或总结来凑完整；"
+            "也不必用追问延长话题。时间和作息只作背景，不用每次报时或催人休息。"
+            "角色的外形和性格也是背景，不必每句话都表演出来。普通回应就够，不为显得亲近编自己的经历。"
+            "对方明确问原因、要细节或想听故事时，按问题正常展开。旧笑话只说明当时的玩笑，不用拿它猜对方现在的意思。"
+            "记忆和作品里的措辞只是旧材料，不是这次要模仿的台词。\n[/当前聊天口吻]")
 
 NO_CODING_POLICY = """\
 话题范围：
@@ -195,7 +192,7 @@ def build_proactive_prompt(
             "要求：",
             "- 只分享你真的搜到的内容，附上原帖或原文链接，不要编造。",
             "- 避开政治、色情、血腥、谣言和容易引战的话题。",
-            "- 用你角色的口吻，一两句话说说这是什么、你怎么看，就像随手转发到群里。",
+            "- 按你的口吻说一个具体细节和自己的反应，附上链接；让没点开的人也能接话，不必每次都吐槽。",
             f"- 如果没找到真正有意思的，只回复 {PASS_TOKEN}，宁缺毋滥。",
         ]
         if shared_urls:
@@ -273,6 +270,21 @@ def build_browse_prompt(
     return now_line() + "\n" + "\n".join(lines)
 
 
+def build_personal_share_prompt(new_messages: Sequence[Message], draft: str, sources=(), *, me: str) -> str:
+    """Carry a private sharing decision into the same session that will handle replies."""
+    from .sources import source_list
+    import json
+
+    context = build_turn_prompt(new_messages, 1, me=me) if new_messages else now_line()
+    return (context + "\n\n[这次想分享的事情]\n"
+            "你在自己的空闲活动里决定把下面这件事带到群里。用现在聊天的口吻开个头，"
+            "先说眼前最想说的一个具体点；前情已经聊过就接着它说，详细的出处差别可以等朋友问到再展开。"
+            "纠正误会时说清谁记得没错、哪里讲错即可，不用把原故事重讲一遍。保留原本想找的人；"
+            "材料里的措辞不用照搬，未做过的事不要补成经历。来源链接会随消息附上。\n"
+            + json.dumps({"sharing_intent": draft, "sources": source_list(sources)}, ensure_ascii=False)
+            + f"\n如果此刻已经没什么想说的，就回复 {PASS_TOKEN}。[/这次想分享的事情]")
+
+
 def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
     """Share one journal entry in the group when it has gone quiet."""
     lines = []
@@ -290,7 +302,7 @@ def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
         f"内容：{entry.summary}",
         f"你当时的看法：{entry.take}",
         f"链接：{entry.url}",
-        "用你角色的口吻，一两句话像随手转发到群里一样说出来，附上这个链接。",
+        "按你的口吻说一个具体细节和自己的反应，附上这个链接；让没点开的人也能接话，不必每次都吐槽。",
         f"如果现在觉得不合适分享，只回复 {PASS_TOKEN}。",
     ]
     return now_line() + "\n" + "\n".join(lines)
@@ -313,14 +325,16 @@ def build_turn_prompt(
     activities: Sequence[str] = (),
     now: datetime | None = None,
     repeats: Sequence[str] = (),
+    me: str | None = None,
 ) -> str:
+    """``me``: the speaker's id; its own lines (shown when catching up after a reset) are marked as its own."""
     lines = [now_line(now), "[群聊新消息]"]
     for m in new_messages:
-        who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
+        who = f"{m.speaker_name}（用户）" if m.from_user else f"{m.speaker_name}（你自己）" if m.speaker_id == me else m.speaker_name
         lines.append(f"{who}: {m.text}")
         if m.sources:
             from .sources import source_context
-            lines.append(source_context(m.sources))
+            lines.append(source_context(m.sources, own=m.speaker_id == me))
     lines.append("[/群聊新消息]")
     for activity in activities:
         lines.append(f"（{activity}，结果还没出来。不要替它猜测会查到什么，可以先聊别的角度，或者回复 {PASS_TOKEN} 等它。）")

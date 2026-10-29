@@ -70,6 +70,7 @@ class GrokCLI(Participant):
         self, chat_key: str, prompt: str, on_activity: ActivityHook | None = None, images: Sequence[Path] = ()
     ) -> str:
         # Grok does not read prompts from stdin; rooms may call concurrently, so use a unique file.
+        prompt = self.with_turn_context(prompt)
         prompt_path = self.work_dir / f"prompt-{uuid.uuid4().hex}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
         announced: set[str] = set()

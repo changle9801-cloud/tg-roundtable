@@ -78,7 +78,7 @@ class ProactiveScheduler:
         return bool(getattr(pc, self.prefix))
 
     def _per_day(self, pc: ParticipantConfig) -> int:
-        return max(int(getattr(pc, f"{self.prefix}_per_day")), 1)
+        return max(int(getattr(pc, f"{self.prefix}_per_day")), 0)
 
     def _hours(self, pc: ParticipantConfig) -> tuple[int, int]:
         return parse_hours(getattr(pc, f"{self.prefix}_hours")) or (10, 23)
@@ -91,6 +91,8 @@ class ProactiveScheduler:
         return start <= hour < end if start < end else hour >= start or hour < end % 24
 
     def _spacing(self, pc: ParticipantConfig) -> float:
+        if self._per_day(pc) == 0:
+            return 3600  # unlimited is still spaced about an hour apart
         start, end = self._hours(pc)
         hours = (end - start) % 24 or 24
         return hours * 3600 / self._per_day(pc)
@@ -112,8 +114,8 @@ class ProactiveScheduler:
         plan = self.plan(pc)
         return (
             self.in_hours(pc)
-            and plan.posts < self._per_day(pc)
-            and plan.attempts < self._per_day(pc) * 2
+            and (self._per_day(pc) == 0 or plan.posts < self._per_day(pc))
+            and (self._per_day(pc) == 0 or plan.attempts < self._per_day(pc) * 2)
             and self.now().timestamp() >= plan.next_at
         )
 
@@ -143,7 +145,7 @@ class ProactiveScheduler:
             "posts_today": plan.posts,
             "next_at": plan.next_at,
             "in_hours": self.in_hours(pc),
-            "done_for_today": plan.posts >= self._per_day(pc) or plan.attempts >= self._per_day(pc) * 2,
+            "done_for_today": self._per_day(pc) > 0 and (plan.posts >= self._per_day(pc) or plan.attempts >= self._per_day(pc) * 2),
         }
 
 

@@ -103,8 +103,8 @@ def test_every_turn_says_what_time_it_is():
 
 def test_default_rules_include_friend_rules():
     assert FRIEND_RULES in DEFAULT_SYSTEM_PROMPT and "{friend_rules}" not in DEFAULT_SYSTEM_PROMPT
-    assert "打圆场" in FRIEND_RULES and "我收手" in FRIEND_RULES
-    assert "说话用口语" in FRIEND_RULES and "修仙呢" in FRIEND_RULES
+    assert "打圆场" in FRIEND_RULES and "行动兑现" in FRIEND_RULES
+    assert "说话用口语" in FRIEND_RULES and "半句话" in FRIEND_RULES
     assert "喂喂" not in FRIEND_RULES  # no single opener for everyone to copy
 
 
@@ -113,3 +113,65 @@ def test_bubbles_and_pauses():
     assert bubbles("一行\n两行") == ["一行\n两行"]
     assert len(bubbles("\n\n".join(str(i) for i in range(7)))) == 4
     assert typing_pause("短", first=True) < typing_pause("长" * 60, first=False) <= 5.0
+
+
+def test_a_shared_topic_favors_an_interested_member_but_mentions_still_win(make):
+    a, b = make("a", []), make("b", [])
+    a.cfg.browse_topics = "休闲游戏、动漫、可爱动物"
+    b.cfg.browse_topics = "神话、科幻小说"
+    moderator = RuleModerator(random.Random(7))
+    post = Message("c", "C", "这个你们看看", sources=({"url": "https://example.com/post",
+                   "title": "休闲游戏的新玩法", "excerpt": "玩家可以一起照顾可爱动物。"},))
+    picks = [moderator.pick([a, b], post, "c").id for _ in range(120)]
+    assert picks.count("a") >= 80
+    addressed = Message("c", "C", "@B 这个休闲游戏你玩过吗", mentions=("b",))
+    assert moderator.pick([a, b], addressed, "c") is b
+
+
+async def test_a_shared_topic_gets_two_bounded_replies_between_the_pair(make, store):
+    a = make("a", ["透明壳也是我喜欢的", "不应该无限接"])
+    b = make("b", ["我想要那个透明壳", "那下次找个实测看看", "不应该无限接"])
+    room, sink = room_for([a, b], store, chance=0.0, decay=0.0)
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="这个掌机改装挺好玩", discussion=True)
+    await room.wait_idle()
+    assert [pid for pid, _ in sink.posts] == ["a", "b", "a", "b"]
+    assert len(a.prompts) == 1 and len(b.prompts) == 2
+
+
+async def test_discussion_pass_ends_the_extra_exchange(make, store):
+    a, b = make("a", ["[PASS]"]), make("b", ["这个我也喜欢", "不该再问一次"])
+    room, sink = room_for([a, b], store, chance=0.0, decay=0.0)
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="分享一个视频", discussion=True)
+    await room.wait_idle()
+    assert [pid for pid, _ in sink.posts] == ["a", "b"]
+    assert len(a.prompts) == 1 and len(b.prompts) == 1
+
+
+async def test_discussion_respects_a_members_single_turn_limit(make, store):
+    a, b = make("a", ["我再说一句"]), make("b", ["好玩", "还想接"])
+    b.cfg.max_turns = 1
+    room, sink = room_for([a, b], store, chance=0.0, decay=0.0)
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="一个新视频", discussion=True)
+    await room.wait_idle()
+    assert [pid for pid, _ in sink.posts] == ["a", "b", "a"]
+
+
+async def test_discussion_does_not_wake_a_sleeping_friend(make, store):
+    from datetime import datetime
+    from roundtable.routine import Routines
+
+    a, b = make("a", []), make("b", ["不该被叫醒"])
+    b.cfg.sleep = "00:00-12:00"
+    room, sink = room_for([a, b], store, chance=0.0, decay=0.0)
+    room.routines = Routines(now=lambda: datetime(2026, 10, 28, 8))
+    await room.start_proactive(a, lambda unseen: "", 1, prepared_text="@B 一个新视频", discussion=True)
+    await room.wait_idle()
+    assert [pid for pid, _ in sink.posts] == ["a"] and not b.prompts
+
+
+async def test_zero_reply_budget_still_disables_discussion(make, store):
+    a, b = make("a", []), make("b", ["不该发"])
+    room, sink = room_for([a, b], store, chance=0.0, decay=0.0)
+    await room.start_proactive(a, lambda unseen: "", 0, prepared_text="一个新视频", discussion=True)
+    await room.wait_idle()
+    assert len(sink.posts) == 1 and not b.prompts
