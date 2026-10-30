@@ -2206,6 +2206,7 @@ function showTab(name) {
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.id === "tab-" + name);
   history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
+  document.body.classList.toggle("home-mode", name === "home"); // the house takes the whole screen, like a game
   if (name === "memory" && server) loadChats();
   if (name === "journal" && server) loadJournal();
   if (name === "life" && server) loadLife();

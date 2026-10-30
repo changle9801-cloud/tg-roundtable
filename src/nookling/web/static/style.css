@@ -370,12 +370,27 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .urge-group li { padding: 2px 0; }
 .urge-group .why { color: var(--muted); font-size: 12px; padding-left: 18px; word-break: break-word; }
 
-/* ---------- 家 ---------- */
-.home-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+/* ---------- 家: the whole screen below the top bar, like a game; the side panel floats on the right ---------- */
+body.home-mode { overflow: hidden; }
+body.home-mode main { max-width: none; padding: 0; }
+.home-wrap { position: fixed; left: 0; right: 0; bottom: 0; top: var(--topbar-h, 58px); }
 .home-stage {
-  position: relative; height: min(72vh, 680px); border-radius: var(--radius); overflow: hidden;
-  background: linear-gradient(#dfe9f3, #eef2e6); border: 1px solid var(--border);
+  position: absolute; inset: 0; overflow: hidden;
+  background: linear-gradient(#dfe9f3, #eef2e6);
 }
+.home-wrap > .home-panel {
+  position: absolute; right: 16px; top: 16px; bottom: 16px; width: 330px; z-index: 4; overflow: auto; margin: 0;
+  background: color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter: blur(8px);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.14);
+}
+.home-wrap.panel-closed > .home-panel { display: none; }
+.home-panel-toggle {
+  position: absolute; z-index: 5; top: 28px; right: calc(330px + 16px); transform: translateX(50%);
+  width: 26px; height: 26px; border-radius: 50%; padding: 0; cursor: pointer; font: inherit; line-height: 1;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+.home-wrap.panel-closed .home-panel-toggle { right: 16px; transform: none; width: auto; border-radius: 8px; padding: 6px 12px; }
+.home-wrap:not(.panel-closed) .home-arrange { right: calc(330px + 44px); }
 .home-stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .home-offline canvas { filter: grayscale(1) opacity(0.6); }
 .home-banner {
@@ -461,9 +476,11 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .home-diary .home-day { display: block; margin: 6px 0; }
 .home-entry { border-top: 1px solid var(--border); padding: 8px 0; }
 .home-entry p { margin: 4px 0 0; white-space: pre-wrap; }
-@media (max-width: 860px) {
-  .home-wrap { grid-template-columns: minmax(0, 1fr); }
-  .home-stage { height: max(300px, min(62vh, 85vw)); }
+@media (max-width: 860px) { /* a narrow screen: the side panel is a sheet over the bottom of the picture */
+  .home-wrap > .home-panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; max-height: 42%; }
+  .home-panel-toggle { top: auto; right: 16px; bottom: calc(42% + 4px); transform: none; }
+  .home-wrap.panel-closed .home-panel-toggle { bottom: 12px; }
+  .home-wrap:not(.panel-closed) .home-arrange { right: 12px; }
 }
 @media (max-width: 720px) {
   .tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
@@ -544,7 +561,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
   .home-shelf-hint { display: none; }
   .home-placed-room { display: block; }
   .home-stage.shelf-open .home-floors { left: 12px; }
-  .home-stage.shelf-open { height: max(460px, 72vh); }
+  .home-shelf { bottom: calc(var(--sheet-h, 0px) + 8px); }
 }
 .home-arrange.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .home-edit-section { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }

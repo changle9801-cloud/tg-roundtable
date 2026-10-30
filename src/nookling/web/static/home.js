@@ -707,9 +707,21 @@ class HomeApp {
       else return;
       e.preventDefault();
     });
+    // The house fills the screen below the top bar; the side panel floats over its right side (at the bottom on
+    // a narrow screen) and folds away.
     const wrap = el("div", "home-wrap");
-    wrap.append(this.stage, this.panel);
+    this.wrap = wrap;
+    this.panelOpen = true;
+    this.panelToggle = el("button", "home-panel-toggle", "›");
+    this.panelToggle.type = "button";
+    this.panelToggle.title = "收起侧栏";
+    this.panelToggle.onclick = () => this.togglePanel();
+    wrap.append(this.stage, this.panel, this.panelToggle);
     root.append(wrap, this.modal);
+    const topbar = () => document.documentElement.style.setProperty("--topbar-h", `${document.querySelector(".topbar")?.offsetHeight || 0}px`);
+    topbar();
+    window.addEventListener("resize", topbar);
+    new ResizeObserver(() => this.resize()).observe(this.panel);
     try {
       this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     } catch {
@@ -1583,6 +1595,14 @@ class HomeApp {
 
   // ---- the shelf: the kinds of furniture on the left, dragged into the house ----
 
+  togglePanel() {
+    this.panelOpen = !this.panelOpen;
+    this.wrap.classList.toggle("panel-closed", !this.panelOpen);
+    this.panelToggle.textContent = this.panelOpen ? "›" : "‹ 侧栏";
+    this.panelToggle.title = this.panelOpen ? "收起侧栏" : "打开侧栏";
+    this.resize();
+  }
+
   toggleShelf(open) {
     this.shelfOpen = open;
     this.renderShelf();
@@ -2026,8 +2046,13 @@ class HomeApp {
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     const aspect = w / h;
-    // On a narrow window the shelf is a strip over the bottom of the picture: fit the house above it.
-    const left = 0, below = this.stage.classList.contains("shelf-open") ? Math.min(this.shelf.offsetHeight + 12, h * 0.6) : 0;
+    // The side panel floats over the right of the picture (over its bottom on a narrow window, with the shelf
+    // strip above it while arranging): fit the house into what is left.
+    const narrow = this.shelfInStage(), panel = this.panelOpen && this.panel.offsetHeight ? this.panel : null;
+    const left = 0, right = panel && !narrow ? Math.min(panel.offsetWidth + 24, w * 0.6) : 0;
+    const sheet = panel && narrow ? panel.offsetHeight + 16 : 0;
+    this.stage.style.setProperty("--sheet-h", `${sheet}px`);
+    const below = Math.min(h * 0.7, sheet + (this.stage.classList.contains("shelf-open") ? this.shelf.offsetHeight + 12 : 0));
     const strip = this.shelfInStage();
     if (strip !== this.wasStrip) { // the window crossed the line: the shelf moves between the panel and the picture
       this.wasStrip = strip;
@@ -2046,9 +2071,9 @@ class HomeApp {
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));
       }
-      view = Math.max((halfY * h) / (h - below), (halfX * h) / (w - left)) * 1.04;
+      view = Math.max((halfY * h) / (h - below), (halfX * h) / (w - left - right)) * 1.04;
     }
-    const sx = (left / h) * view, sy = (below / h) * view; // half the covered width and height, in units
+    const sx = ((left - right) / h) * view, sy = (below / h) * view; // half the covered width and height, in units
     this.camera.left = -view * aspect - sx; this.camera.right = view * aspect - sx;
     this.camera.top = view - sy; this.camera.bottom = -view - sy;
     this.camera.updateProjectionMatrix();
@@ -2228,7 +2253,8 @@ class HomeApp {
       diary.onclick = () => this.openDiary(p.id);
       detail.append(diary, this.lookEditor(p));
     } else {
-      detail.append(el("p", "muted small", "点一个人看她在干什么；点卧室桌上的红本子翻日记。拖动旋转，滚轮缩放。"));
+      detail.append(el("p", "muted small", "她们做日常活动时会走到对应的房间：看东西在书房，玩游戏在娱乐室，睡觉在自己卧室，忙的时候出门。"
+        + "点一个人看她在干什么；点卧室桌上的红本子翻日记。拖动旋转，滚轮缩放。"));
     }
     this.panel.replaceChildren(...[this.panelTabs(), el("h2", "", "家里"), warning, list, detail].filter(Boolean));
   }
