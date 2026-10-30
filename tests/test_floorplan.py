@@ -116,3 +116,88 @@ def test_a_room_with_no_way_in_is_left_alone(tmp_path):
     assert home.where["claude"].room != "study"
     home.doors.extend(study_doors)
     assert home.shut_rooms() == set()
+
+
+# ---- editing the floor plan (C3) ----
+
+import pytest  # noqa: E402
+
+from nookling.furniture import PlacementError  # noqa: E402
+
+
+def pieces_of(home, rid):
+    return {p["id"]: list(p["at"]) for p in home.pieces if p["room"] == rid}
+
+
+def test_a_moved_room_takes_its_furniture_and_gets_a_door_where_it_lands(tmp_path):
+    home = house(tmp_path)
+    before = pieces_of(home, "storage")
+    home.reshape_room("storage", at=[40, 28])  # off on its own: no neighbour, no door
+    assert pieces_of(home, "storage") == before  # the boxes moved with the room
+    assert "storage" in home.shut_rooms()
+    home.reshape_room("storage", at=[30, 28])  # back against the hallway
+    assert home.shut_rooms() == set()
+    door, = [d for d in home.doors if "storage" in floorplan.door_sides(d, home.rooms)]
+    assert set(floorplan.door_sides(door, home.rooms)) == {"storage", "hall-2"}  # a hallway first
+    assert Home(tmp_path).room("storage")["at"] == [30, 28]
+
+
+def test_rooms_cannot_overlap_and_shrinking_cannot_cut_furniture(tmp_path):
+    home = house(tmp_path)
+    with pytest.raises(PlacementError, match="叠在一起"):
+        home.reshape_room("living", size=[22, 12])  # into the storage room
+    with pytest.raises(PlacementError, match="放不下"):
+        home.reshape_room("kitchen", size=[6, 12])  # the dining table is at column 6
+    grown = home.reshape_room("study", at=[0, 13], size=[18, 12])
+    assert grown["size"] == [18, 12]
+
+
+def test_dragging_an_edge_keeps_the_furniture_where_it_stands(tmp_path):
+    home = house(tmp_path)
+    with pytest.raises(PlacementError, match="放不下"):
+        home.reshape_room("storage", at=[30, 31], size=[10, 9])  # top edge down onto the boxes
+    before = pieces_of(home, "kitchen")
+    home.reshape_room("kitchen", at=[-2, 28], size=[14, 12])  # left edge out by 2 cells
+    assert pieces_of(home, "kitchen") == {pid: [x + 2, z] for pid, (x, z) in before.items()}  # same place in the house
+
+
+def test_the_front_door_goes_along_with_its_room_and_must_stay_outside(tmp_path):
+    home = house(tmp_path)
+    home.reshape_room("storage", at=[40, 28])  # make room on the right
+    start = next(d for d in home.doors if d.get("outside"))["at"][0]
+    home.reshape_room("living", at=[13, 28])  # one cell right: the front door goes along
+    front, = [d for d in home.doors if d.get("outside")]
+    assert floorplan.door_sides(front, home.rooms) == ["living"] and front["at"][0] == start + 1
+    with pytest.raises(PlacementError, match="大门"):
+        home.add_room("门厅", [6, 4], at=[16, 40])  # right in front of the front door
+
+
+def test_doors_go_on_shared_walls_clear_of_furniture(tmp_path):
+    home = house(tmp_path)
+    door = home.add_door("x", [12, 30])  # kitchen | living
+    assert set(floorplan.door_sides(door, home.rooms)) == {"kitchen", "living"}
+    with pytest.raises(PlacementError, match="已经有一扇门"):
+        home.add_door("x", [12, 31])
+    with pytest.raises(PlacementError, match="共用的墙"):
+        home.add_door("z", [3, 5])  # the middle of a bedroom
+    with pytest.raises(PlacementError, match="挡着"):
+        home.add_door("x", [18, 19])  # study | hallway, right where the bookshelf stands
+    home.remove_door(door["id"])
+    with pytest.raises(PlacementError, match="大门不能删"):
+        home.remove_door("front")
+    moved = home.add_door("z", [33, 40], outside=True)  # the front door moves to the storage room
+    assert floorplan.door_sides(moved, home.rooms) == ["storage"]
+    assert len([d for d in home.doors if d.get("outside")]) == 1
+
+
+def test_new_rooms_and_hallways_can_be_drawn(tmp_path):
+    home = house(tmp_path)
+    hall = home.add_room("", [3, 10], at=[40, 0], kind="hall")  # beside the bedrooms
+    assert hall["name"] == "走廊" and hall["kind"] == "hall"
+    room = home.add_room("阳光房", [10, 10], at=[43, 0])
+    assert set(floorplan.door_sides(next(d for d in home.doors if room["id"] in floorplan.door_sides(d, home.rooms)),
+                                    home.rooms)) == {room["id"], hall["id"]}
+    with pytest.raises(PlacementError, match="叠在一起"):
+        home.add_room("又一间", [10, 10], at=[45, 5])
+    with pytest.raises(PlacementError, match="每边"):
+        home.add_room("太小", [2, 2], at=[60, 0])

@@ -59,11 +59,19 @@ function section(title, ...children) {
 export function renderEditor(app) {
   const d = app.data;
   const rooms = Object.fromEntries(d.rooms.map((r) => [r.id, r]));
-  const out = [el("h2", "", "布置"), el("p", "muted small", "拖动家具换位置，点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
+  const modes = el("div", "home-look");
+  for (const [plan, label] of [[false, "摆家具"], [true, "改户型"]]) {
+    const b = el("button", app.planMode === plan ? "primary" : "", label);
+    b.onclick = () => app.setPlanMode(plan);
+    modes.append(b);
+  }
   const act = async (fn, done) => {
     try { await fn(); if (done) say(done); } catch (e) { say(e.message, true); }
+    app.layoutKey = "";
     await app.poll();
   };
+  if (app.planMode) return [el("h2", "", "布置"), modes, ...planPanel(app, d, act)];
+  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "拖动家具换位置，点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
 
   // ---- the selected piece ----
   const piece = d.pieces.find((p) => p.id === app.selectedPiece);
@@ -256,6 +264,36 @@ export async function openTelegram(app) {
     field("允许的用户 ID", users, "第一个是主人，后面的是群友；逗号隔开"), field("允许的群 ID", chats),
     bots, el("p", "muted small", "token 存在 secrets.json 里，不进 git。这些设置在「群聊规则」和「成员」里也能改。"), save);
   app.showModal(body);
+}
+
+// ---- the floor-plan mode ----
+
+function planPanel(app, d, act) {
+  const out = [el("p", "muted small",
+    "拖房间中间：整间挪走（家具跟着走）。拖房间的边：改大小。点两个房间共用的墙：开一扇门；点外墙：把大门挪过去。"
+    + "点门（橙色）：选中它。在空地上拖出一个长方形：加一个房间，名字写「走廊」就是走廊。")];
+  const shut = d.unreachable || [];
+  if (shut.length) {
+    out.push(el("p", "home-warn small", `进不去：${shut.map((id) => d.rooms.find((r) => r.id === id)?.name || id).join("、")}。给它开一扇门。`));
+  }
+  const room = d.rooms.find((r) => r.id === app.selectedRoom);
+  if (room) {
+    const del = el("button", "danger", "删掉这个房间");
+    del.onclick = () => act(async () => { await send("DELETE", `/api/home/rooms/${room.id}`); app.selectedRoom = ""; });
+    out.push(section(`选中：${room.name}`, el("p", "muted small",
+      `${room.kind === "hall" ? "走廊" : "房间"}，${room.size[0] / 2} × ${room.size[1] / 2} 米，在第 ${room.at[0]} 列、第 ${room.at[1]} 行`),
+      room.id.startsWith("bed-") || room.id === "living" ? null : del));
+  }
+  const door = d.doors.find((x) => x.id === app.selectedDoor);
+  if (door) {
+    const names = door.rooms.map((id) => d.rooms.find((r) => r.id === id)?.name || id);
+    const del = el("button", "danger", "删掉这扇门");
+    del.onclick = () => act(async () => { await send("DELETE", `/api/home/doors/${door.id}`); app.selectedDoor = ""; });
+    out.push(section(door.outside ? "选中：大门" : "选中：一扇门",
+      el("p", "muted small", door.outside ? `${names[0]}通到外面。大门不能删，点别的外墙可以挪过去。` : `连着${names.join("和")}`),
+      door.outside ? null : del));
+  }
+  return out;
 }
 
 // A file picker that uploads a picture (PNG, JPG, WebP) and hands back its saved name.

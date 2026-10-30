@@ -64,6 +64,7 @@ ACTIVITIES = {
 DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
 ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
 ROOM_NAME_MAX = 8
+ROOM_CELLS = (3, 60)  # a room or hallway is at least 3 cells across (a hallway's width), at most 60
 PICTURE_TEMPLATES = ("frame", "poster", "rug")  # pieces that can show a picture (a mural is a framed one)
 TILE_RANGE = (0.25, 5.0)  # units one floor tile or wallpaper image covers before it repeats
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
@@ -371,21 +372,144 @@ class Home:
 
     # ---- rooms the owner adds ----
 
-    def add_room(self, name: str, size: str) -> dict:
-        name = str(name or "").strip()[:ROOM_NAME_MAX]
+    def add_room(self, name: str, size, at=None, kind: str = "room") -> dict:
+        """A new room or hallway: a preset size placed next to a hallway, or drawn by the owner
+        (``size`` in cells and ``at``). It gets a door on a wall it shares with a neighbour."""
+        if kind not in ("room", "hall"):
+            raise PlacementError("只能加房间或走廊")
+        name = str(name or ("走廊" if kind == "hall" else "")).strip()[:ROOM_NAME_MAX]
         if not name:
             raise PlacementError("房间要有名字")
-        if size not in ROOM_SIZES:
-            raise PlacementError("房间大小只能是小、中、大")
-        room = {"id": "room-" + furniture.new_id()[2:], "name": name, "icon": "🚪", "shared": True,
-                "kind": "room", "size": list(ROOM_SIZES[size])}
-        floorplan.place_room(room, self.rooms, self.doors)
+        if isinstance(size, str):
+            if size not in ROOM_SIZES:
+                raise PlacementError("房间大小只能是小、中、大")
+            size = ROOM_SIZES[size]
+        room = {"id": ("hall-" if kind == "hall" else "room-") + furniture.new_id()[2:], "name": name,
+                "icon": "🚶" if kind == "hall" else "🚪", "shared": True, "kind": kind,
+                "size": self._cells(size), "level": 0}
+        if at is None:
+            floorplan.place_room(room, self.rooms, self.doors)
+        else:
+            room["at"] = self._cells(at, low=-200)
+            self._check_space(room)
+            if any(d.get("outside") and not floorplan.door_ok(d, self.rooms + [room]) for d in self.doors):
+                raise PlacementError("会把大门堵住")
         self.rooms.append(room)
         door = floorplan.auto_door(room, self.rooms)
         if door:
             self.doors.append(door)
         self.save()
         return room
+
+    # ---- the floor plan: rooms move, grow and shrink; doors are added and taken away ----
+
+    @staticmethod
+    def _cells(value, low: int = ROOM_CELLS[0]) -> list[int]:
+        try:
+            a, b = (int(v) for v in value)
+        except (TypeError, ValueError):
+            raise PlacementError("位置和大小要写成两个整数格") from None
+        if low == ROOM_CELLS[0] and not all(ROOM_CELLS[0] <= v <= ROOM_CELLS[1] for v in (a, b)):
+            raise PlacementError(f"房间每边 {ROOM_CELLS[0]} 到 {ROOM_CELLS[1]} 格")
+        if low != ROOM_CELLS[0] and not all(-200 <= v <= 400 for v in (a, b)):
+            raise PlacementError("位置太远了")
+        return [a, b]
+
+    def _check_space(self, room: dict) -> None:
+        for other in self.rooms:
+            if other["id"] != room["id"] and floorplan.overlaps(room, other):
+                raise PlacementError(f"和{other['name']}叠在一起了")
+
+    def reshape_room(self, rid: str, at=None, size=None) -> dict:
+        """Move a room (its furniture goes with it) or change its size by dragging an edge
+        (furniture stays where it stands; it must still fit). Doors that no longer join two
+        rooms go; a room left without a door gets one where it now touches a neighbour."""
+        room = self.room(rid)
+        new = {**room, "at": self._cells(at, low=-200) if at is not None else list(room["at"]),
+               "size": self._cells(size) if size is not None else list(room["size"])}
+        self._check_space(new)
+        moved = new["size"] == room["size"]
+        dx, dz = new["at"][0] - room["at"][0], new["at"][1] - room["at"][1]
+        pieces = {p["id"]: dict(p) for p in self.pieces or [] if p["room"] == rid}
+        if not moved:  # an edge was dragged: furniture keeps its place in the house
+            for piece in pieces.values():
+                piece["at"] = [piece["at"][0] - dx, piece["at"][1] - dz]
+        rooms = [new if r["id"] == rid else r for r in self.rooms]
+        doors = []
+        for door in self.doors:
+            sides = floorplan.door_sides(door, self.rooms)
+            if rid in sides and moved and door.get("outside"):
+                door = {**door, "at": [door["at"][0] + dx, door["at"][1] + dz]}  # the front door goes along
+            if floorplan.door_ok(door, rooms):
+                doors.append(door)
+            elif door.get("outside"):
+                raise PlacementError("这样大门就不在外墙上了；先把大门挪到别的外墙")
+        if not any(rid in floorplan.door_sides(d, rooms) for d in doors if not d.get("outside")):
+            extra = floorplan.auto_door(new, rooms)
+            if extra:
+                doors.append(extra)
+        trial = Home.__new__(Home)  # check the furniture against the new walls and doors
+        trial.rooms, trial.doors, trial.types = rooms, doors, self.types
+        trial.pieces = [pieces.get(p["id"], p) for p in self.pieces or []]
+        for piece in pieces.values():
+            try:
+                furniture.check(piece, trial.checked_room(rid), self.all_types(), trial.pieces)
+            except PlacementError as e:
+                name = piece.get("name") or self.all_types().get(piece["type"], {}).get("name", "家具")
+                raise PlacementError(f"{name}会放不下（{e}）；先把它挪开") from None
+        room.update(at=new["at"], size=new["size"])
+        for p_ in self.pieces or []:
+            if p_["id"] in pieces:
+                p_["at"] = pieces[p_["id"]]["at"]
+        self.doors = doors
+        self.save()
+        return room
+
+    def add_door(self, line: str, at, *, outside: bool = False, level: int = 0) -> dict:
+        """A door on a grid line: between the two rooms there, or (``outside``) the front door,
+        which moves here if there was one."""
+        if line not in ("x", "z"):
+            raise PlacementError("门要开在横墙或竖墙上")
+        door = {"id": "front" if outside else floorplan.new_door_id(), "level": level, "line": line,
+                "at": self._cells(at, low=-200), "width": floorplan.DOOR}
+        if outside:
+            door["outside"] = True
+        sides = floorplan.door_sides(door, self.rooms)
+        if outside and (len(sides) != 1 or level != 0):
+            raise PlacementError("大门要开在一楼某个房间的外墙上")
+        if not outside and len(sides) != 2:
+            raise PlacementError("门要开在两个房间共用的墙上，而且整扇门都要在这面墙上")
+        for other in self.doors:
+            if other.get("outside") and outside:
+                continue
+            if other["line"] == line and other.get("level", 0) == level:
+                along = 0 if line == "z" else 1
+                same = other["at"][1 - along] == door["at"][1 - along]
+                o0, d0 = other["at"][along], door["at"][along]
+                if same and o0 < d0 + door["width"] and d0 < o0 + other.get("width", floorplan.DOOR):
+                    raise PlacementError("这里已经有一扇门了")
+        doors = [d for d in self.doors if not (outside and d.get("outside"))] + [door]
+        trial = Home.__new__(Home)
+        trial.rooms, trial.doors, trial.types, trial.pieces = self.rooms, doors, self.types, self.pieces
+        for rid in sides:
+            for piece in [p for p in self.pieces or [] if p["room"] == rid]:
+                try:
+                    furniture.check(piece, trial.checked_room(rid), self.all_types(), self.pieces)
+                except PlacementError:
+                    name = piece.get("name") or self.all_types().get(piece["type"], {}).get("name", "家具")
+                    raise PlacementError(f"门口被{name}挡着，先把它挪开") from None
+        self.doors = doors
+        self.save()
+        return door
+
+    def remove_door(self, did: str) -> None:
+        door = next((d for d in self.doors if d["id"] == did), None)
+        if door is None:
+            raise PlacementError("没有这扇门")
+        if door.get("outside"):
+            raise PlacementError("大门不能删，只能挪到别的外墙")
+        self.doors.remove(door)
+        self.save()
 
     def surface(self, raw) -> dict | None:
         """A floor or wall look: {"color": "#rrggbb"} or {"image": <uploaded picture>, "tile": units}."""

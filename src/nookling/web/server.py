@@ -248,7 +248,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def new_room(request):
         body = await request.json()
-        response = house(lambda: runtime.home.add_room(body.get("name", ""), str(body.get("size", ""))))
+        size = body.get("size", "")
+        response = house(lambda: runtime.home.add_room(body.get("name", ""), size if isinstance(size, list) else str(size),
+                                                       body.get("at"), str(body.get("kind") or "room")))
         runtime.refresh_prompts()  # the members' prompt lists the rooms of the house
         return response
 
@@ -256,7 +258,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         body = await request.json()
         rid = request.match_info["rid"]
 
-        def change():  # floor and walls, a new name, or both
+        def change():  # where it is and how big, floor and walls, a new name, or several
+            if "at" in body or "size" in body:
+                runtime.home.reshape_room(rid, body.get("at"), body.get("size"))
             looks = {k: body[k] for k in ("floor", "walls") if k in body}
             room = runtime.home.dress_room(rid, looks) if looks else runtime.home.room(rid)
             return runtime.home.rename_room(rid, body["name"]) if "name" in body else room
@@ -264,6 +268,13 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         response = house(change)
         runtime.refresh_prompts()
         return response
+
+    async def new_door(request):
+        body = await request.json()
+        return house(lambda: runtime.home.add_door(str(body.get("line", "")), body.get("at"), outside=bool(body.get("outside"))))
+
+    async def remove_door(request):
+        return house(lambda: runtime.home.remove_door(request.match_info["did"]) or {"ok": True})
 
     async def remove_room(request):
         response = house(lambda: runtime.home.delete_room(request.match_info["rid"]) or {"ok": True})
@@ -594,6 +605,8 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/home/rooms", new_room)
     app.router.add_put("/api/home/rooms/{rid}", edit_room)
     app.router.add_delete("/api/home/rooms/{rid}", remove_room)
+    app.router.add_post("/api/home/doors", new_door)
+    app.router.add_delete("/api/home/doors/{did}", remove_door)
     app.router.add_post("/api/home/models", upload_model)
     app.router.add_get("/api/home/models/{name}", get_model)
     app.router.add_post("/api/home/images", upload_image)

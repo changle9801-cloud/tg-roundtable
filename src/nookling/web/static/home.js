@@ -618,6 +618,10 @@ class HomeApp {
     this.grid = new THREE.Group(); // the cells, shown while arranging
     this.grid.visible = false;
     this.scene.add(this.grid);
+    this.planMarks = new THREE.Group(); // doors and the room being shaped, in the floor-plan mode
+    this.planMarks.visible = false;
+    this.scene.add(this.planMarks);
+    this.planMode = false;
     this.highlight = null;
     this.people = new THREE.Group();
     this.scene.add(this.people);
@@ -626,11 +630,13 @@ class HomeApp {
     const canvas = this.renderer.domElement;
     canvas.addEventListener("pointerdown", (e) => {
       down = [e.clientX, e.clientY];
-      if (this.arranging) this.startDrag(e);
+      if (this.arranging && this.planMode) this.planDown(e);
+      else if (this.arranging) this.startDrag(e);
     });
-    canvas.addEventListener("pointermove", (e) => this.drag && this.moveDrag(e));
+    canvas.addEventListener("pointermove", (e) => (this.plan ? this.planMove(e) : this.drag && this.moveDrag(e)));
     canvas.addEventListener("pointerup", (e) => {
-      if (this.drag) this.endDrag();
+      if (this.plan) this.planUp(e);
+      else if (this.drag) this.endDrag();
       else if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 5 && !this.arranging) this.click(e);
       down = null;
     });
@@ -681,6 +687,7 @@ class HomeApp {
     this.house.clear();
     this.furniture.clear();
     this.grid.clear();
+    this.planMarks.clear();
     this.clickable = [];
     this.L = layout(data);
     const L = this.L;
@@ -726,6 +733,14 @@ class HomeApp {
       if (type.screen) (this.screens[piece.room] ||= []).push(centre);
     }
     this.walk = walkGrid(L, data);
+    for (const d of L.doors) { // a mark on every door, for selecting it in the floor-plan mode
+      const along = d.line === "z";
+      const mark = new THREE.Mesh(new THREE.BoxGeometry(along ? d.w : 0.3, 0.08, along ? 0.3 : d.w),
+        new THREE.MeshBasicMaterial({ color: d.outside ? 0x43a047 : d.id === this.selectedDoor ? 0xf0a020 : 0xff8f00 }));
+      mark.position.set(d.x, 0.06, d.z);
+      mark.userData = { door: d.id };
+      this.planMarks.add(mark);
+    }
     this.center = new THREE.Vector3((L.X0 + L.W) / 2, 0, (L.Z0 + L.D) / 2);
     if (!this.aimed) this.aimCamera(); // keep the viewer's own angle and zoom across redraws
     else this.resize(); // the house may have grown: fit it again
@@ -762,9 +777,137 @@ class HomeApp {
     this.arrangeBtn.textContent = this.arranging ? "布置好了" : "布置家具";
     this.arrangeBtn.classList.toggle("on", this.arranging);
     this.grid.visible = this.arranging;
+    this.planMode = false;
+    this.planMarks.visible = false;
     this.aimCamera();
     this.showHighlight();
     this.renderPanel();
+  }
+
+  // ---- the floor-plan mode: move rooms, drag their edges, doors, draw new rooms ----
+
+  setPlanMode(on) {
+    this.planMode = on;
+    this.planMarks.visible = on;
+    this.selectedPiece = "";
+    this.selectedRoom = "";
+    this.selectedDoor = "";
+    this.showHighlight();
+    this.editorKey = "";
+    this.renderPanel();
+  }
+
+  // What is under the pointer: a door mark, a room's edge (to resize), inside a room (to move), or empty ground.
+  planHit(e) {
+    const { point } = this.groundAt(e);
+    if (!point) return null;
+    const mark = this.ray.intersectObjects(this.planMarks.children, false).find((h) => h.object.userData.door);
+    if (mark) return { kind: "door", id: mark.object.userData.door, point };
+    const tol = 0.35;
+    let edge = null;
+    for (const r of Object.values(this.L.rects)) {
+      const inX = point.x > r.x - tol && point.x < r.x + r.w + tol, inZ = point.z > r.z - tol && point.z < r.z + r.d + tol;
+      for (const [side, dist] of [["left", Math.abs(point.x - r.x)], ["right", Math.abs(point.x - r.x - r.w)],
+                                  ["back", Math.abs(point.z - r.z)], ["front", Math.abs(point.z - r.z - r.d)]]) {
+        const along = side === "left" || side === "right" ? inZ : inX;
+        if (dist < tol && along && (!edge || dist < edge.dist)) edge = { kind: "edge", rect: r, side, dist, point };
+      }
+    }
+    if (edge) return edge;
+    const room = Object.values(this.L.rects).find((r) => point.x > r.x && point.x < r.x + r.w && point.z > r.z && point.z < r.z + r.d);
+    return room ? { kind: "room", rect: room, point } : { kind: "ground", point };
+  }
+
+  planDown(e) {
+    const hit = this.planHit(e);
+    if (!hit) return;
+    this.controls.enabled = false;
+    this.plan = { hit, start: hit.point, moved: false };
+  }
+
+  planMove(e) {
+    const { point } = this.groundAt(e);
+    if (!point || !this.plan) return;
+    const { hit, start } = this.plan;
+    const cell = (v) => Math.round(v / CELL);
+    const dx = cell(point.x - start.x), dz = cell(point.z - start.z);
+    if (!dx && !dz && !this.plan.moved) return;
+    this.plan.moved = true;
+    let box = null; // the rectangle being shaped, in cells: [x, z, w, d]
+    if (hit.kind === "room") {
+      const [ax, az] = hit.rect.room.at, [w, d] = hit.rect.room.size;
+      box = [ax + dx, az + dz, w, d];
+    } else if (hit.kind === "edge") {
+      let [x0, z0] = hit.rect.room.at, [x1, z1] = [x0 + hit.rect.room.size[0], z0 + hit.rect.room.size[1]];
+      if (hit.side === "left") x0 = Math.min(x1 - 3, x0 + dx);
+      if (hit.side === "right") x1 = Math.max(x0 + 3, x1 + dx);
+      if (hit.side === "back") z0 = Math.min(z1 - 3, z0 + dz);
+      if (hit.side === "front") z1 = Math.max(z0 + 3, z1 + dz);
+      box = [x0, z0, x1 - x0, z1 - z0];
+    } else if (hit.kind === "ground") {
+      const ax = Math.floor(Math.min(start.x, point.x) / CELL), az = Math.floor(Math.min(start.z, point.z) / CELL);
+      const bx = Math.ceil(Math.max(start.x, point.x) / CELL), bz = Math.ceil(Math.max(start.z, point.z) / CELL);
+      box = [ax, az, Math.max(1, bx - ax), Math.max(1, bz - az)];
+    }
+    this.plan.box = box;
+    this.showPlanBox(box);
+  }
+
+  showPlanBox(box) {
+    if (this.planBox) { this.scene.remove(this.planBox); this.planBox = null; }
+    if (!box) return;
+    const [x, z, w, d] = box;
+    this.planBox = new THREE.Mesh(new THREE.BoxGeometry(w * CELL, 0.04, d * CELL),
+      new THREE.MeshBasicMaterial({ color: 0x3b6cf6, transparent: true, opacity: 0.35 }));
+    this.planBox.position.set((x + w / 2) * CELL, 0.08, (z + d / 2) * CELL);
+    this.scene.add(this.planBox);
+  }
+
+  async planUp(e) {
+    const { hit, box, moved } = this.plan;
+    this.plan = null;
+    this.controls.enabled = true;
+    this.showPlanBox(null);
+    const done = async (fn) => {
+      try { await fn(); } catch (err) { say(err.message, true); }
+      this.layoutKey = "";
+      await this.poll();
+    };
+    if (!moved) { // a click
+      if (hit.kind === "door") { this.selectedDoor = hit.id; this.selectedRoom = ""; this.editorKey = ""; this.layoutKey = ""; await this.poll(); return; }
+      if (hit.kind === "edge") return this.planDoor(hit, done);
+      if (hit.kind === "room") { this.selectedRoom = hit.rect.room.id; this.selectedDoor = ""; this.editorKey = ""; this.renderPanel(); }
+      return;
+    }
+    if (!box) return;
+    const [x, z, w, d] = box;
+    if (hit.kind === "room") return done(() => send("PUT", `/api/home/rooms/${hit.rect.room.id}`, { at: [x, z] }));
+    if (hit.kind === "edge") return done(() => send("PUT", `/api/home/rooms/${hit.rect.room.id}`, { at: [x, z], size: [w, d] }));
+    if (hit.kind === "ground") {
+      if (w < 3 || d < 3) { say("至少拖出 3×3 格（一米半见方）", true); return; }
+      const name = prompt("新房间叫什么？（只写「走廊」就是一条走廊）", "");
+      if (name === null) return;
+      const hall = name.trim() === "走廊" || name.trim() === "";
+      return done(() => send("POST", "/api/home/rooms", { name: name.trim(), kind: hall ? "hall" : "room", size: [w, d], at: [x, z] }));
+    }
+  }
+
+  // A click on a room's wall: a door there if another room shares it, or the front door if it is an outer wall.
+  planDoor(hit, done) {
+    const r = hit.rect, p = hit.point;
+    const horizontal = hit.side === "back" || hit.side === "front";
+    const along = Math.round((horizontal ? p.x : p.z) / CELL - 1.5);
+    const line = horizontal ? "z" : "x";
+    const fixed = Math.round((hit.side === "back" ? r.z : hit.side === "front" ? r.z + r.d : hit.side === "left" ? r.x : r.x + r.w) / CELL);
+    const at = horizontal ? [along, fixed] : [fixed, along];
+    const shared = Object.values(this.L.rects).some((o) => o !== r && (horizontal
+      ? (Math.abs(o.z - r.z - (hit.side === "front" ? r.d : 0)) < 1e-6 || Math.abs(o.z + o.d - r.z - (hit.side === "front" ? r.d : 0)) < 1e-6)
+        && o.x < (along + 3) * CELL && (along * CELL) < o.x + o.w
+      : (Math.abs(o.x - r.x - (hit.side === "right" ? r.w : 0)) < 1e-6 || Math.abs(o.x + o.w - r.x - (hit.side === "right" ? r.w : 0)) < 1e-6)
+        && o.z < (along + 3) * CELL && (along * CELL) < o.z + o.d));
+    if (shared) return done(() => send("POST", "/api/home/doors", { line, at }));
+    if (!confirm(`这是${r.room.name}的外墙。把大门挪到这里？`)) return;
+    return done(() => send("POST", "/api/home/doors", { line, at, outside: true }));
   }
 
   groundAt(e) {
@@ -820,6 +963,14 @@ class HomeApp {
 
   showHighlight() {
     if (this.highlight) { this.scene.remove(this.highlight); this.highlight = null; }
+    const room = this.arranging && this.planMode && this.L?.rects[this.selectedRoom];
+    if (room) {
+      const outline = new THREE.Mesh(new THREE.BoxGeometry(room.w, 0.02, room.d), new THREE.MeshBasicMaterial({ color: 0xf0a020, transparent: true, opacity: 0.25 }));
+      outline.position.set(room.x + room.w / 2, 0.07, room.z + room.d / 2);
+      this.highlight = outline;
+      this.scene.add(outline);
+      return;
+    }
     const g = this.arranging && this.furniture.children.find((c) => c.userData.pieceId === this.selectedPiece);
     if (!g) return;
     this.highlight = new THREE.BoxHelper(g, 0xf0a020);
@@ -921,7 +1072,7 @@ class HomeApp {
   }
 
   apply(data) {
-    if (this.drag) return; // the redraw would snatch the piece from under the pointer
+    if (this.drag || this.plan) return; // the redraw would snatch the piece or room from under the pointer
     this.data = data;
     const key = JSON.stringify([data.rooms, data.doors, data.unreachable, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {

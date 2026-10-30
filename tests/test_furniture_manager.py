@@ -232,3 +232,25 @@ async def test_the_page_can_dress_a_room(admin):  # noqa: F811
     assert got.status == 200 and got.headers["Content-Type"] == "image/png"
     bad = await admin.post("/api/home/images", data=b"GIF89a", headers={"Origin": admin.origin})
     assert bad.status == 400
+
+
+async def test_the_page_can_change_the_floor_plan(admin):  # noqa: F811
+    await login(admin)
+    h = {"Origin": admin.origin}
+    moved = await admin.put("/api/home/rooms/storage", json={"at": [40, 28]}, headers=h)
+    assert moved.status == 200 and (await moved.json())["at"] == [40, 28]
+    view = await (await admin.get("/api/home")).json()
+    assert "storage" in view["unreachable"]
+    door = await admin.post("/api/home/doors", json={"line": "x", "at": [40, 29]}, headers=h)  # storage | nothing
+    assert door.status == 400
+    back = await admin.put("/api/home/rooms/storage", json={"at": [30, 28]}, headers=h)
+    assert back.status == 200
+    door = await admin.post("/api/home/doors", json={"line": "x", "at": [12, 30]}, headers=h)
+    made = await door.json()
+    assert door.status == 200 and set(made) >= {"id", "line", "at"}
+    gone = await admin.delete(f"/api/home/doors/{made['id']}", headers=h)
+    assert gone.status == 200
+    hall = await admin.post("/api/home/rooms", json={"kind": "hall", "size": [3, 10], "at": [40, 25]}, headers=h)  # beside a hallway
+    assert hall.status == 200 and (await hall.json())["kind"] == "hall"
+    view = await (await admin.get("/api/home")).json()
+    assert view["unreachable"] == []

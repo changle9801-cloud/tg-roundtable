@@ -52,9 +52,29 @@ def door_sides(door: dict, rooms: list[dict]) -> list[str]:
     return out
 
 
+def touching(door: dict, rooms: list[dict]) -> list[str]:
+    """Rooms with any part of their wall where the door is (a room half in front of the
+    front door blocks it as much as one right in front)."""
+    x, z = door["at"]
+    w = door.get("width", DOOR)
+    out = []
+    for r in rooms:
+        if r.get("level", 0) != door.get("level", 0) or "at" not in r:
+            continue
+        rx0, rz0, rx1, rz1 = box(r)
+        if door["line"] == "z":
+            if (z == rz0 or z == rz1) and rx0 < x + w and x < rx1:
+                out.append(r["id"])
+        elif (x == rx0 or x == rx1) and rz0 < z + w and z < rz1:
+            out.append(r["id"])
+    return out
+
+
 def door_ok(door: dict, rooms: list[dict]) -> bool:
     sides = door_sides(door, rooms)
-    return len(sides) == 1 if door.get("outside") else len(sides) == 2
+    if door.get("outside"):
+        return len(sides) == 1 and len(touching(door, rooms)) == 1
+    return len(sides) == 2
 
 
 def neighbours(doors: list[dict], rooms: list[dict]) -> dict[str, set[str]]:
@@ -194,13 +214,13 @@ def place_room(room: dict, rooms: list[dict], doors: list[dict], level: int = 0)
         trial = {**room, "at": at, "level": level}
         if any(overlaps(trial, r) for r in same):
             continue
-        if any(door_sides(f, [trial]) for f in fronts):
+        if any(touching(f, [trial]) for f in fronts):
             continue  # would wall up the front door
-        touching = [r for r in same if shared_wall(trial, r) >= DOOR]
-        if not touching:
+        beside = [r for r in same if shared_wall(trial, r) >= DOOR]
+        if not beside:
             continue
         grow = (max(hx1, at[0] + w) - min(hx0, at[0])) * (max(hz1, at[1] + d) - min(hz0, at[1]))
-        score = (not any(r.get("kind") == "hall" for r in touching), grow, at[1], at[0])
+        score = (not any(r.get("kind") == "hall" for r in beside), grow, at[1], at[0])
         if best is None or score < best[0]:
             best = (score, at)
     at = best[1] if best else [hx0, hz1 + HALL]  # nowhere touching: below the house (a door is up to the owner)
