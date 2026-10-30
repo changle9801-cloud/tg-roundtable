@@ -41,7 +41,7 @@ from .prompts import (
     search_instructions,
 )
 from .apps.house import HOUSE_TALK, HouseSink
-from . import redecorate
+from . import redecorate, wishes
 from .furniture import PlacementError
 from .conversation import Conversation
 from .recall import chat_query
@@ -411,7 +411,7 @@ class Runtime:
             log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
             on_draw=self._on_draw, routines=self.routines,
             on_tool=lambda p, server: self._tool_used(p.id, server, during_chat=True),
-            house=self._house_note,
+            house=self._house_note, on_wish=self._on_wish,
             has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
                                                   or self.game_memories.recall(pid, text)),
             **extra,
@@ -876,7 +876,7 @@ class Runtime:
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
         return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view(),
-                "said": self._recent_said(convo), "changes": redecorate.view(self.home)}
+                "said": self._recent_said(convo), "changes": redecorate.view(self.home), "wishes": wishes.view(self.home)}
 
     def undo_change(self, cid: str) -> dict:
         """The owner undoes a change the family made (docs/redecorate.md, 4b)."""
@@ -1276,8 +1276,22 @@ class Runtime:
         """「家里现在」 for a member: the house, who is where, where she has been today; and, once, what the
         others changed at home since she last heard."""
         names = {m.id: m.name for m in self.config.enabled_participants}
-        news = self.home.news(pid, names)
+        news = "\n".join(n for n in (self.home.news(pid, names), wishes.news(self.home, pid)) if n)
         return self.home.house_note(pid, names) + ("\n" + news if news else "")
+
+    def _on_wish(self, p: Participant, wished: list[tuple[str, str]]) -> None:
+        """[心愿:…|…] in a reply: onto the wish list, as long as she has room for it."""
+        for what, why in wished:
+            try:
+                wishes.add(self.home, p.id, what, why, source="chat")
+            except PlacementError as e:
+                log.info("%s 的心愿没记上：%s", p.name, e)
+
+    def answer_wish(self, wid: str, body: dict) -> dict:
+        """The owner answers a wish from the house page (docs/redecorate.md, 4c)."""
+        wishes.answer(self.home, wid, str(body.get("decision") or ""), ask=body.get("ask"), note=str(body.get("note") or ""),
+                      names=self._residents())
+        return {"wishes": wishes.view(self.home)}
 
     def _redecorate(self, pid: str, plan: dict) -> str:
         """Her plan for her bedroom, carried out (docs/redecorate.md, 4a): a line for her events."""
@@ -1285,7 +1299,7 @@ class Runtime:
             result = redecorate.apply(self.home, pid, plan)
         except PlacementError as e:
             return f"想改家里，没改成：{e}"
-        done = "；".join(result["done"]) or "最后什么也没改"
+        done = "；".join(result["done"] + [f"许了个愿：{w}" for w in result.get("wished", [])]) or "最后什么也没改"
         refused = "；".join(result["refused"])
         why = str(plan.get("why") or "")[:80] if isinstance(plan, dict) else ""
         return done + (f"（没做成的：{refused}）" if refused else "") + (f"。为什么：{why}" if why else "")

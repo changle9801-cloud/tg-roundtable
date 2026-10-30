@@ -117,6 +117,7 @@ class Home:
         self._before_talk: dict[str, Place] = {}  # member -> what she was doing when she came to talk
         self.changes: list[dict] = []  # 家里的变化: who changed what, and how to undo it (docs/redecorate.md)
         self.redecorations: dict[str, list[float]] = {}  # member -> when she redecorated, for the weekly limit
+        self.wishes: list[dict] = []  # 心愿单: what the family wants that needs the owner's yes (wishes.py)
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -132,6 +133,7 @@ class Home:
                 self.moves = {m: list(v) for m, v in (raw.get("moves") or {}).items()}
                 self.changes = list(raw.get("changes") or [])
                 self.redecorations = {m: list(v) for m, v in (raw.get("redecorations") or {}).items()}
+                self.wishes = list(raw.get("wishes") or [])
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -146,7 +148,8 @@ class Home:
                                 "types": self.types, "extras": self.extras,
                                 "where": {m: asdict(p) for m, p in self.where.items()},
                                 "looks": self.looks, "diary_reads": self.diary_reads[-200:], "moves": self.moves,
-                                "changes": self.changes[-CHANGES_KEPT:], "redecorations": self.redecorations})
+                                "changes": self.changes[-CHANGES_KEPT:], "redecorations": self.redecorations,
+                                "wishes": self.wishes})
 
     # ---- who lives here ----
 
@@ -1093,6 +1096,10 @@ class Home:
                 peer = f"（找{members.get(m['peer'], m['peer'])}）" if m.get("peer") and m["verb"] in ("visit", "phone") else ""
                 lines.append(f"- {time.strftime('%H:%M', time.localtime(m['ts']))} {where}{at} · {VERBS.get(m['verb'], '在歇着')}{peer}")
         lines.append("这些是家里此刻的真实情况。说到家里的事以这里为准；这里没有的，就说不知道，不要编。")
+        waiting = sum(1 for w in self.wishes if w["member"] == member and w["status"] in ("open", "approved"))
+        lines.append("想让家里添点什么、改点什么（公共房间加东西、搬家具、新房间、新本事），可以在回复末尾写 "
+                     f"[心愿:想要什么|为什么]，{owner.name()}会在家的页面上看到；每人同时最多 3 条"
+                     + (f"，你现在有 {waiting} 条在等。" if waiting else "。"))
         lines.append("[/家里现在]")
         return "\n".join(lines)
 

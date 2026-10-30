@@ -18,6 +18,7 @@ from typing import Callable, Protocol, Sequence
 from . import owner
 from .config import RoundConfig
 from .drawing import extract_draw_requests
+from .wishes import extract_wishes
 from .followups import FUTURE_WORDS, extract_followups
 from .memes import extract_memes
 from .memory import extract_memories
@@ -168,6 +169,7 @@ class Conversation:
         on_tool: Callable[[Participant, str], None] | None = None,
         house: Callable[[str], str] | None = None,
         scene: Callable[[], str] | None = None,
+        on_wish: Callable[[Participant, list[tuple[str, str]]], None] | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -194,6 +196,7 @@ class Conversation:
         self.on_tool = on_tool  # a member called a tool server (its id): she walks to its furniture
         self.house = house  # member id -> 「家里现在」, given with every turn (docs/house-talk.md, 3c)
         self.scene = scene  # where this talk happens, when it is not a group chat (the house: 3a)
+        self.on_wish = on_wish  # [心愿:…|…] in a reply: onto the wish list (docs/redecorate.md, 4c)
         self.has_experience = has_experience  # own memory relevance only; no private text enters the room
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
@@ -727,6 +730,9 @@ class Conversation:
             text, plans = extract_followups(text)
             if plans and self.on_followup is not None:
                 self.on_followup(self.key, speaker, plans)
+            text, wished = extract_wishes(text)
+            if wished and self.on_wish is not None:
+                self.on_wish(speaker, wished)
             text, reaction = extract_reaction(text)
             text, draws = extract_draw_requests(text)
             if draws and not text:

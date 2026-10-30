@@ -427,6 +427,13 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .home-change .home-when { grid-column: 1 / -1; font-size: 11px; }
 .home-change p { margin: 0; font-size: 13px; word-break: break-word; }
 .home-change.undone p { text-decoration: line-through; color: var(--muted); }
+.home-wishes { display: flex; flex-direction: column; gap: 8px; max-height: min(64vh, 560px); overflow: auto; }
+.home-wish { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.home-wish p { margin: 2px 0; word-break: break-word; }
+.home-wish.open { border-color: var(--accent); }
+.home-wish.declined, .home-wish.done { opacity: 0.75; }
+.home-wish-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.home-wish-form input, .home-wish-form select { width: 100%; }
 .home-hover-tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; color: #fff; background: rgba(40, 36, 32, 0.78); }
 .home-tag.stale { opacity: 0.6; }
 .home-panel h2 { margin-bottom: 8px; }

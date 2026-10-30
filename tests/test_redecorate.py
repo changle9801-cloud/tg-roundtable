@@ -87,9 +87,9 @@ def test_three_times_a_week_and_sixteen_things_in_a_bedroom(tmp_path):
     home = house(tmp_path)
     for i in range(3):
         redecorate.apply(home, "codex", {"changes": [{"do": "add", "kind": "base/plant"}]})
-    assert redecorate.menu(home, "codex") == ""
-    with pytest.raises(PlacementError, match="这周已经改过 3 次"):
-        redecorate.apply(home, "codex", {"changes": [{"do": "add", "kind": "base/plant"}]})
+    assert "这次只能许愿" in redecorate.menu(home, "codex")  # no more changes this week, but she may still wish
+    late = redecorate.apply(home, "codex", {"changes": [{"do": "add", "kind": "base/plant"}]})
+    assert late["done"] == [] and "这周已经改过 3 次" in late["refused"][0]
     home.redecorations["codex"] = []
     while len(in_room(home)) < redecorate.BEDROOM_MAX:
         home.pieces.append({**in_room(home)[-1], "id": f"p-{len(home.pieces)}"})

@@ -2170,6 +2170,7 @@ class HomeApp {
     if (!d) return;
     if (!this.arranging && this.panelPage === "talk") { this.renderTalk(); return; } // keeps what is being typed
     if (!this.arranging && this.panelPage === "changes") { this.renderChanges(); return; }
+    if (!this.arranging && this.panelPage === "wishes") { this.renderWishes(); return; }
     const focus = document.activeElement;
     if (focus && this.panel.contains(focus) && /INPUT|SELECT/.test(focus.tagName)) return; // editing a look
     if (this.arranging) {
@@ -2287,8 +2288,9 @@ class HomeApp {
     if (this.talkSeen === undefined) this.talkSeen = talk.messages.at(-1)?.ts || 0; // what was said before the page opened is not new
     const fresh = talk.messages.filter((m) => !m.owner && m.ts > this.talkSeen).length;
     const row = el("div", "home-tabs");
+    const wishing = (this.data.wishes || []).filter((w) => w.status === "open").length;
     for (const [id, label] of [["home", "家里"], ["talk", fresh && this.panelPage !== "talk" ? `聊天（${fresh}）` : "聊天"],
-                               ["changes", "变化"]]) {
+                               ["changes", "变化"], ["wishes", wishing ? `心愿（${wishing}）` : "心愿"]]) {
       const b = el("button", (this.panelPage || "home") === id ? "on" : "", label);
       b.type = "button";
       b.onclick = () => { this.panelPage = id; this.renderPanel(); if (id === "talk") this.talkUI?.input.focus(); };
@@ -2325,6 +2327,135 @@ class HomeApp {
     if (!(d.changes || []).length) list.append(el("p", "muted small", "家里还没人动过东西。她们在日常里会偶尔收拾自己的卧室、挪挪公共房间的家具。"));
     this.panel.replaceChildren(this.panelTabs(), el("h2", "", "家里的变化"),
       el("p", "muted small", "家人自己动过的东西。撤回会恢复成改之前的样子，改的人会知道。"), list);
+  }
+
+  // 心愿单: what the family wants that needs the owner's yes (docs/redecorate.md, 4c).
+  renderWishes() {
+    const d = this.data;
+    const key = JSON.stringify([d.wishes || [], this.wishEditing]);
+    if (this.wishEditing && this.panel.querySelector(".home-wish-form")) return; // an answer is being written
+    if (key === this.wishesKey && this.panel.querySelector(".home-wishes")) return;
+    this.wishesKey = key;
+    const people = Object.fromEntries(d.people.map((p) => [p.id, p.name]));
+    const rooms = Object.fromEntries(d.rooms.map((r) => [r.id, r.name]));
+    const pieceName = (id) => {
+      const p = d.pieces.find((x) => x.id === id);
+      return p ? `${rooms[p.room] || p.room}的${p.name || d.types[p.type]?.name || "家具"}` : id;
+    };
+    const how = (ask) => !ask ? "" : {
+      add: () => `在${rooms[ask.room] || ask.room}加一件${d.types[ask.kind]?.name || ask.kind}`,
+      move_to: () => `把${pieceName(ask.piece)}搬到${rooms[ask.room] || ask.room}`,
+      remove: () => `拿走${pieceName(ask.piece)}`,
+      color: () => `给${pieceName(ask.piece)}换成 ${ask.color}`,
+      name: () => `给${pieceName(ask.piece)}起名叫「${ask.name}」`,
+      room: () => `加一间「${ask.name}」（${{ small: "小", medium: "中", large: "大" }[ask.size] || "中"}号）`,
+      functions: () => `让${pieceName(ask.piece)}能${(ask.functions || []).map((f) => d.function_names?.[f] || f).join("、")}`,
+    }[ask.type]?.() || "";
+    const answer = async (w, decision, extra = {}) => {
+      try {
+        await send("POST", `/api/home/wishes/${w.id}/answer`, { decision, ...extra });
+        say(decision === "decline" ? "回了她：没同意" : "回了她，她会知道");
+        this.wishEditing = "";
+      } catch (e) { say(e.message, true); return; }
+      this.layoutKey = "";
+      await this.poll();
+    };
+    const list = el("div", "home-wishes");
+    for (const w of d.wishes || []) {
+      const card = el("div", "home-wish " + w.status);
+      card.append(el("p", "", `${people[w.member] || w.member}：想要${w.what.startsWith("想要") ? w.what.slice(2) : w.what}`));
+      if (w.why) card.append(el("p", "muted small", `为什么：${w.why}`));
+      if (w.ask) card.append(el("p", "muted small", `怎么做：${how(w.ask)}`));
+      card.append(el("p", "muted small", `${new Date(w.ts * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${w.source === "chat" ? "聊天时许的" : "日常里许的"}`));
+      if (w.status === "open") {
+        const row = el("div", "home-look");
+        const yes = el("button", "primary", w.ask ? "同意（直接弄好）" : "同意（我去弄）");
+        yes.onclick = () => answer(w, "approve");
+        const change = el("button", "", "改一改再同意");
+        change.onclick = () => { this.wishEditing = w.id; this.wishesKey = ""; this.renderWishes(); };
+        const no = el("button", "danger", "不同意");
+        no.onclick = () => { const why = prompt("写一句为什么（她会知道）："); if (why && why.trim()) answer(w, "decline", { note: why }); };
+        row.append(yes, change, no);
+        card.append(row);
+        if (this.wishEditing === w.id) card.append(this.wishForm(w, answer));
+      } else if (w.status === "approved") {
+        const done = el("button", "", "做好了");
+        done.onclick = () => answer(w, "done");
+        card.append(el("p", "small", "同意了，等你去弄。"), done);
+      } else {
+        const words = w.status === "declined" ? `没同意：${w.answer}` : `弄好了${w.changed ? "（改了一点）" : ""}${w.result ? "：" + w.result : ""}`;
+        card.append(el("p", "small", words));
+        if (w.status !== "declined" && w.answer) card.append(el("p", "muted small", `你说：${w.answer}`));
+      }
+      list.append(card);
+    }
+    if (!(d.wishes || []).length) list.append(el("p", "muted small", "还没人许愿。她们想要公共房间添东西、新房间、新本事时，会在日常里或聊天时许愿。"));
+    this.panel.replaceChildren(this.panelTabs(), el("h2", "", "心愿单"),
+      el("p", "muted small", "要你点头的事。同意：能直接做的马上做好；改一改再同意：换个做法；不同意：写一句为什么。她都会知道。"), list);
+  }
+
+  // Approving a wish, done another way: what to do (or doing it by hand), and a word for her.
+  wishForm(w, answer) {
+    const d = this.data, ask = w.ask || {};
+    const form = el("div", "home-wish-form");
+    const select = (options, value) => {
+      const s = el("select");
+      for (const [v, label] of options) { const o = el("option", "", label); o.value = v; o.selected = v === value; s.append(o); }
+      return s;
+    };
+    const rooms = d.rooms.filter((r) => r.kind !== "hall").map((r) => [r.id, r.name]);
+    const kinds = Object.values(d.types).filter((t) => !["base/stairs", "base/parcel"].includes(t.id)).map((t) => [t.id, t.name]);
+    const pieces = d.pieces.map((p) => [p.id, `${d.rooms.find((r) => r.id === p.room)?.name || p.room}的${p.name || d.types[p.type]?.name || "家具"}`]);
+    const walls = [["back", "靠后墙"], ["front", "靠前墙"], ["left", "靠左墙"], ["right", "靠右墙"], ["middle", "放中间"]];
+    const type = select([["", "我自己来（弄好后点「做好了」）"], ["add", "加一件家具"], ["room", "加一间房"], ["move_to", "把一件家具搬过去"],
+                         ["functions", "让一件家具带上功能"]], ask.type && ["add", "room", "move_to", "functions"].includes(ask.type) ? ask.type : "");
+    const fields = el("div", "home-wish-fields");
+    const inputs = {};
+    const draw = () => {
+      fields.replaceChildren();
+      const t = type.value;
+      const field = (label, input, k) => { inputs[k] = input; const f = el("label", "home-field"); f.append(el("span", "muted small", label), input); fields.append(f); };
+      if (t === "add") {
+        field("什么", select(kinds, ask.kind), "kind");
+        field("放哪间", select(rooms, ask.room), "room");
+        field("放哪", select(walls, ask.where?.against || "back"), "against");
+      } else if (t === "room") {
+        const name = el("input");
+        name.value = ask.name || "";
+        name.maxLength = 8;
+        field("房间名", name, "name");
+        field("多大", select([["small", "小（5×5 米）"], ["medium", "中（7×6 米）"], ["large", "大（9×6 米）"]], ask.size || "medium"), "size");
+      } else if (t === "move_to") {
+        field("哪件", select(pieces, ask.piece), "piece");
+        field("搬到哪间", select(rooms, ask.room), "room");
+        field("放哪", select(walls, ask.where?.against || "back"), "against");
+      } else if (t === "functions") {
+        field("哪件", select(pieces, ask.piece), "piece");
+        field("能做什么", select(Object.entries(d.function_names || {}), (ask.functions || [])[0]), "fn");
+      }
+    };
+    type.onchange = draw;
+    draw();
+    const note = el("input");
+    note.placeholder = "对她说一句（可空）";
+    note.maxLength = 200;
+    const ok = el("button", "primary", "这样同意");
+    ok.onclick = () => {
+      const t = type.value, v = (k) => inputs[k]?.value;
+      if (!t) return answer(w, "approve", { ask: { type: "manual" }, note: note.value });
+      const made = { add: { type: "add", kind: v("kind"), room: v("room"), where: { against: v("against") } },
+                     room: { type: "room", name: v("name"), size: v("size") },
+                     move_to: { type: "move_to", piece: v("piece"), room: v("room"), where: { against: v("against") } },
+                     functions: { type: "functions", piece: v("piece"), functions: [v("fn")] } }[t];
+      answer(w, "approve", { ask: made, note: note.value });
+    };
+    const cancel = el("button", "", "算了");
+    cancel.onclick = () => { this.wishEditing = ""; this.wishesKey = ""; this.renderWishes(); };
+    const row = el("div", "home-look");
+    row.append(ok, cancel);
+    form.append(el("label", "home-field"), fields, note, row);
+    form.firstChild.append(el("span", "muted small", "怎么做"), type);
+    return form;
   }
 
   // The talk at home: what was said, who is working on a reply, and a box to say something in the house.

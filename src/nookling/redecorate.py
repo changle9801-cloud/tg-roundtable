@@ -12,6 +12,7 @@ import re
 
 from . import furniture
 from .furniture import PlacementError
+from . import owner
 from .home import OWNER, Home, bedroom
 
 WEEK = 7 * 86400
@@ -66,17 +67,22 @@ def where_words(piece: dict, ftype: dict, room: dict) -> str:
 
 
 def menu(home: Home, member: str) -> str:
-    """What she sees when she wants to change something at home: her room piece by piece, what she
-    may add, and how to say it. Empty when she has no redecorating left this week."""
+    """What she sees when she wants to change something at home: her room piece by piece, the shared
+    rooms, what she may add, her wishes, and how to say it all. With no redecorating left this week,
+    only wishing; empty when she cannot even wish (no room for another)."""
+    from . import wishes
+
     left = left_this_week(home, member)
     rid = bedroom(member)
     room = next((r for r in home.rooms if r["id"] == rid), None)
-    if left <= 0 or room is None:
+    can_wish = len(wishes.open_wishes(home, member)) < wishes.OPEN_MAX
+    if room is None or (left <= 0 and not can_wish):
         return ""
     types = home.all_types()
     cols, rows = room["size"]
     doors = "、".join(dict.fromkeys(WALL_WORDS[d["wall"]] for d in home.room_doors(room))) or "（没有门）"
-    lines = [f"[改改家里] 这周还能改 {left} 次；这次最多 {PER_TIME} 件小改动。",
+    head = f"这周还能改 {left} 次；这次最多 {PER_TIME} 件小改动。" if left > 0 else f"这周改的次数用完了（一周 {PER_WEEK} 次），这次只能许愿。"
+    lines = [f"[改改家里] {head}",
              f"你的卧室「{room['name']}」：{cols / 2:g} × {rows / 2:g} 米，门在{doors}。里面现在有："]
     for p in home.pieces or []:
         t = types.get(p["type"])
@@ -101,7 +107,7 @@ def menu(home: Home, member: str) -> str:
     for tid, t in types.items():
         if tid not in NOT_HERS:
             lines.append(f"- {tid}：{t['name']}，{t['size'][0]}×{t['size'][1]} 格，{mounts[furniture.mount_of(t)]}")
-    lines.append(f"""规矩：你的卧室随你改。公共房间只能挪家具、转方向、改房间名（每间房一周挪 {SHARED_MOVES} 次、改名 {SHARED_RENAMES} 次，大家一起算，别人会知道是你），要在那间房里改时加 "room":"房间 ID"；在公共房间加东西、扔东西、换颜色，以后许愿。别人的卧室不能动。你加的东西不带功能（想要能用的东西，以后许愿）。卧室最多 {BEDROOM_MAX} 件；名字最长 {NAME_MAX} 个字；床不能全扔掉。
+    lines.append(f"""规矩：你的卧室随你改。公共房间只能挪家具、转方向、改房间名（每间房一周挪 {SHARED_MOVES} 次、改名 {SHARED_RENAMES} 次，大家一起算，别人会知道是你），要在那间房里改时加 "room":"房间 ID"；在公共房间加东西、扔东西、换颜色，把家具搬到别的房间，要一间新房间，让家具带上功能，新本事，都要许愿（每人同时最多 {wishes.OPEN_MAX} 条，许愿不算改的次数）。别人的卧室不能动。你加的东西不带功能。卧室最多 {BEDROOM_MAX} 件；名字最长 {NAME_MAX} 个字；床不能全扔掉。
 放在哪用话说：where 里写 against（back 后墙 / front 前墙 / left 左墙 / right 右墙 / middle 房间中间）和 near（挨着哪件东西，写它的 ID，可空）；挂墙的东西另写 hang（high / middle / low）。靠墙放的会朝着房间里面；也可以写 face：朝哪件东西（ID），或 front / back / left / right。
 真想改的时候才改，不用每次都改满。只输出 JSON：{{"changes": [...], "why": "为什么这样改"}}，changes 里每一项是下面之一：
 {{"do":"add","kind":"种类 ID","name":"可空","color":"#rrggbb，可空","where":{{"against":"back","near":""}},"hang":"","face":""}}
@@ -112,7 +118,14 @@ def menu(home: Home, member: str) -> str:
 {{"do":"remove","piece":"ID"}}
 {{"do":"room_name","name":"新名字"}}（不写 room 就是你的卧室）
 {{"do":"room_color","part":"floor 或 walls","color":"#rrggbb"}}
+{{"do":"wish","what":"想要什么","why":"为什么","ask":null}}：能说清怎么做时，ask 写成下面之一，{owner.name()}点同意就能直接弄好——
+  {{"type":"add","room":"房间 ID","kind":"种类 ID","where":{{"against":"back"}}}}、{{"type":"move_to","piece":"ID","room":"房间 ID","where":{{}}}}、
+  {{"type":"remove","piece":"ID"}}、{{"type":"color","piece":"ID","color":"#rrggbb"}}、{{"type":"room","name":"房间名","size":"small、medium 或 large"}}、
+  {{"type":"functions","piece":"ID","functions":["video.watch"]}}
 改了主意就输出 {{"changes": [], "why": "..."}}。""")
+    mine = wishes.lines_for(home, member)
+    if mine:
+        lines += ["你的心愿：", *mine]
     return "\n".join(lines)
 
 
@@ -211,15 +224,26 @@ def place_by_words(home: Home, piece: dict, ftype: dict, change: dict, moving: s
 def apply(home: Home, member: str, plan: dict) -> dict:
     """Her plan for her bedroom, change by change. What was done goes into 「家里的变化」; what could not be
     done comes back with the reason. Counts as one of her redecorations this week when anything was done."""
+    from . import wishes
+
     changes = plan.get("changes") if isinstance(plan, dict) else None
     if not isinstance(changes, list):
         raise PlacementError("没说要改什么")
-    if left_this_week(home, member) <= 0:
-        raise PlacementError(f"这周已经改过 {PER_WEEK} 次了")
-    done, refused = [], []
+    changes = [c if isinstance(c, dict) else {} for c in changes]
+    wished, refused = [], []
+    for change in [c for c in changes if c.get("do") == "wish"]:  # wishes: not changes, not counted
+        try:
+            wish = wishes.add(home, member, change.get("what"), change.get("why"), change.get("ask"))
+            wished.append(wish["what"])
+        except PlacementError as e:
+            refused.append(str(e))
+    changes = [c for c in changes if c.get("do") != "wish"]
+    if changes and left_this_week(home, member) <= 0:
+        return {"done": [], "refused": refused + [f"这周已经改过 {PER_WEEK} 次了"], "wished": wished}
+    done = []
     for change in changes[:PER_TIME]:
         try:
-            text, undo = _one(home, member, change if isinstance(change, dict) else {})
+            text, undo = _one(home, member, change)
         except PlacementError as e:
             refused.append(str(e))
             continue
@@ -231,7 +255,7 @@ def apply(home: Home, member: str, plan: dict) -> dict:
         home.redecorations.setdefault(member, []).append(home.now())
         del home.redecorations[member][:-10]
         home.save()
-    return {"done": done, "refused": refused}
+    return {"done": done, "refused": refused, "wished": wished}
 
 
 def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
