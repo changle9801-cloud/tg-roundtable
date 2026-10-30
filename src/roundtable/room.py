@@ -42,6 +42,9 @@ ANSWERING_SECONDS = 600  # the user speaks right after a member: likely talking 
 ANSWERING_STREAK = 2  # who usually answers first, unless it already did this many times in a row
 # "你们…", "大家…": the user talks to the whole group, so more members chime in.
 TO_ALL = re.compile(r"你们|大家|各位|所有人|都在")
+# "嗯", "好的", "哈哈": the user only acknowledges; one answer is plenty.
+BRIEF = re.compile(r"^\s*(?:嗯+|哦+|噢+|喔+|好+的?|行|ok|okay|哈+|嘿+|h{2,}|收到|了解|知道了)[\s。.!！~～…]*$", re.I)
+THREAD = 3  # messages back that count as "she is in this exchange"
 DECISIONS_KEPT = 60  # recent dice rolls and their reasons, for the status page
 
 
@@ -86,6 +89,7 @@ class _RoundState:
     wake_checked: set[int] = field(default_factory=set)  # members' messages already rolled for waking a friend
     talked_back: set[str] = field(default_factory=set)  # one comeback each per round, so two can't go on forever
     to_all: bool = False  # the user's message spoke to everyone ("你们", "大家") or showed a picture
+    brief: bool = False  # the user's message only acknowledged something ("嗯")
     discussion_author: str | None = None
     discussion_peer: str | None = None
     discussion_left: int = 2
@@ -187,6 +191,7 @@ class ChatRoom:
         self._extra_turns: dict[str, int] = {}  # granted while a round runs, added at its next step
         self._background: set[asyncio.Task] = set()
         self.decisions: deque[dict] = deque(maxlen=DECISIONS_KEPT)  # why someone did or didn't speak
+        self._about: dict[int, set[str]] = {}  # id(message) -> members a drawing in it was of or for
 
     @property
     def busy(self) -> bool:
@@ -304,6 +309,7 @@ class ChatRoom:
             if self.messages[-1].from_user:
                 state.called.update((*self.messages[-1].mentions, *self.messages[-1].recheck_targets))
                 state.to_all = _draws_everyone(self.messages[-1])
+                state.brief = bool(BRIEF.match(self.messages[-1].text))
                 state.recheck = list(self.messages[-1].recheck_targets)
                 state.recheck_request = self.messages[-1]
         pending: dict[asyncio.Task, _Turn] = {}
@@ -328,6 +334,7 @@ class ChatRoom:
                         state.granted.update(focus.mentions)
                         state.called.update((*focus.mentions, *focus.recheck_targets))
                         state.to_all = _draws_everyone(focus)
+                        state.brief = bool(BRIEF.match(focus.text))
                         state.recheck = list(focus.recheck_targets)
                         state.recheck_request = focus
                     last_start = float("-inf")
@@ -406,7 +413,8 @@ class ChatRoom:
         rng = getattr(self.moderator, "rng", random)
         roll = rng.random()
         hit = roll < chance.value
-        self.decisions.append({"ts": time.time(), "what": what, "why": chance.explain(), "roll": round(roll, 2), "hit": hit})
+        self.decisions.append({"ts": time.time(), "what": what, "who": chance.member, "chance": round(chance.value, 2),
+                               "why": chance.explain(), "roll": round(roll, 2), "hit": hit})
         log.debug("[%s] %s：%s 掷 %.2f → %s", self.key, what, chance.explain(), roll, "是" if hit else "否")
         return hit
 
@@ -480,13 +488,27 @@ class ChatRoom:
     def _line_up(self, candidates: list[Participant], latest: Message,
                  state: _RoundState) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
         """Roll for everyone who may speak: ((how much, who) for those who want to, the same for everyone)."""
-        i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
+        wants, everyone = [], []
+        for p, chance, comeback in self._urges(candidates, latest, state):
+            everyone.append((chance.raw, p.id))
+            if self._roll(chance, "想说话"):
+                wants.append((chance.raw, p.id))
+                if comeback:
+                    state.talked_back.add(p.id)
+        return wants, everyone
+
+    def _urges(self, candidates: list[Participant], latest: Message,
+               state: _RoundState) -> list[tuple[Participant, Urge, bool]]:
+        """(member, how much she wants to speak about ``latest``, whether that uses her comeback this round)."""
+        i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), len(self.messages))
         before = self.messages[i - 1] if i > 0 and not latest.from_user else None
+        recent = {m.speaker_id for m in self.messages[max(0, i - THREAD):i]}
         named = set() if latest.from_user else set(find_mentions(latest.text, candidates, from_user=True))
+        about = self._about.get(id(latest), set())
         answering = self._answering(latest)
         text = " ".join([latest.text, *[str(s.get(k, "")) for s in latest.sources for k in ("title", "excerpt")]]).casefold()
         liveliness = self.follow_up_chance / urge.DEFAULT_LIVELINESS
-        wants, everyone = [], []
+        out = []
         for p in candidates:
             if p.id == latest.speaker_id:
                 continue
@@ -494,15 +516,12 @@ class ChatRoom:
             follows = comeback and before is not None and not before.from_user and before.speaker_id == p.id
             chance = urge.wants_to_speak(
                 p, pending=p.id not in state.spoke, replies=state.started, answering=p.id == answering,
-                to_all=state.to_all, named=comeback and p.id in named, follows=follows,
+                to_all=state.to_all, brief=state.brief, named=comeback and p.id in named, follows=follows,
+                about=p.id in about, in_thread=p.id in recent,
                 interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
                 liveliness=liveliness, crowding=self.follow_up_decay)
-            everyone.append((chance.raw, p.id))
-            if self._roll(chance, "想说话"):
-                wants.append((chance.raw, p.id))
-                if comeback and (follows or p.id in named):
-                    state.talked_back.add(p.id)
-        return wants, everyone
+            out.append((p, chance, comeback and (follows or p.id in named)))
+        return out
 
     def _answering(self, latest: Message) -> str | None:
         """Who the user is most likely talking to without an @ or a reply: whoever spoke just
@@ -701,6 +720,17 @@ class ChatRoom:
         log.info("[%s] %s: %s", self.key, speaker.name, _preview(transcript))
         for sticker in stickers:
             await self.sink.post_sticker(self.key, speaker, sticker)
+        if draws:
+            # A drawing of or for a friend is about her, even when her name is only in the hidden tag.
+            label, description = draws[0]
+            about = set(find_mentions(f"{label} {description}", self.participants, from_user=True))
+            if requester is not None and not requester.from_user:
+                about.add(requester.speaker_id)
+            about.discard(speaker.id)
+            if about:
+                self._about[id(message)] = about
+                for old in list(self._about)[:-50]:
+                    del self._about[old]
         if draws and self.on_draw is not None:
             self.on_draw(self, speaker, draws[0], requester)  # one picture at a time
         return transcript

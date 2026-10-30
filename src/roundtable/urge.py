@@ -16,10 +16,13 @@ from .routine import BUSY_FACTOR, FRIEND_NAME_WAKE_CHANCE, FRIEND_WAKE_CHANCE, W
 
 # Wanting to speak about the latest message: reasons, added up...
 PENDING = 0.2  # the message that opened the round (the user's, or a friend's post) she hasn't answered yet
-TO_ALL = 0.3  # ...and it spoke to everyone ("你们", "大家") or showed a picture
+TO_ALL = 0.35  # ...and it spoke to everyone ("你们", "大家") or showed a picture
 ANSWERING = 0.6  # the user goes on talking to her without an @
 NAMED = 0.5  # a friend's message calls her by name
 FOLLOWS = 0.4  # a friend's message goes right after hers (often against it); once a round
+ABOUT = 0.4  # it is about her: a drawing of or for her
+IN_THREAD = 0.1  # she said something in the last few messages: friends keep talking in pairs
+BRIEF = 0.3  # the user only said "嗯": wanting to answer it at all is this much less
 INTEREST = 0.2  # the topic matches what she likes
 BASE = 0.05  # nothing in particular, she may still chip in
 # ...then multiplied.
@@ -68,7 +71,8 @@ def _activity(cfg) -> str:
 
 
 def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: bool, named: bool, follows: bool,
-                   interested: bool, said: int, busy: bool, liveliness: float, crowding: float) -> Urge:
+                   interested: bool, said: int, busy: bool, liveliness: float, crowding: float,
+                   brief: bool = False, about: bool = False, in_thread: bool = False) -> Urge:
     """How much she wants to say something now that the latest message has landed.
 
     ``replies``: replies already started since the message that opened the round; the more
@@ -89,6 +93,10 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
         parts.append(("被朋友喊名字", NAMED))
     elif follows:
         parts.append(("接她的话", FOLLOWS))
+    if about:
+        parts.append(("说的是她", ABOUT))
+    if in_thread:
+        parts.append(("在这段对话里", IN_THREAD))
     if interested:
         parts.append(("对上兴趣", INTEREST))
     parts.append(("底子", BASE))
@@ -98,6 +106,8 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
         factors.append(("在忙", BUSY_FACTOR))
     if said:
         factors.append((f"这轮说过 {said} 句", TIRED ** said))
+    if brief and pending:
+        factors.append(("阿明只是应了一声", BRIEF))
     if liveliness != 1:
         factors.append(("热闹程度", liveliness))
     return Urge(p.name, parts, factors, sure=liveliness >= 1 / DEFAULT_LIVELINESS)
