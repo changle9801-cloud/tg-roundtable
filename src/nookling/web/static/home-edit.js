@@ -177,7 +177,15 @@ export function renderEditor(app) {
     await app.poll();
   };
   if (app.planMode) return [el("h2", "", "布置"), modes, ...planPanel(app, d, act)];
-  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "从家具栏拖家具进来（手机上点卡片、再点位置）。拖动摆着的家具换位置（按 R 转向），点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
+  const view = el("div", "home-look");
+  for (const [top, label] of [[false, "斜着看"], [true, "从上面看"]]) {
+    const b = el("button", !!app.arrangeTop === top ? "primary" : "", label);
+    b.onclick = () => app.setArrangeTop(top);
+    view.append(b);
+  }
+  const out = [el("h2", "", "布置"), modes, view, el("p", "muted small",
+    "从家具栏拖家具进来（手机上点卡片、再点位置）。拖家具：挪动；右键或 R：转 90°（加 Shift 反着转）；Esc：放下不动、取消选中。"
+    + "拖空地：转镜头；Shift+拖：平移；滚轮：缩放。橙色箭头指着家具的正面。放不下、挡门、叠在一起的会退回原处。")];
 
   // ---- the selected piece ----
   const piece = d.pieces.find((p) => p.id === app.selectedPiece);
@@ -193,7 +201,7 @@ export function renderEditor(app) {
     color.value = piece.color || type.color || "#888888";
     color.onchange = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { color: color.value }));
     const turn = el("button", "", "转 90°");
-    turn.onclick = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { turn: (piece.turn + 90) % 360 }));
+    turn.onclick = () => app.turnPiece(piece, 90);
     const remove = el("button", "danger", "删掉");
     remove.onclick = () => act(async () => { await send("DELETE", `/api/home/pieces/${piece.id}`); app.selectedPiece = ""; });
     const row = el("div", "home-look");
