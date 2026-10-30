@@ -100,14 +100,18 @@
         </div>
         <div class="grid3">
           <label class="field">
-            <span>第二个人接话的概率（%） <small>每句话总有一个人回；之后还有没有人接，按这个概率</small></span>
+            <span>热闹程度（%） <small>默认 50；越高大家越想接话，0 只回被点名的</small></span>
             <input id="follow-up-chance" type="number" min="0" max="100">
           </label>
           <label class="field">
-            <span>之后每多一个人，概率再乘（%） <small>例如 50% 后乘 40%，第三个人约 20%</small></span>
+            <span>回的人越多越不想接（%） <small>已经有人回了，再接的意愿乘这个数；默认 40</small></span>
             <input id="follow-up-decay" type="number" min="0" max="100">
           </label>
-          <div class="muted small" style="align-self:center">被 @ 的人总会回话；都填 100 就是以前那种每人都说</div>
+          <div class="muted small" style="align-self:center">被 @、被喊名字的人总会回话，你的消息总有人回；热闹程度填 100 就是人人都说到额度用完</div>
+        </div>
+        <div class="field">
+          <span>谁爱接谁的话 <small>一行是一个成员：那一列的人刚说完话，她更想接（正数）还是懒得接（负数）。−0.2 到 0.3，空着是 0；0.2 大约让她多两成想接</small></span>
+          <div id="affinity-table" class="affinity"></div>
         </div>
       </div>
     </section>

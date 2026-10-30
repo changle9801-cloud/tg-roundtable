@@ -27,6 +27,8 @@ from .config import (
 from .memory import LEARN_MODES
 from .routine import valid_range
 from .tools import build_tools, normalize_tools
+from .transcript import USER
+from .urge import AFFINITY_MAX, AFFINITY_MIN
 
 SETTINGS_FILE = "settings.json"
 SECRETS_FILE = "secrets.json"
@@ -54,6 +56,30 @@ def parse_hours(value: str) -> tuple[int, int] | None:
     if not (0 <= start <= 23 and 1 <= end <= 24) or start == end:
         return None
     return start, end
+
+
+def normalize_affinity(raw, member_ids: set[str]) -> dict[str, dict[str, float]]:
+    """Who likes to answer whom: {member: {speaker or "user": -0.2..0.3}}; zeros and old members dropped."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(row, dict) for row in raw.values()):
+        raise ConfigError("「谁爱接谁的话」格式不对")
+    out: dict[str, dict[str, float]] = {}
+    for member, row in raw.items():
+        if member not in member_ids:
+            continue
+        for speaker, value in row.items():
+            if speaker == member or (speaker != USER and speaker not in member_ids):
+                continue
+            try:
+                value = round(float(value), 2)
+            except (TypeError, ValueError):
+                raise ConfigError("「谁爱接谁的话」里有不是数字的值") from None
+            if not AFFINITY_MIN <= value <= AFFINITY_MAX:
+                raise ConfigError(f"「谁爱接谁的话」要在 {AFFINITY_MIN} 到 {AFFINITY_MAX} 之间")
+            if value:
+                out.setdefault(member, {})[speaker] = value
+    return out
 SECRET_FIELDS = ("bot_token", "api_key")
 PARTICIPANT_FIELDS = [f for f in fields(ParticipantConfig) if f.name not in SECRET_FIELDS]
 
@@ -264,6 +290,7 @@ def normalize_settings(raw: dict) -> dict:
     if vision["member"] not in ("help", "auto", "off") and vision["member"] not in ids:
         vision["member"] = "help"
     tools = normalize_tools(raw.get("tools"), set(ids))
+    rnd["affinity"] = normalize_affinity((raw.get("round") or {}).get("affinity"), set(ids))
     if raw.get("life") is not None and not isinstance(raw["life"], dict):
         raise ConfigError("日常设置格式不对")
     life_raw = {**base["life"], **(raw.get("life") or {})}

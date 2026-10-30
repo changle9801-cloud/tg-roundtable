@@ -168,6 +168,7 @@ class ChatRoom:
         self.max_parallel = round_cfg.max_parallel
         self.follow_up_chance = round_cfg.follow_up_chance
         self.follow_up_decay = round_cfg.follow_up_decay
+        self.affinity = round_cfg.affinity  # who likes to answer whom
         self.store = store
         self.stickers = stickers
         self.sticker_limit = sticker_limit  # 0: stickers off, tags are stripped
@@ -216,6 +217,7 @@ class ChatRoom:
         self.max_parallel = round_cfg.max_parallel
         self.follow_up_chance = round_cfg.follow_up_chance
         self.follow_up_decay = round_cfg.follow_up_decay
+        self.affinity = round_cfg.affinity  # who likes to answer whom
         # Newcomers start from the beginning of the kept history (capped by MAX_UNSEEN).
         self.cursors = {p.id: self.cursors.get(p.id, 0) for p in self.participants}
 
@@ -518,6 +520,7 @@ class ChatRoom:
                 p, pending=p.id not in state.spoke, replies=state.started, answering=p.id == answering,
                 to_all=state.to_all, brief=state.brief, named=comeback and p.id in named, follows=follows,
                 about=p.id in about, in_thread=p.id in recent,
+                fondness=self.affinity.get(p.id, {}).get(latest.speaker_id, 0.0), of=latest.speaker_name,
                 interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
                 liveliness=liveliness, crowding=self.follow_up_decay)
             out.append((p, chance, comeback and (follows or p.id in named)))

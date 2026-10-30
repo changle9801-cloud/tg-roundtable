@@ -24,6 +24,7 @@ ABOUT = 0.4  # it is about her: a drawing of or for her
 IN_THREAD = 0.1  # she said something in the last few messages: friends keep talking in pairs
 BRIEF = 0.3  # the user only said "嗯": wanting to answer it at all is this much less
 INTEREST = 0.2  # the topic matches what she likes
+AFFINITY_MIN, AFFINITY_MAX = -0.2, 0.3  # she is this much keener (or less keen) to answer whoever just spoke
 BASE = 0.05  # nothing in particular, she may still chip in
 # ...then multiplied.
 ACTIVITY = {"low": 0.6, "normal": 1.0, "high": 1.3}
@@ -57,7 +58,7 @@ class Urge:
     def value(self) -> float:
         if self.sure:
             return 1.0
-        return self.raw if self.cap is None else min(self.raw, self.cap)
+        return max(0.0, self.raw if self.cap is None else min(self.raw, self.cap))
 
     def explain(self) -> str:
         parts = " + ".join(f"{name} {n:g}" for name, n in self.parts)
@@ -72,7 +73,8 @@ def _activity(cfg) -> str:
 
 def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: bool, named: bool, follows: bool,
                    interested: bool, said: int, busy: bool, liveliness: float, crowding: float,
-                   brief: bool = False, about: bool = False, in_thread: bool = False) -> Urge:
+                   brief: bool = False, about: bool = False, in_thread: bool = False,
+                   fondness: float = 0.0, of: str = "") -> Urge:
     """How much she wants to say something now that the latest message has landed.
 
     ``replies``: replies already started since the message that opened the round; the more
@@ -102,6 +104,8 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
     parts.append(("底子", BASE))
     level = _activity(p.cfg)
     factors = [(f"活跃度{ACTIVITY_NAMES.get(level, level)}", ACTIVITY.get(level, 1.0))]
+    if fondness:  # who just spoke: she answers some friends more readily than others (0.2 = a fifth keener)
+        factors.append((f"爱接{of}的话" if fondness > 0 else f"懒得接{of}的话", 1 + fondness))
     if busy:
         factors.append(("在忙", BUSY_FACTOR))
     if said:

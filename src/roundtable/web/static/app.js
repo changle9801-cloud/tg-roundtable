@@ -779,6 +779,38 @@ function renderRules() {
   const parallel = $("#max-parallel");
   parallel.value = r.max_parallel;
   parallel.oninput = (e) => { r.max_parallel = Number(e.target.value); changed(); };
+  renderAffinity(r);
+}
+
+function renderAffinity(r) {
+  r.affinity ||= {};
+  const members = draft.participants.filter((p) => p.enabled);
+  const columns = [{ id: "user", name: "阿明" }, ...members];
+  const cell = (row, col) => {
+    if (row.id === col.id) return h("td", { class: "muted" }, "—");
+    const key = `aff-${row.id}-${col.id}`;
+    return h("td", {}, h("input", {
+      type: "number", step: "0.05", min: "-0.2", max: "0.3", placeholder: "0", style: "width:64px",
+      value: r.affinity[row.id]?.[col.id] ?? "",
+      oninput: (e) => {
+        const raw = e.target.value.trim();
+        const v = Number(raw);
+        const ok = raw === "" || (Number.isFinite(v) && v >= -0.2 && v <= 0.3);
+        e.target.style.borderColor = ok ? "" : "var(--err)";
+        if (!ok) { invalid.add(key); return; }
+        invalid.delete(key);
+        const line = (r.affinity[row.id] ||= {});
+        if (raw === "" || v === 0) delete line[col.id]; else line[col.id] = v;
+        if (!Object.keys(line).length) delete r.affinity[row.id];
+        changed();
+      },
+    }));
+  };
+  $("#affinity-table").replaceChildren(members.length < 2 ? h("div", { class: "muted" }, "至少要有两个启用的成员") :
+    h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "↓ 接 →"), ...columns.map((c) => h("th", {}, c.name || c.id)))),
+      h("tbody", {}, ...members.map((row) =>
+        h("tr", {}, h("th", {}, row.name || row.id), ...columns.map((col) => cell(row, col)))))));
 }
 
 // ---------- prompts ----------

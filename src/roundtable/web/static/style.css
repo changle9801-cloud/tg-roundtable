@@ -358,3 +358,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 }
 .toast.err { border-left-color: var(--err); }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
+.affinity { overflow-x: auto; }
+.affinity table { border-collapse: collapse; font-size: 13px; }
+.affinity th, .affinity td { padding: 4px 6px; text-align: center; white-space: nowrap; }
+.affinity thead th { color: var(--muted); font-weight: 500; }
+.affinity tbody th { text-align: left; }

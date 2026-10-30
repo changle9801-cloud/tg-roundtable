@@ -32,6 +32,9 @@ class RoundConfig:
     # Being @-mentioned always gets an answer. 1.0 and 1.0 = everyone may speak.
     follow_up_chance: float = 0.5
     follow_up_decay: float = 0.4
+    # Who likes to answer whom: affinity[member][speaker] adds to her urge to speak when that
+    # one ("user" for the owner) has just spoken; -0.2 to 0.3, missing = 0. See docs/urge-to-speak.md.
+    affinity: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
