@@ -250,7 +250,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         body = await request.json()
         size = body.get("size", "")
         response = house(lambda: runtime.home.add_room(body.get("name", ""), size if isinstance(size, list) else str(size),
-                                                       body.get("at"), str(body.get("kind") or "room")))
+                                                       body.get("at"), str(body.get("kind") or "room"), int(body.get("level") or 0)))
         runtime.refresh_prompts()  # the members' prompt lists the rooms of the house
         return response
 
@@ -271,7 +271,19 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def new_door(request):
         body = await request.json()
-        return house(lambda: runtime.home.add_door(str(body.get("line", "")), body.get("at"), outside=bool(body.get("outside"))))
+        return house(lambda: runtime.home.add_door(str(body.get("line", "")), body.get("at"), outside=bool(body.get("outside")),
+                                                   level=int(body.get("level") or 0)))
+
+    async def new_floor(request):
+        body = await request.json()
+        return house(lambda: runtime.home.add_floor(body.get("name", "")))
+
+    async def edit_floor(request):
+        body = await request.json()
+        return house(lambda: runtime.home.rename_floor(int(request.match_info["level"]), body.get("name", "")))
+
+    async def remove_floor(request):
+        return house(lambda: runtime.home.delete_floor(int(request.match_info["level"])) or {"ok": True})
 
     async def remove_door(request):
         return house(lambda: runtime.home.remove_door(request.match_info["did"]) or {"ok": True})
@@ -607,6 +619,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_delete("/api/home/rooms/{rid}", remove_room)
     app.router.add_post("/api/home/doors", new_door)
     app.router.add_delete("/api/home/doors/{did}", remove_door)
+    app.router.add_post("/api/home/floors", new_floor)
+    app.router.add_put(r"/api/home/floors/{level:\d+}", edit_floor)
+    app.router.add_delete(r"/api/home/floors/{level:\d+}", remove_floor)
     app.router.add_post("/api/home/models", upload_model)
     app.router.add_get("/api/home/models/{name}", get_model)
     app.router.add_post("/api/home/images", upload_image)

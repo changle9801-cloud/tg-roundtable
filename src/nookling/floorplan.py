@@ -88,9 +88,14 @@ def neighbours(doors: list[dict], rooms: list[dict]) -> dict[str, set[str]]:
     return graph
 
 
-def unreachable(doors: list[dict], rooms: list[dict]) -> list[str]:
-    """Rooms nobody can walk into from the front door (or from the first room, with no front door)."""
+def unreachable(doors: list[dict], rooms: list[dict], links=()) -> list[str]:
+    """Rooms nobody can walk into from the front door (or from the first room, with no front door).
+    ``links``: pairs of rooms joined some other way (stairs: the room below and the one above)."""
     graph = neighbours(doors, rooms)
+    for a, b in links:
+        if a in graph and b in graph:
+            graph[a].add(b)
+            graph[b].add(a)
     starts = [s for d in doors if d.get("outside") for s in door_sides(d, rooms)] or [rooms[0]["id"]] if rooms else []
     seen, todo = set(starts), deque(starts)
     while todo:

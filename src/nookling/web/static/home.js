@@ -37,6 +37,7 @@ export function close() {
 // Doors sit on grid lines between two rooms, or between a room and the outside (docs/floorplan.md).
 
 const CELL = 0.5;
+const STOREY = 3; // units from one floor to the next
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 
 function layout(data, level = 0) {
@@ -46,6 +47,7 @@ function layout(data, level = 0) {
     rects[room.id] = { x: room.at[0] * CELL, z: room.at[1] * CELL, w: room.size[0] * CELL, d: room.size[1] * CELL, room };
   }
   const all = Object.values(rects);
+  if (!all.length) return null; // a floor with no rooms yet
   const X0 = Math.min(...all.map((r) => r.x)), Z0 = Math.min(...all.map((r) => r.z));
   const W = Math.max(...all.map((r) => r.x + r.w)), D = Math.max(...all.map((r) => r.z + r.d));
   const doors = (data.doors || []).filter((d) => (d.level ?? 0) === level).map((d) => {
@@ -60,6 +62,7 @@ function layout(data, level = 0) {
   const frontRoom = frontDoor ? frontDoor.rooms[0] : (rects.living ? "living" : all[0]?.room.id);
   const fr = rects[frontRoom];
   const front = frontDoor ? { x: frontDoor.x, z: frontDoor.z } : { x: fr.x + fr.w / 2, z: fr.z + fr.d };
+  if (!frontDoor && level > 0) return { W, D, X0, Z0, rects, doors, level }; // the front door is downstairs
   const out = frontDoor ? { front: [0, 1], back: [0, -1], left: [-1, 0], right: [1, 0] }[wallOf(fr, frontDoor)] : [0, 1];
   return { W, D, X0, Z0, rects, doors, front, frontRoom, frontInside: frontDoor && fr ? inFront(fr, frontDoor) : front,
            outside: { x: front.x + out[0] * 3, z: front.z + out[1] * 3 } };
@@ -97,8 +100,9 @@ function route(L, fromRoom, toRoom, from, to) {
 
 const cellKey = (x, z) => `${x},${z}`;
 
-function walkGrid(L, data) {
+function walkGrid(L, data, stairwells = []) {
   const rooms = new Map(), blocked = new Map(), passes = new Set();
+  for (const k of stairwells) blocked.set(k, "stairwell");
   for (const r of Object.values(L.rects)) {
     const [ax, az] = r.room.at;
     for (let i = 0; i < r.room.size[0]; i++) for (let j = 0; j < r.room.size[1]; j++) rooms.set(cellKey(ax + i, az + j), r.room.id);
@@ -312,6 +316,13 @@ const TEMPLATES = {
     g.add(box(W * 0.82, 0.02, 0.12, 0xe8d7b0, 0, H, 0));
     g.add(box(0.12, 0.02, D * 0.82, 0xe8d7b0, 0, H, 0));
   },
+  stairs: (g, W, D, H, c) => {
+    const n = 12;
+    for (let i = 0; i < n; i++) {
+      g.add(box(W, (H * (i + 1)) / n, D / n, i % 2 ? shade(c, 0.9) : c, 0, 0, D / 2 - ((i + 0.5) * D) / n));
+    }
+    for (const side of [-1, 1]) g.add(box(0.05, 0.9, D, 0x5d4037, side * (W / 2 - 0.03), H * 0.5, 0));
+  },
   boxes: (g, W, D, H, c) => {
     [[-0.4, -0.4, 0.6], [0.4, -0.4, 0.7], [-0.4, 0.4, 0.8]].forEach(([dx, dz, h]) => g.add(box(0.7, h, 0.7, c, dx, 0, dz)));
     g.add(box(0.7, 0.5, 0.7, shade(c, 0.85), -0.4, 0.6, -0.4));
@@ -514,7 +525,7 @@ class Figure {
   }
 
   walkTo(points) {
-    this.path = points.map((p) => new THREE.Vector3(p.x, 0, p.z));
+    this.path = points.map((p) => new THREE.Vector3(p.x, p.y ?? this.root.position.y, p.z));
   }
 
   update(dt, t) {
@@ -522,15 +533,15 @@ class Figure {
     let walking = false;
     if (this.path.length) {
       const target = this.path[0];
-      const delta = target.clone().sub(pos).setY(0);
+      const delta = target.clone().sub(pos);
       const dist = delta.length();
       const step = WALK_SPEED * dt;
       if (dist <= step) {
-        pos.set(target.x, 0, target.z);
+        pos.copy(target);
         this.path.shift();
       } else {
         pos.add(delta.multiplyScalar(step / dist));
-        this.root.rotation.y = Math.atan2(delta.x, delta.z);
+        if (Math.abs(delta.x) + Math.abs(delta.z) > 1e-6) this.root.rotation.y = Math.atan2(delta.x, delta.z);
       }
       walking = this.path.length > 0 || dist > step;
     }
@@ -547,8 +558,6 @@ class Figure {
     if (!walking) {
       this.root.rotation.y = this.face;
       pos.y = this.y + (pose === "stand" ? Math.abs(Math.sin(t * 1.5 + this.phase)) * 0.015 : 0);
-    } else {
-      pos.y = 0;
     }
   }
 
@@ -582,6 +591,7 @@ class HomeApp {
     this.arrangeBtn.onclick = () => this.toggleArrange();
     this.arranging = false;
     this.selectedPiece = "";
+    this.view = 0; // the floor being looked at
     this.stage.append(this.labelLayer, this.banner, this.arrangeBtn);
     const wrap = el("div", "home-wrap");
     wrap.append(this.stage, this.panel);
@@ -689,80 +699,195 @@ class HomeApp {
     this.grid.clear();
     this.planMarks.clear();
     this.clickable = [];
-    this.L = layout(data);
-    const L = this.L;
-    const ground = new THREE.Mesh(new THREE.BoxGeometry(L.W - L.X0 + 6, 0.05, L.D - L.Z0 + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
-    ground.position.set((L.X0 + L.W) / 2, -0.09, (L.Z0 + L.D) / 2 + 1);
+    this.levels = (data.floors || [{ level: 0 }]).map((f) => f.level).sort((a, b) => a - b);
+    if (!this.levels.includes(this.view)) this.view = 0;
+    this.Ls = {};
+    for (const lv of this.levels) { const Lx = layout(data, lv); if (Lx) this.Ls[lv] = Lx; }
+    this.L = this.Ls[this.view] || { rects: {}, doors: [] }; // a new floor has no rooms yet
+    this.L0 = this.Ls[0];
+    this.rects = Object.assign({}, ...Object.values(this.Ls).map((Lx) => Lx.rects));
+    this.levelOf = Object.fromEntries(data.rooms.map((r) => [r.id, r.level ?? 0]));
+    const all = Object.values(this.Ls);
+    this.bounds = { X0: Math.min(...all.map((b) => b.X0)), Z0: Math.min(...all.map((b) => b.Z0)),
+                    X1: Math.max(...all.map((b) => b.W)), Z1: Math.max(...all.map((b) => b.D)) };
+    const B = this.bounds;
+    const ground = new THREE.Mesh(new THREE.BoxGeometry(B.X1 - B.X0 + 6, 0.05, B.Z1 - B.Z0 + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
+    ground.position.set((B.X0 + B.X1) / 2, -0.09, (B.Z0 + B.Z1) / 2 + 1);
     this.house.add(ground);
-    this.roomLabels = [];
-    for (const room of data.rooms) {
-      const r = L.rects[room.id];
-      if (!r) continue;
-      const hall = room.kind === "hall";
-      const kind = room.id.startsWith("bed-") ? "bed" : hall ? "hall" : room.id;
-      const tile = room.floor?.tile || 1;
-      const look = surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile);
-      if ((data.unreachable || []).includes(room.id)) look.color.lerp(new THREE.Color(0xe57373), look.map ? 0.5 : 0.6);
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), look);
-      floor.position.set(r.x + r.w / 2, hall ? -0.03 : -0.04, r.z + r.d / 2);
-      this.house.add(floor);
-      if (!hall || room.walls) walls(this.house, r, room.walls); // hallways are open, like the old corridors
-      const lines = [];
-      for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, 0.012, r.z, r.x + i * CELL, 0.012, r.z + r.d);
-      for (let j = 0; j <= room.size[1]; j++) lines.push(r.x, 0.012, r.z + j * CELL, r.x + r.w, 0.012, r.z + j * CELL);
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
-      this.grid.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x9e9384, transparent: true, opacity: 0.45 })));
-      if (!hall) this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, 0.2, r.z + r.d - 0.25) });
+    // Stairs: where she gets on downstairs, the steps, where she gets off upstairs.
+    this.stairs = [];
+    const wells = {}; // level -> cells where stairs from below come up
+    for (const piece of data.pieces) {
+      const type = data.types[piece.type], r = this.rects[piece.room];
+      if (!type || type.template !== "stairs" || !r) continue;
+      const lv = this.levelOf[piece.room];
+      const [tw, td] = turnedSize(type.size, piece.turn);
+      const c = { x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL };
+      const a = (piece.turn * Math.PI) / 180, dir = { x: -Math.sin(a), z: Math.cos(a) }, half = (type.size[1] * CELL) / 2;
+      const at = (k, level) => ({ x: c.x + dir.x * k, z: c.z + dir.z * k, y: level * STOREY });
+      const top = at(-(half + 0.5), lv + 1);
+      const upper = Object.values(this.Ls[lv + 1]?.rects || {}).find((q) => top.x > q.x && top.x < q.x + q.w && top.z > q.z && top.z < q.z + q.d);
+      this.stairs.push({ lower: lv, room: piece.room, upperRoom: upper?.room.id, bottom: at(half + 0.5, lv), top,
+                         climb: [at(half, lv), at(-half, lv + 1)] });
+      const [ax, az] = r.room.at;
+      for (let i = 0; i < tw; i++) for (let j = 0; j < td; j++) (wells[lv + 1] ||= []).push(cellKey(ax + piece.at[0] + i, az + piece.at[1] + j));
     }
-    // Seats come from the furniture: each use of each placed piece is a spot someone can take.
+    this.roomLabels = [];
     this.seats = {};
     this.screens = {};
     this.pieceAt = {}; // piece id -> its centre and the way its front faces, for standing in front of it
-    for (const piece of data.pieces) {
-      const type = data.types[piece.type], r = L.rects[piece.room];
-      if (!type || !r) continue;
-      drawPiece(this.furniture, r, piece, type, this.clickable, new Set(data.available || []));
-      (type.uses || []).forEach((use, i) => {
-        (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...useSpot(r, piece, type, use) });
-      });
-      const [tw, td] = turnedSize(type.size, piece.turn);
-      const centre = { id: piece.id, room: piece.room, x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL,
-                       turn: piece.turn, reach: ((piece.turn % 180 ? tw : td) / 2) * CELL };
-      this.pieceAt[piece.id] = centre;
-      if (type.screen) (this.screens[piece.room] ||= []).push(centre);
+    this.furnitureLevels = {};
+    this.walks = {};
+    for (const lv of this.levels) {
+      const Lx = this.Ls[lv];
+      if (!Lx) continue;
+      const base = lv * STOREY, faint = lv < this.view;
+      const g = new THREE.Group(), fg = new THREE.Group();
+      g.position.y = base;
+      fg.position.y = base;
+      g.visible = fg.visible = lv <= this.view; // floors above the one being viewed are hidden
+      this.house.add(g);
+      this.furniture.add(fg);
+      this.furnitureLevels[lv] = fg;
+      for (const room of data.rooms) {
+        const r = Lx.rects[room.id];
+        if (!r) continue;
+        const hall = room.kind === "hall";
+        const kind = room.id.startsWith("bed-") ? "bed" : hall ? "hall" : room.id;
+        const tile = room.floor?.tile || 1;
+        const look = surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile);
+        if ((data.unreachable || []).includes(room.id)) look.color.lerp(new THREE.Color(0xe57373), look.map ? 0.5 : 0.6);
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), look);
+        floor.position.set(r.x + r.w / 2, hall ? -0.03 : -0.04, r.z + r.d / 2);
+        g.add(floor);
+        if (!hall || room.walls) walls(g, r, room.walls); // hallways are open, like the old corridors
+        if (lv === this.view) {
+          const lines = [];
+          for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, base + 0.012, r.z, r.x + i * CELL, base + 0.012, r.z + r.d);
+          for (let j = 0; j <= room.size[1]; j++) lines.push(r.x, base + 0.012, r.z + j * CELL, r.x + r.w, base + 0.012, r.z + j * CELL);
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
+          this.grid.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x9e9384, transparent: true, opacity: 0.45 })));
+          if (!hall) this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, base + 0.2, r.z + r.d - 0.25) });
+        }
+      }
+      for (const k of wells[lv] || []) { // the stairwell: an opening in the floor
+        const [x, z] = k.split(",").map(Number);
+        const hole = new THREE.Mesh(new THREE.BoxGeometry(CELL, 0.1, CELL), new THREE.MeshLambertMaterial({ color: 0x5d4f45 }));
+        hole.position.set((x + 0.5) * CELL, 0.0, (z + 0.5) * CELL);
+        g.add(hole);
+      }
+      // Seats come from the furniture: each use of each placed piece is a spot someone can take.
+      for (const piece of data.pieces) {
+        const type = data.types[piece.type], r = Lx.rects[piece.room];
+        if (!type || !r) continue;
+        drawPiece(fg, r, piece, type, lv === this.view ? this.clickable : [], new Set(data.available || []));
+        (type.uses || []).forEach((use, i) => {
+          const spot = useSpot(r, piece, type, use);
+          (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...spot, y: spot.y + base });
+        });
+        const [tw, td] = turnedSize(type.size, piece.turn);
+        const centre = { id: piece.id, room: piece.room, x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL,
+                         y: base, turn: piece.turn, reach: ((piece.turn % 180 ? tw : td) / 2) * CELL };
+        this.pieceAt[piece.id] = centre;
+        if (type.screen) (this.screens[piece.room] ||= []).push(centre);
+      }
+      if (faint) { // the floors below the one being viewed: see-through, behind it
+        for (const grp of [g, fg]) grp.traverse((o) => {
+          if (!o.material) return;
+          o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+          for (const m of [].concat(o.material)) { m.transparent = true; m.opacity = 0.18; m.depthWrite = false; }
+        });
+      }
     }
-    this.walk = walkGrid(L, data);
-    for (const d of L.doors) { // a mark on every door, for selecting it in the floor-plan mode
+    for (const lv of this.levels) if (this.Ls[lv]) this.walks[lv] = walkGrid(this.Ls[lv], data, wells[lv] || []);
+    if (this.L) for (const d of this.L.doors) { // a mark on every door of the floor being viewed, for the floor-plan mode
       const along = d.line === "z";
       const mark = new THREE.Mesh(new THREE.BoxGeometry(along ? d.w : 0.3, 0.08, along ? 0.3 : d.w),
         new THREE.MeshBasicMaterial({ color: d.outside ? 0x43a047 : d.id === this.selectedDoor ? 0xf0a020 : 0xff8f00 }));
-      mark.position.set(d.x, 0.06, d.z);
+      mark.position.set(d.x, this.view * STOREY + 0.06, d.z);
       mark.userData = { door: d.id };
       this.planMarks.add(mark);
     }
-    this.center = new THREE.Vector3((L.X0 + L.W) / 2, 0, (L.Z0 + L.D) / 2);
+    this.center = new THREE.Vector3((B.X0 + B.X1) / 2, this.view * STOREY, (B.Z0 + B.Z1) / 2);
     if (!this.aimed) this.aimCamera(); // keep the viewer's own angle and zoom across redraws
-    else this.resize(); // the house may have grown: fit it again
+    else { // keep the viewer's angle, raised or lowered to the floor being viewed; the house may have grown: fit it again
+      const dy = this.center.y - this.controls.target.y;
+      this.camera.position.y += dy;
+      this.controls.target.y += dy;
+      this.resize();
+    }
     this.showHighlight();
+    this.renderFloors();
+  }
+
+  // ---- floors: which one is being looked at ----
+
+  renderFloors() {
+    if (!this.floorBar) {
+      this.floorBar = el("div", "home-floors");
+      this.stage.append(this.floorBar);
+    }
+    const floors = this.data?.floors || [];
+    this.floorBar.hidden = floors.length < 2;
+    this.floorBar.replaceChildren(...[...floors].sort((a, b) => b.level - a.level).map((f) => {
+      const b = el("button", f.level === this.view ? "on" : "", f.name);
+      b.type = "button";
+      b.onclick = () => this.setView(f.level);
+      return b;
+    }));
+  }
+
+  setView(level) {
+    if (level === this.view) return;
+    this.view = level;
+    this.selectedRoom = this.selectedDoor = this.selectedPiece = "";
+    this.layoutKey = "";
+    this.editorKey = "";
+    this.apply(this.data);
+  }
+
+  // Walking from one place to another, up or down stairs when they are on different floors.
+  walkBetween(a, la, ra, b, lb, rb) {
+    const flat = (level, p, rp, q, rq) => {
+      const Lx = this.Ls[level];
+      const pts = (Lx && (walkPath(this.walks[level], p, q) || route(Lx, rp, rq, p, q))) || [q];
+      return pts.map((pt) => ({ x: pt.x, z: pt.z, y: pt.y ?? level * STOREY }));
+    };
+    const out = [];
+    let pos = a, level = la, room = ra;
+    for (let guard = 0; level !== lb && guard < 8; guard++) {
+      const up = lb > level;
+      const options = this.stairs.filter((st) => (up ? st.lower === level : st.lower === level - 1));
+      if (!options.length) break; // no stairs: she just arrives
+      const near = (st) => Math.hypot((up ? st.bottom : st.top).x - pos.x, (up ? st.bottom : st.top).z - pos.z);
+      const st = options.sort((p, q) => near(p) - near(q))[0];
+      out.push(...flat(level, pos, room, up ? st.bottom : st.top, up ? st.room : st.upperRoom));
+      out.push(...(up ? st.climb : [...st.climb].reverse()), up ? st.top : st.bottom);
+      pos = up ? st.top : st.bottom;
+      level += up ? 1 : -1;
+      room = up ? st.upperRoom : st.room;
+    }
+    out.push(...flat(level, pos, room, b, rb));
+    return out;
   }
 
   // ---- arranging: top-down, on the grid ----
 
   aimCamera() {
-    if (!this.L) return;
-    const span = Math.max(this.L.W - this.L.X0, this.L.D - this.L.Z0);
+    if (!this.bounds) return;
+    const span = Math.max(this.bounds.X1 - this.bounds.X0, this.bounds.Z1 - this.bounds.Z0);
     this.controls.target.copy(this.center);
     if (this.arranging) {
       this.controls.minPolarAngle = 0;
       this.controls.maxPolarAngle = 0;
       this.controls.enableRotate = false;
-      this.camera.position.set(this.center.x, span * 2, this.center.z + 0.001);
+      this.camera.position.set(this.center.x, this.center.y + span * 2, this.center.z + 0.001);
     } else {
       this.controls.minPolarAngle = Math.PI * 0.12;
       this.controls.maxPolarAngle = Math.PI * 0.42;
       this.controls.enableRotate = true;
-      this.camera.position.set(this.center.x + span, span * 0.95, this.center.z + span);
+      this.camera.position.set(this.center.x + span, this.center.y + span * 0.95, this.center.z + span);
     }
     this.camera.zoom = 1;
     this.camera.updateProjectionMatrix();
@@ -859,7 +984,7 @@ class HomeApp {
     const [x, z, w, d] = box;
     this.planBox = new THREE.Mesh(new THREE.BoxGeometry(w * CELL, 0.04, d * CELL),
       new THREE.MeshBasicMaterial({ color: 0x3b6cf6, transparent: true, opacity: 0.35 }));
-    this.planBox.position.set((x + w / 2) * CELL, 0.08, (z + d / 2) * CELL);
+    this.planBox.position.set((x + w / 2) * CELL, (this.view || 0) * STOREY + 0.08, (z + d / 2) * CELL);
     this.scene.add(this.planBox);
   }
 
@@ -888,7 +1013,8 @@ class HomeApp {
       const name = prompt("新房间叫什么？（只写「走廊」就是一条走廊）", "");
       if (name === null) return;
       const hall = name.trim() === "走廊" || name.trim() === "";
-      return done(() => send("POST", "/api/home/rooms", { name: name.trim(), kind: hall ? "hall" : "room", size: [w, d], at: [x, z] }));
+      return done(() => send("POST", "/api/home/rooms", { name: name.trim(), kind: hall ? "hall" : "room", size: [w, d], at: [x, z],
+                                                          level: this.view || 0 }));
     }
   }
 
@@ -905,7 +1031,8 @@ class HomeApp {
         && o.x < (along + 3) * CELL && (along * CELL) < o.x + o.w
       : (Math.abs(o.x - r.x - (hit.side === "right" ? r.w : 0)) < 1e-6 || Math.abs(o.x + o.w - r.x - (hit.side === "right" ? r.w : 0)) < 1e-6)
         && o.z < (along + 3) * CELL && (along * CELL) < o.z + o.d));
-    if (shared) return done(() => send("POST", "/api/home/doors", { line, at }));
+    if (shared) return done(() => send("POST", "/api/home/doors", { line, at, level: this.view || 0 }));
+    if (this.view) { say("大门只能开在一楼的外墙上", true); return; }
     if (!confirm(`这是${r.room.name}的外墙。把大门挪到这里？`)) return;
     return done(() => send("POST", "/api/home/doors", { line, at, outside: true }));
   }
@@ -914,12 +1041,13 @@ class HomeApp {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     this.ray.setFromCamera(mouse, this.camera);
-    return { mouse, point: this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3()) };
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(this.view || 0) * STOREY);
+    return { mouse, point: this.ray.ray.intersectPlane(plane, new THREE.Vector3()) };
   }
 
   startDrag(e) {
     this.groundAt(e);
-    const hit = this.ray.intersectObjects(this.furniture.children, true)[0];
+    const hit = this.ray.intersectObjects(this.furnitureLevels[this.view || 0]?.children || [], true)[0];
     let g = hit && hit.object;
     while (g && !g.userData.pieceId) g = g.parent;
     if (!g) return;
@@ -966,7 +1094,7 @@ class HomeApp {
     const room = this.arranging && this.planMode && this.L?.rects[this.selectedRoom];
     if (room) {
       const outline = new THREE.Mesh(new THREE.BoxGeometry(room.w, 0.02, room.d), new THREE.MeshBasicMaterial({ color: 0xf0a020, transparent: true, opacity: 0.25 }));
-      outline.position.set(room.x + room.w / 2, 0.07, room.z + room.d / 2);
+      outline.position.set(room.x + room.w / 2, (this.view || 0) * STOREY + 0.07, room.z + room.d / 2);
       this.highlight = outline;
       this.scene.add(outline);
       return;
@@ -1031,7 +1159,7 @@ class HomeApp {
   spotFor(person, taken) {
     if (person.verb === "visit" && this.figures.has(person.peer)) {
       const p = this.figures.get(person.peer).root.position;
-      return { x: p.x + 0.8, z: p.z + 0.5, pose: "stand", face: 90 };
+      return { x: p.x + 0.8, z: p.z + 0.5, pose: "stand", face: 90, y: p.y };
     }
     const seats = (this.seats[person.room] || []).filter((s) => !taken.has(s.key));
     const sit = seats.filter((s) => s.pose === "sit");
@@ -1049,7 +1177,8 @@ class HomeApp {
       taken.add(`front:${using.id}:${n}`);
       const side = ((n % 2) - 0.5) * 0.6; // two people at one thing stand side by side
       return { x: using.x - Math.sin(a) * (using.reach + 0.6) + side * Math.cos(a),
-               z: using.z + Math.cos(a) * (using.reach + 0.6) + side * Math.sin(a), pose: "stand", face: (using.turn + 180) % 360 };
+               z: using.z + Math.cos(a) * (using.reach + 0.6) + side * Math.sin(a), pose: "stand", face: (using.turn + 180) % 360,
+               y: using.y || 0 };
     }
     const pick = {
       sleep: () => seats.filter((s) => s.pose === "lie" && s.piece.owner === person.id).concat(seats.filter((s) => s.pose === "lie")),
@@ -1065,16 +1194,17 @@ class HomeApp {
       return options[0];
     }
     // Nowhere to sit for this: stand in the room, spread out a little.
-    const r = this.L.rects[person.room] || this.L.rects.living;
+    const r = this.rects[person.room] || this.rects.living;
     const n = taken.size;
     taken.add(`stand:${n}`);
-    return { x: r.x + r.w / 2 + ((n % 3) - 1) * 0.8, z: r.z + r.d * 0.6 + Math.floor(n / 3) * 0.6, pose: "stand", face: 0 };
+    return { x: r.x + r.w / 2 + ((n % 3) - 1) * 0.8, z: r.z + r.d * 0.6 + Math.floor(n / 3) * 0.6, pose: "stand", face: 0,
+             y: (this.levelOf[person.room] ?? 0) * STOREY };
   }
 
   apply(data) {
     if (this.drag || this.plan) return; // the redraw would snatch the piece or room from under the pointer
     this.data = data;
-    const key = JSON.stringify([data.rooms, data.doors, data.unreachable, data.pieces, data.available, data.types]);
+    const key = JSON.stringify([data.rooms, data.doors, data.floors, data.unreachable, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
       this.build(data);
@@ -1084,7 +1214,7 @@ class HomeApp {
   }
 
   place(data) {
-    const L = this.L;
+    const L = this.L0;
     const seen = new Set();
     const taken = new Set(); // seats already given to someone this time
     const people = [...data.people].sort((a, b) => (a.verb === "visit") - (b.verb === "visit") || a.id.localeCompare(b.id));
@@ -1102,18 +1232,19 @@ class HomeApp {
         fig = new Figure(person);
         this.figures.set(person.id, fig);
         this.people.add(fig.root);
-        fig.root.position.set(spot.x, 0, spot.z);
+        fig.root.position.set(spot.x, spot.y || 0, spot.z);
         fig.room = person.room;
       } else if (fig.room !== person.room || fig.spotKey !== `${spot.x},${spot.z}`) {
         const from = fig.room;
+        const lv = (room) => this.levelOf[room] ?? 0;
+        const here = { x: fig.root.position.x, z: fig.root.position.z };
         let pts;
-        const go = (a, ra, rb, b) => walkPath(this.walk, a, b) || route(L, ra, rb, a, b);
-        if (out) pts = [...go(fig.root.position, from, L.frontRoom, L.frontInside), L.front, L.outside];
+        if (out) pts = [...this.walkBetween(here, lv(from), from, L.frontInside, 0, L.frontRoom), L.front, L.outside];
         else if (from === "out") {
           fig.root.visible = true;
           fig.root.position.set(L.outside.x, 0, L.outside.z);
-          pts = [L.front, ...go(L.frontInside, L.frontRoom, person.room, spot)];
-        } else pts = go(fig.root.position, from, person.room, spot);
+          pts = [L.front, ...this.walkBetween(L.frontInside, 0, L.frontRoom, spot, lv(person.room), person.room)];
+        } else pts = this.walkBetween(here, lv(from), from, spot, lv(person.room), person.room);
         fig.walkTo(pts);
         fig.room = person.room;
       }
@@ -1141,14 +1272,15 @@ class HomeApp {
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     const aspect = w / h;
-    let view = this.view || 14;
-    if (this.L) {
+    let view = 14;
+    if (this.bounds) {
       // Fit the whole house: the corners of the ground, seen from the camera, decide the frame.
       this.camera.lookAt(this.controls.target);
       this.camera.updateMatrixWorld();
       const inv = this.camera.matrixWorldInverse;
       let halfX = 0, halfY = 0;
-      for (const x of [this.L.X0 - 1, this.L.W + 1]) for (const z of [this.L.Z0 - 1, this.L.D + 3]) for (const y of [0, 1.5]) {
+      const B = this.bounds, y0 = (this.view || 0) * STOREY;
+      for (const x of [B.X0 - 1, B.X1 + 1]) for (const z of [B.Z0 - 1, B.Z1 + 3]) for (const y of [y0, y0 + 1.5]) {
         const p = new THREE.Vector3(x, y, z).applyMatrix4(inv);
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));
@@ -1170,7 +1302,8 @@ class HomeApp {
     const t = now / 1000;
     for (const fig of this.figures.values()) {
       fig.update(dt, t);
-      fig.root.visible = !(fig.out && !fig.path.length);
+      const lvl = fig.root.position.y / STOREY - (this.view || 0);
+      fig.root.visible = !(fig.out && !fig.path.length) && lvl > -0.45 && lvl < 0.55; // on this floor, or half-way up its stairs
     }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
@@ -1250,7 +1383,7 @@ class HomeApp {
     if (focus && this.panel.contains(focus) && /INPUT|SELECT/.test(focus.tagName)) return; // editing a look
     if (this.arranging) {
       // Only when the house changed: a rebuild every poll would drop what is picked in the panel.
-      const key = JSON.stringify([d.rooms, d.pieces, d.types, d.available, this.selectedPiece]);
+      const key = JSON.stringify([d.rooms, d.floors, d.doors, d.unreachable, d.pieces, d.types, d.available, this.selectedPiece, this.view]);
       if (key !== this.editorKey) {
         this.editorKey = key;
         this.panel.replaceChildren(...renderEditor(this));
@@ -1261,12 +1394,19 @@ class HomeApp {
     const rows = d.people.map((p) => {
       const row = el("button", "home-row" + (this.selected === p.id ? " selected" : ""));
       row.type = "button";
-      row.onclick = () => { this.selected = this.selected === p.id ? "" : p.id; this.selectedPiece = ""; this.renderPanel(); };
+      const level = this.levelOf?.[p.room] ?? 0;
+      row.onclick = () => {
+        this.selected = this.selected === p.id ? "" : p.id;
+        this.selectedPiece = "";
+        if (this.selected && p.room !== "out" && level !== this.view) this.setView(level);
+        this.renderPanel();
+      };
       const dot = el("span", "home-dot");
       dot.style.background = p.look.color;
       const stale = !p.active && !["sleep", "out"].includes(p.verb) && d.now - p.since > STALE_SECONDS;
       const text = el("span", "home-row-text");
-      text.append(el("b", "", p.name), el("span", "muted", ` ${p.room_name} · ${stale ? "好久没动了" : p.words}`));
+      const floor = p.room !== "out" && level !== this.view ? `（${(d.floors || []).find((f) => f.level === level)?.name || ""}）` : "";
+      text.append(el("b", "", p.name), el("span", "muted", ` ${p.room_name}${floor} · ${stale ? "好久没动了" : p.words}`));
       const when = el("span", "home-when muted", (p.active ? "从 " : "") + clock(p.since));
       row.append(dot, text, when);
       return row;
@@ -1393,4 +1533,4 @@ async function sendJSON(method, path, body) {
   return data;
 }
 
-export { layout, walkGrid, walkPath, route }; // for checking walks from the browser console
+export { layout, walkGrid, walkPath, route, app }; // for checking walks from the browser console

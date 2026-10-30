@@ -272,6 +272,24 @@ function planPanel(app, d, act) {
   const out = [el("p", "muted small",
     "拖房间中间：整间挪走（家具跟着走）。拖房间的边：改大小。点两个房间共用的墙：开一扇门；点外墙：把大门挪过去。"
     + "点门（橙色）：选中它。在空地上拖出一个长方形：加一个房间，名字写「走廊」就是走廊。")];
+  const floors = d.floors || [{ level: 0, name: "一楼" }];
+  const here = floors.find((f) => f.level === (app.view || 0)) || floors[0];
+  const top = Math.max(...floors.map((f) => f.level));
+  const fname = el("input");
+  fname.value = here.name;
+  fname.maxLength = 16;
+  fname.onchange = () => act(() => send("PUT", `/api/home/floors/${here.level}`, { name: fname.value }));
+  const add = el("button", "", "加一层");
+  add.disabled = floors.length >= 5;
+  add.onclick = () => act(async () => { const f = await send("POST", "/api/home/floors", {}); app.view = f.level; app.layoutKey = ""; }, "加好了，在空地上拖出一个走廊或房间");
+  const drop = el("button", "danger", "删掉这一层");
+  drop.onclick = () => act(async () => { await send("DELETE", `/api/home/floors/${here.level}`); app.view = here.level - 1; });
+  const row = el("div", "home-look");
+  row.append(...[add, here.level && here.level === top ? drop : null].filter(Boolean));
+  const empty = !d.rooms.some((r) => (r.level ?? 0) === here.level);
+  out.push(section(`楼层：${here.name}`, fname, row, el("p", "muted small", empty
+    ? "这一层还是空的：先拖出一个走廊或房间。楼梯摆在楼下（家具里的「楼梯」），上面要有走廊或房间接着。"
+    : "楼梯摆在楼下，从前面（矮的一头）上去，到后面出来；楼上那个位置要有走廊或房间，而且不能摆东西。")));
   const shut = d.unreachable || [];
   if (shut.length) {
     out.push(el("p", "home-warn small", `进不去：${shut.map((id) => d.rooms.find((r) => r.id === id)?.name || id).join("、")}。给它开一扇门。`));

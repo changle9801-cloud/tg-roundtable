@@ -61,7 +61,10 @@ BUILTIN_TYPES = {t["id"]: t for t in (
     _type("computer", "家里的电脑", "computer-desk", (3, 3), 0.72, "#90a4ae",
           uses=[_sit(1.5, 2.2, 180)], functions=["chat.telegram"], tags=["客厅"]),
 )}
-COMPUTER = ("living", (0, 6), 270)  # where the house computer goes: against the living room's left wall
+COMPUTER = ("living", (0, 6), 270)
+STOREY = 3.0  # units between one floor and the next
+# Stairs: you get on at the front (local +z, the bottom step) and off at the back, one floor up.
+BUILTIN_TYPES["base/stairs"] = _type("stairs", "楼梯", "stairs", (3, 6), STOREY, "#a1887f", tags=["楼梯"])  # where the house computer goes: against the living room's left wall
 
 # Rooms as first drawn: id, name, icon, size in cells, doors (wall, optional centre cell).
 SHARED_ROOMS = (
@@ -242,6 +245,7 @@ TEMPLATES = {  # name, default size (cells), height, colour, blocks the way, is 
     "poster": ("海报", (2, 1), 0.9, "#ef9a9a", False, False),
     "boxes": ("纸箱堆", (3, 3), 1.2, "#bcaaa4", True, False),
     "parcel": ("纸箱", (2, 2), 0.7, "#c8a26b", True, False),
+    "stairs": ("楼梯", (3, 6), 3.0, "#a1887f", True, False),
 }
 MAX_SIZE = 24  # cells, either way
 MAX_TYPES = 200

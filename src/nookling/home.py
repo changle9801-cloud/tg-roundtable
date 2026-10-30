@@ -64,7 +64,9 @@ ACTIVITIES = {
 DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
 ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
 ROOM_NAME_MAX = 8
-ROOM_CELLS = (3, 60)  # a room or hallway is at least 3 cells across (a hallway's width), at most 60
+ROOM_CELLS = (3, 60)
+MAX_FLOORS = 5
+FLOOR_NAMES = ("一楼", "二楼", "三楼", "四楼", "五楼")  # a room or hallway is at least 3 cells across (a hallway's width), at most 60
 PICTURE_TEMPLATES = ("frame", "poster", "rug")  # pieces that can show a picture (a mural is a framed one)
 TILE_RANGE = (0.25, 5.0)  # units one floor tile or wallpaper image covers before it repeats
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
@@ -247,6 +249,59 @@ class Home:
             raise PlacementError(f"没有这个房间：{rid}")
         return found
 
+    def house_cells(self, piece: dict) -> set[tuple[int, int]]:
+        room = self.room(piece["room"])
+        ftype = self.all_types()[piece["type"]]
+        return {(room["at"][0] + x, room["at"][1] + z) for x, z in furniture.footprint(piece, ftype)}
+
+    def level_of(self, rid: str) -> int:
+        return self.room(rid).get("level", 0)
+
+    def stairwells(self, level: int, pieces=None, rooms=None) -> set[tuple[int, int]]:
+        """The cells on a floor where stairs from the floor below come up (nothing may stand there)."""
+        rooms = self.rooms if rooms is None else rooms
+        by = {r["id"]: r for r in rooms}
+        out = set()
+        for p in self.pieces if pieces is None else pieces:
+            if p["type"] == "base/stairs" and by.get(p["room"], {}).get("level", 0) == level - 1 and p["room"] in by:
+                at = by[p["room"]]["at"]
+                out |= {(at[0] + x, at[1] + z) for x, z in furniture.footprint(p, self.all_types()["base/stairs"])}
+        return out
+
+    def _check_floors(self, piece: dict, others: list[dict]) -> None:
+        """Stairs need a room or hallway above them, clear of furniture; nothing stands over a stairwell."""
+        level = self.level_of(piece["room"])
+        cells = self.house_cells(piece)
+        blocking = self.all_types()[piece["type"]]["blocks"]
+        if blocking and level > 0 and cells & self.stairwells(level, [p for p in others if p["id"] != piece.get("id")]):
+            raise PlacementError("这里是楼梯口，不能摆东西")
+        if piece["type"] != "base/stairs":
+            return
+        if not any(f["level"] == level + 1 for f in self.floors):
+            raise PlacementError("楼上还没有这一层，先加一层")
+        above = [r for r in self.rooms if r.get("level", 0) == level + 1]
+        if not all(any(r["at"][0] <= x < r["at"][0] + r["size"][0] and r["at"][1] <= z < r["at"][1] + r["size"][1]
+                       for r in above) for x, z in cells):
+            raise PlacementError("楼梯上面要有房间或走廊接着")
+        for other in others:
+            if other["id"] == piece.get("id") or other["room"] not in {r["id"] for r in above}:
+                continue
+            if self.all_types()[other["type"]]["blocks"] and self.house_cells(other) & cells:
+                raise PlacementError("楼上楼梯口的位置摆着东西，先挪开")
+
+    def _stairs_ok(self, rooms: list[dict]) -> None:
+        """Every stairway still comes up inside a room (after a room upstairs moved or went)."""
+        for p in self.pieces or []:
+            if p["type"] != "base/stairs" or p["room"] not in {r["id"] for r in rooms}:
+                continue
+            level = next(r for r in rooms if r["id"] == p["room"]).get("level", 0)
+            room = next(r for r in rooms if r["id"] == p["room"])
+            cells = {(room["at"][0] + x, room["at"][1] + z) for x, z in furniture.footprint(p, self.all_types()["base/stairs"])}
+            above = [r for r in rooms if r.get("level", 0) == level + 1]
+            if not all(any(r["at"][0] <= x < r["at"][0] + r["size"][0] and r["at"][1] <= z < r["at"][1] + r["size"][1]
+                           for r in above) for x, z in cells):
+                raise PlacementError("这样楼梯上面就没有地方了；先挪楼梯")
+
     def place(self, piece: dict) -> dict:
         """Put a new piece in a room, if it fits. Fills in the defaults from its type."""
         ftype = self.all_types().get(piece.get("type"))
@@ -255,6 +310,7 @@ class Home:
         piece = {"id": furniture.new_id(), "turn": 0, "color": None, "name": None,
                  "functions": list(ftype["functions"]), "added_by": "owner", "owner": "", **piece}
         furniture.check(piece, self.checked_room(piece.get("room", "")), self.all_types(), self.pieces or [])
+        self._check_floors(piece, self.pieces or [])
         self.pieces.append(piece)
         self.save()
         return piece
@@ -266,6 +322,7 @@ class Home:
         moved = {**piece, "room": room or piece["room"], "at": list(at) if at is not None else piece["at"],
                  "turn": piece["turn"] if turn is None else turn}
         furniture.check(moved, self.checked_room(moved["room"]), self.all_types(), self.pieces)
+        self._check_floors(moved, self.pieces)
         piece.update(moved)
         self.save()
         return piece
@@ -372,7 +429,7 @@ class Home:
 
     # ---- rooms the owner adds ----
 
-    def add_room(self, name: str, size, at=None, kind: str = "room") -> dict:
+    def add_room(self, name: str, size, at=None, kind: str = "room", level: int = 0) -> dict:
         """A new room or hallway: a preset size placed next to a hallway, or drawn by the owner
         (``size`` in cells and ``at``). It gets a door on a wall it shares with a neighbour."""
         if kind not in ("room", "hall"):
@@ -386,9 +443,11 @@ class Home:
             size = ROOM_SIZES[size]
         room = {"id": ("hall-" if kind == "hall" else "room-") + furniture.new_id()[2:], "name": name,
                 "icon": "🚶" if kind == "hall" else "🚪", "shared": True, "kind": kind,
-                "size": self._cells(size), "level": 0}
+                "size": self._cells(size), "level": int(level)}
+        if not any(f["level"] == room["level"] for f in self.floors):
+            raise PlacementError("没有这一层")
         if at is None:
-            floorplan.place_room(room, self.rooms, self.doors)
+            floorplan.place_room(room, self.rooms, self.doors, room["level"])
         else:
             room["at"] = self._cells(at, low=-200)
             self._check_space(room)
@@ -435,6 +494,7 @@ class Home:
             for piece in pieces.values():
                 piece["at"] = [piece["at"][0] - dx, piece["at"][1] - dz]
         rooms = [new if r["id"] == rid else r for r in self.rooms]
+        self._stairs_ok(rooms)
         doors = []
         for door in self.doors:
             sides = floorplan.door_sides(door, self.rooms)
@@ -464,6 +524,34 @@ class Home:
         self.doors = doors
         self.save()
         return room
+
+    # ---- floors ----
+
+    def add_floor(self, name: str = "") -> dict:
+        if len(self.floors) >= MAX_FLOORS:
+            raise PlacementError(f"最多 {MAX_FLOORS} 层")
+        level = max(f["level"] for f in self.floors) + 1
+        floor = {"level": level, "name": str(name or FLOOR_NAMES[level]).strip()[:ROOM_NAME_MAX]}
+        self.floors.append(floor)
+        self.save()
+        return floor
+
+    def rename_floor(self, level: int, name: str) -> dict:
+        floor = next((f for f in self.floors if f["level"] == level), None)
+        name = str(name or "").strip()[:ROOM_NAME_MAX]
+        if floor is None or not name:
+            raise PlacementError("没有这一层，或者名字是空的")
+        floor["name"] = name
+        self.save()
+        return floor
+
+    def delete_floor(self, level: int) -> None:
+        if level == 0 or level != max(f["level"] for f in self.floors):
+            raise PlacementError("只能删最上面那一层，一楼不能删")
+        if any(r.get("level", 0) == level for r in self.rooms):
+            raise PlacementError("这一层还有房间，先删掉")
+        self.floors = [f for f in self.floors if f["level"] != level]
+        self.save()
 
     def add_door(self, line: str, at, *, outside: bool = False, level: int = 0) -> dict:
         """A door on a grid line: between the two rooms there, or (``outside``) the front door,
@@ -562,6 +650,7 @@ class Home:
             raise PlacementError("房间里还有家具，先搬走或删掉")
         if any(place.room == rid for place in self.where.values()):
             raise PlacementError("有人在这个房间里")
+        self._stairs_ok([r for r in self.rooms if r["id"] != rid])
         self.doors = [d for d in self.doors if rid not in floorplan.door_sides(d, self.rooms)]
         self.rooms.remove(room)
         self.save()
@@ -600,7 +689,21 @@ class Home:
     def shut_rooms(self) -> set[str]:
         """Rooms nobody can walk into from the front door (no door, or doors only to each other).
         Members are not sent there; the page marks them red."""
-        return set(floorplan.unreachable(self.doors, self.rooms)) if self.doors else set()
+        return set(floorplan.unreachable(self.doors, self.rooms, self.stair_links())) if self.doors else set()
+
+    def stair_links(self) -> list[tuple[str, str]]:
+        """(room the stairs stand in, room they come up into) for every stairway."""
+        out = []
+        for p in self.pieces or []:
+            if p["type"] != "base/stairs" or p["room"] not in {r["id"] for r in self.rooms}:
+                continue
+            level = self.level_of(p["room"])
+            cells = self.house_cells(p)
+            for r in self.rooms:
+                if r.get("level", 0) == level + 1 and any(
+                        r["at"][0] <= x < r["at"][0] + r["size"][0] and r["at"][1] <= z < r["at"][1] + r["size"][1] for x, z in cells):
+                    out.append((p["room"], r["id"]))
+        return out
 
     def carrier(self, member: str, function: str, here: str) -> dict | None:
         """The piece she goes to for a function: in her room if there is one, else a shared room,
@@ -609,7 +712,9 @@ class Home:
         shut = self.shut_rooms()
         pieces = [p for p in self.pieces or [] if function in (p.get("functions") or []) and p["room"] not in shut
                   and (not p["room"].startswith("bed-") or p["room"] == mine)]
-        return min(pieces, key=lambda p: (p["room"] != here, p["room"] == mine), default=None)
+        here_level = next((r.get("level", 0) for r in self.rooms if r["id"] == here), 0)
+        return min(pieces, key=lambda p: (p["room"] != here, self.level_of(p["room"]) != here_level, p["room"] == mine),
+                   default=None)
 
     def use_tool(self, member: str, functions: list[str], tool_name: str, *, during_chat: bool = False) -> None:
         """She called a tool that does these functions: she goes to the piece that carries one.
@@ -770,7 +875,7 @@ class Home:
         reads = [r for r in self.diary_reads if r["member"] in members][-30:]
         doors = [{**d, "rooms": floorplan.door_sides(d, self.rooms)} for d in self.doors]
         return {"rooms": self.rooms, "doors": doors, "floors": self.floors,
-                "unreachable": floorplan.unreachable(self.doors, self.rooms),
+                "unreachable": sorted(self.shut_rooms()),
                 "pieces": self.pieces or [], "types": self.all_types(),
                 "available": sorted(available or ()), "function_names": furniture.FUNCTIONS,
                 "templates": {k: {"name": v[0], "size": list(v[1]), "height": v[2], "color": v[3]}
