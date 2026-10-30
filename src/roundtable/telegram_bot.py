@@ -369,7 +369,8 @@ def build_router(runtime: Runtime) -> Router:
         emojis = lambda items: [r.emoji for r in items or () if getattr(r, "emoji", None)]  # noqa: E731
         old, new = emojis(event.old_reaction), emojis(event.new_reaction)
         runtime.on_reaction(str(event.chat.id), event.message_id, user.first_name,
-                            [e for e in new if e not in old], [e for e in old if e not in new])
+                            [e for e in new if e not in old], [e for e in old if e not in new],
+                            guest=runtime.is_guest(user.id))
 
     @r.message(group)
     async def chat(msg: TgMessage):
@@ -396,7 +397,8 @@ def build_router(runtime: Runtime) -> Router:
             if replied and replied.from_user:
                 reply_to = runtime.bot_user_ids.get(replied.from_user.id)
             runtime.room(msg.chat.id).add_user_message(
-                msg.from_user.first_name, text, reply_to, tg_id=msg.message_id, images=images
+                msg.from_user.first_name, text, reply_to, tg_id=msg.message_id, images=images,
+                guest=runtime.is_guest(msg.from_user.id),
             )
 
     return r

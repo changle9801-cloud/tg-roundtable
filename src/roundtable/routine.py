@@ -11,6 +11,8 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from .transcript import labelled
+
 ONLINE, BUSY, ASLEEP = "online", "busy", "asleep"
 WOKEN_MINUTES = 30  # woken by an @: stays up this long
 WAKE_CHANCE = 0.25  # the user speaks and nobody is up: chance one sleeper wakes to answer
@@ -148,7 +150,7 @@ def wake_prompt(unseen, now_line: str, missed_user: bool) -> str:
     lines = [now_line]
     if unseen:
         lines.append("[你睡着时群里的消息]")
-        lines += [f"{m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text}" for m in unseen[-20:]]
+        lines += labelled(unseen[-20:])
         lines.append("[/你睡着时群里的消息]")
     if missed_user:
         lines.append("（你刚睡醒，拿起手机翻了翻群。像朋友那样回一下你错过的、还值得回的话，可以说句刚醒；"
@@ -162,7 +164,7 @@ def goodnight_prompt(unseen, now_line: str) -> str:
     lines = [now_line]
     if unseen:
         lines.append("[群聊新消息]")
-        lines += [f"{m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text}" for m in unseen[-12:]]
+        lines += labelled(unseen[-12:])
         lines.append("[/群聊新消息]")
     lines.append("（你差不多该睡了。想说一声就随口说一句（比如晚安、撑不住了），一句就好；不想说就只回复 [PASS]。）")
     return "\n".join(lines)

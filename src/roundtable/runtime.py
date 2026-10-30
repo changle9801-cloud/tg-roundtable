@@ -90,7 +90,7 @@ from .vision import (
 )
 from .stickers import MAX_FILE_BYTES as MAX_STICKER_BYTES, StickerLibrary, parse_set_name
 from .telegram_bot import TelegramSink, build_router
-from .transcript import USER, Message
+from .transcript import USER, Message, label
 
 log = logging.getLogger(__name__)
 
@@ -313,14 +313,24 @@ class Runtime:
             log.info("%s 记下要跟进：%s", participant.name, "；".join(f"{a.text}" for a in added))
             self.refresh_prompts()
 
-    def on_reaction(self, chat: str, tg_id: int, user_name: str, added: list[str], removed: list[str]) -> None:
-        """The user reacted to a message in the group (or took a reaction back)."""
+    def is_guest(self, user_id: int) -> bool:
+        """Someone the owner brought into the group: allowed to talk, but not the owner (the first allowed id)."""
+        ids = self.config.telegram.allowed_user_ids
+        return bool(ids) and user_id != ids[0]
+
+    def on_reaction(self, chat: str, tg_id: int, user_name: str, added: list[str], removed: list[str],
+                    guest: bool = False) -> None:
+        """A human reacted to a message in the group (or took a reaction back); only the owner's teach the members."""
         room = self.room(chat)
         target = room.message_for(self.sink.parts.get((chat, tg_id), tg_id))
         if target is None or target.from_user:
             return
         text = plain_text(target.text)
         changed = False
+        if guest:  # a guest's taste is not the owner's: the room still sees the reaction
+            if added:
+                room.note_reaction(user_name, target, added[-1], guest=True)
+            return
         for emoji in added:
             item = self.feedback.react(target.speaker_id, text, emoji)
             if item is not None:
@@ -375,6 +385,7 @@ class Runtime:
             self.life.artifact_recall(pc.id, prompt),
             self.life.progress_recall(pc.id, prompt),
             self.game_memories.recall(pc.id, query, names) or self.life.game_recall(pc.id, query),
+            self.life.game_board(pc.id, query, {m.id: m.name for m in self.config.participants}),
             Runtime._game_chat_context(self, pc.id, query),
             chat_style_context(pc),
         ) if part)
@@ -1446,7 +1457,7 @@ class Runtime:
             return
         room = self.room(chat)
         now = now or datetime.now()
-        said = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts and m.from_user)
+        said = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts and m.from_owner)
         day = self.memory.day_to_consolidate([d for d, n in said.items() if n >= MIN_USER_MESSAGES], now)
         if day is not None:
             self._memory_running = True
@@ -1456,20 +1467,20 @@ class Runtime:
         """Read one day's chat and keep what the user said about himself, with his words as proof."""
         try:
             todays = [m for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
-            user_texts = [m.text for m in todays if m.from_user]
+            user_texts = [m.text for m in todays if m.from_owner]  # what guests say is not about the owner
             if not user_texts:
                 self.memory.record_consolidation(day, [], self.config.memory_learn, 0.0)
                 return []
-            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text[:300]}"
+            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {label(m)}: {m.text[:300]}"
                      for m in todays][-250:]
-            users = sorted({m.speaker_name for m in todays if m.from_user})
+            users = sorted({m.speaker_name for m in todays if m.from_owner})
             raw = await self._cheap_ask(consolidation_prompt(day, lines, self.memory.items, users),
                                         '你帮一个朋友群记下群主自己说过的、值得长期记住的事。只按要求输出 JSON。', 'memory')
             if raw is None:
                 log.info('%s 的聊天没整理成长期记忆：没有可用的便宜模型（不用 Claude）', day)
                 return []  # not marked as read: tried again later
             found = parse_consolidation(raw, user_texts, self.memory.items)
-            said_at = max(m.ts for m in todays if m.from_user)
+            said_at = max(m.ts for m in todays if m.from_owner)
             added = self.memory.record_consolidation(day, found, self.config.memory_learn, said_at)
             log.info('%s 的聊天整理出 %d 条长期记忆%s：%s', day, len(added),
                      '' if self.config.memory_learn == 'auto' else '（待确认）', '；'.join(f.text for f in added) or '没有')
@@ -1505,7 +1516,7 @@ class Runtime:
         import uuid
 
         try:
-            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text[:300]}"
+            lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {label(m)}: {m.text[:300]}"
                      for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
             writer = self._chronicle_writer()
             if writer is None or not lines:

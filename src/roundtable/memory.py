@@ -277,6 +277,7 @@ def consolidation_prompt(day: str, lines: Sequence[str], known: Sequence[Fact], 
     facts = [{"id": f.id, "text": f.text, **({"状态": "待确认"} if f.status == "pending" else {})} for f in _known(known)]
     return (
         f"下面是 {day} 一个朋友群里的聊天记录。标着（用户）的是群主 {'、'.join(user_names) or '用户'}，"
+        "标着（群友）的是群主拉进群的朋友（他们说的事不是群主的，不要记），"
         "其余是群里的 AI 成员，她们在扮演各自的角色。\n"
         "从用户自己说的话里，整理出值得朋友长期记住的事实：身份、工作、收入、住在哪、家人朋友、作息习惯、"
         "喜欢和讨厌的东西、正在做的事、打算和约定、重要的经历。\n"

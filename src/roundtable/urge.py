@@ -74,7 +74,7 @@ def _activity(cfg) -> str:
 def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: bool, named: bool, follows: bool,
                    interested: bool, said: int, busy: bool, liveliness: float, crowding: float,
                    brief: bool = False, about: bool = False, in_thread: bool = False,
-                   fondness: float = 0.0, of: str = "") -> Urge:
+                   fondness: float = 0.0, of: str = "", user: str = "阿明") -> Urge:
     """How much she wants to say something now that the latest message has landed.
 
     ``replies``: replies already started since the message that opened the round; the more
@@ -90,7 +90,7 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
         if to_all:
             parts.append(("说给大家", TO_ALL * crowd))
     if answering:
-        parts.append(("刚和阿明说话的是她", ANSWERING))
+        parts.append((f"刚和{user}说话的是她", ANSWERING))
     if named:
         parts.append(("被朋友喊名字", NAMED))
     elif follows:

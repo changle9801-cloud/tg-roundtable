@@ -23,6 +23,8 @@ MAX_ACTIVE = 2
 MAX_PRIVATE_MESSAGES = 4
 MAX_EXPLORATIONS = 3
 MAX_DISCOVERIES = 12  # per member; casual finds are not an ever-growing backlog
+# The chat is about games or how far someone got: bring in the play records.
+GAME_TALK = re.compile(r'游戏|杀戮|爬塔|steam|玩[了过的啥什到]|忙[啥什]|近况|干[嘛啥什]|打到|几层|层了|这局|那局|开局|通关|存档', re.I)
 CONTROL_TAG = re.compile(r"\[\s*(?:表情|sticker|记住|梗|画|回应|reaction)\s*[:：][^\]\n]*\]", re.I)
 
 
@@ -414,8 +416,30 @@ class LifeStore:
         lines.append("这些是经历线索，不是安排给你的发言任务。正在想、实际读过和已经写出的东西要分清。")
         return "\n".join(lines)
 
+    def game_board(self, member: str, query: str, names: dict[str, str], days: int = 3) -> str:
+        """When games come up: where each member's latest game stands, so nobody mixes up whose is whose."""
+        if not GAME_TALK.search(query):
+            return ''
+        cutoff = time.time() - days * 86400
+        latest = {a['owner']: a for a in self.artifacts
+                  if a['kind'] == 'game' and a.get('game_started_at', a['created_at']) >= cutoff}
+        if not latest:
+            return ''
+        lines = []
+        for owner, a in sorted(latest.items(), key=lambda item: item[0] != member):
+            facts = str(a.get('game_facts') or a.get('preview') or '')
+            game = re.search(r'《[^》]+》', a.get('title', ''))
+            floor = re.search(r'第\s*(\d+)\s*层', facts)
+            hp = re.search(r'生命\s*(\d+/\d+)', facts)
+            when = time.strftime('%m-%d %H:%M', time.localtime(a.get('game_started_at', a['created_at'])))
+            where = '，'.join(x for x in ((game.group(0) if game else ''), (f'第 {floor.group(1)} 层' if floor else ''),
+                                         (f'生命 {hp.group(1)}' if hp else '')) if x)
+            lines.append(f"- {'你自己' if owner == member else names.get(owner, owner)}：{where or '玩过一局'}（{when} 那次）")
+        return ('[大家玩到哪了]\n' + '\n'.join(lines)
+                + '\n各玩各的存档。谁打到哪层、谁刚开局要分清，别把别人的进度说成自己的，也别反过来。[/大家玩到哪了]')
+
     def game_recall(self, member: str, query: str) -> str:
-        if not re.search(r'游戏|杀戮|爬塔|steam|玩[了过的啥什]|忙[啥什]|近况|干[嘛啥什]', query, re.I):
+        if not GAME_TALK.search(query):
             return ''
         own = [a for a in self.artifacts if a['owner'] == member and a['kind'] == 'game'][-2:]
         if not own:

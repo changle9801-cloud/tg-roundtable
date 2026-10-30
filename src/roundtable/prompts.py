@@ -8,7 +8,7 @@ from typing import Sequence
 
 from .repetition import reminder
 from .routine import describe_routine
-from .transcript import Message
+from .transcript import Message, guest_note, label
 
 PASS_TOKEN = "[PASS]"
 
@@ -180,9 +180,10 @@ def build_proactive_prompt(
     if new_messages:
         lines.append("[你上次发言之后的群聊消息]")
         for m in new_messages:
-            who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
-            lines.append(f"{who}: {m.text}")
+            lines.append(f"{label(m)}: {m.text}")
         lines.append("[/群聊消息]")
+        if guest_note(new_messages):
+            lines.append(guest_note(new_messages))
     lines.append("（群里安静了一阵，这是你主动发言的机会，没有人在等你回复。）")
     topic_line = f"你关注的方向：{topics}" if topics else "方向你自己按角色的兴趣来定。"
     if can_search:
@@ -291,9 +292,10 @@ def build_share_prompt(new_messages: Sequence[Message], entry) -> str:
     if new_messages:
         lines.append("[你上次发言之后的群聊消息]")
         for m in new_messages:
-            who = f"{m.speaker_name}（用户）" if m.from_user else m.speaker_name
-            lines.append(f"{who}: {m.text}")
+            lines.append(f"{label(m)}: {m.text}")
         lines.append("[/群聊消息]")
+        if guest_note(new_messages):
+            lines.append(guest_note(new_messages))
     where = "X 上" if entry.source == "x" else "网上"
     lines += [
         "（群里安静了一阵，这是你主动发言的机会，没有人在等你回复。）",
@@ -330,12 +332,13 @@ def build_turn_prompt(
     """``me``: the speaker's id; its own lines (shown when catching up after a reset) are marked as its own."""
     lines = [now_line(now), "[群聊新消息]"]
     for m in new_messages:
-        who = f"{m.speaker_name}（用户）" if m.from_user else f"{m.speaker_name}（你自己）" if m.speaker_id == me else m.speaker_name
-        lines.append(f"{who}: {m.text}")
+        lines.append(f"{label(m, me or '')}: {m.text}")
         if m.sources:
             from .sources import source_context
             lines.append(source_context(m.sources, own=m.speaker_id == me))
     lines.append("[/群聊新消息]")
+    if guest_note(new_messages):
+        lines.append(guest_note(new_messages))
     for activity in activities:
         lines.append(f"（{activity}，结果还没出来。不要替它猜测会查到什么，可以先聊别的角度，或者回复 {PASS_TOKEN} 等它。）")
     # No "your turn" and no remaining-turn count: those read as an assignment to say something.

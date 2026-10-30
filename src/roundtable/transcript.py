@@ -25,6 +25,7 @@ class Message:
     sources: tuple[dict, ...] = field(default=())  # only sources explicitly shared in this room
     recheck_targets: tuple[str, ...] = field(default=())  # people whose statement/memory the human is correcting
     external_to_session: bool = False  # posted on this member's behalf outside its public model session
+    guest: bool = False  # a human the owner brought into the group, not the owner
 
     def to_json(self) -> dict:
         data = {
@@ -42,6 +43,8 @@ class Message:
             data["recheck_targets"] = list(self.recheck_targets)
         if self.external_to_session:
             data["external_to_session"] = True
+        if self.guest:
+            data["guest"] = True
         return data
 
     @classmethod
@@ -52,11 +55,37 @@ class Message:
             tuple(source_list(data.get("sources"))),
             tuple(data.get("recheck_targets") or ()),
             bool(data.get("external_to_session", False)),
+            bool(data.get("guest", False)),
         )
 
     @property
     def from_user(self) -> bool:
+        """Said by a human: the owner or a guest."""
         return self.speaker_id == USER
+
+    @property
+    def from_owner(self) -> bool:
+        return self.speaker_id == USER and not self.guest
+
+
+GUEST_NOTE = "（标着「群友」的是阿明拉进群的朋友，不是阿明本人；她们说的事别算到阿明头上。）"
+
+
+def label(m: Message, me: str = "") -> str:
+    """How a speaker is shown to the members: the owner as （用户）, guests as （群友）, oneself as （你自己）."""
+    if m.from_user:
+        return f"{m.speaker_name}（{'群友' if m.guest else '用户'}）"
+    return f"{m.speaker_name}（你自己）" if me and m.speaker_id == me else m.speaker_name
+
+
+def guest_note(messages: Sequence[Message]) -> str:
+    """A reminder who the guests are, when any of them is in what a member is shown."""
+    return GUEST_NOTE if any(m.guest for m in messages) else ""
+
+
+def labelled(messages: Sequence[Message]) -> list[str]:
+    """"name（用户）: text" lines, and the guest reminder when a guest is among them."""
+    return [f"{label(m)}: {m.text}" for m in messages] + ([GUEST_NOTE] if guest_note(messages) else [])
 
 
 def find_mentions(text: str, participants: Sequence[Participant], *, from_user: bool) -> list[str]:

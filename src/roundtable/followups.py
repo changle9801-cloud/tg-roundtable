@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import ConfigError
+from .transcript import labelled
 
 log = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ def build_followup_prompt(item: FollowUp, unseen, now_line: str) -> str:
     lines = [now_line]
     if unseen:
         lines.append("[群聊新消息]")
-        lines += [f"{m.speaker_name}{'（用户）' if m.from_user else ''}: {m.text}" for m in unseen[-20:]]
+        lines += labelled(unseen[-20:])
         lines.append("[/群聊新消息]")
     lines.append(
         f"（之前记下要问的事：{item.text}。现在到时候了，像朋友那样自然地问一句，比如问结果、问感觉；"

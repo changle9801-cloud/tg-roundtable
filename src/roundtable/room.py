@@ -224,14 +224,17 @@ class ChatRoom:
         self.cursors = {p.id: self.cursors.get(p.id, 0) for p in self.participants}
 
     def add_user_message(
-        self, user_name: str, text: str, reply_to: str | None = None, tg_id: int = 0, images: Sequence[str] = ()
+        self, user_name: str, text: str, reply_to: str | None = None, tg_id: int = 0, images: Sequence[str] = (),
+        guest: bool = False,
     ) -> None:
+        """A human spoke: the owner, or (``guest``) someone the owner brought into the group."""
         mentions = find_mentions(text, self.participants, from_user=True)
         if reply_to and reply_to not in mentions:
             mentions.insert(0, reply_to)
         stamp = time.time()
         recheck = find_recheck_targets(text, self.participants, self.messages, reply_to=reply_to, now=stamp)
-        message = Message(USER, user_name, text, tuple(mentions), stamp, tuple(images), recheck_targets=tuple(recheck))
+        message = Message(USER, user_name, text, tuple(mentions), stamp, tuple(images), recheck_targets=tuple(recheck),
+                          guest=guest)
         self._remember_tg(message, tg_id)
         self._append(message)
         log.info("[%s] %s: %s", self.key, user_name, _preview(text))
@@ -541,7 +544,8 @@ class ChatRoom:
                 p, pending=p.id not in state.spoke, replies=state.started, answering=p.id == answering,
                 to_all=state.to_all, brief=state.brief, named=comeback and p.id in named, follows=follows,
                 about=p.id in about, in_thread=p.id in recent,
-                fondness=self.affinity.get(p.id, {}).get(latest.speaker_id, 0.0), of=latest.speaker_name,
+                fondness=0.0 if latest.guest else self.affinity.get(p.id, {}).get(latest.speaker_id, 0.0),
+                of=latest.speaker_name, user=latest.speaker_name if latest.from_user else "阿明",
                 interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
                 liveliness=liveliness, crowding=self.follow_up_decay)
             out.append((p, chance, comeback and (follows or p.id in named)))
@@ -588,7 +592,7 @@ class ChatRoom:
             prompt += ("\n（这条澄清涉及你刚才的说法或记忆，先核对相关消息和你自己的真实记忆，再直接回应这句："
                        + recheck_request.text[:600]
                        + "。按实际记录确认或纠正；缺少依据就说明不确定，不要预先认错或否认。用平常聊天的口吻说就好。）")
-        if self.on_followup is not None and any(m.from_user and FUTURE_WORDS.search(m.text) for m in seen):
+        if self.on_followup is not None and any(m.from_owner and FUTURE_WORDS.search(m.text) for m in seen):
             prompt += "\n（刚才有人提到了以后的安排；值得之后问问的话，记得在回复末尾加 [跟进:时间|要问的事]。）"
         images = self._images_for(speaker, seen)
         if images:
@@ -793,9 +797,10 @@ class ChatRoom:
             return None
         return next((m for m in reversed(self.messages) if (m.speaker_id, m.ts) == key), None)
 
-    def note_reaction(self, user_name: str, target: Message, emoji: str) -> None:
-        """The user reacted to a message: the members see it next time they look at the group."""
-        self._append(Message(USER, user_name, f"[给 {target.speaker_name} 的「{_preview(target.text, 20)}」点了 {emoji}]", (), time.time()))
+    def note_reaction(self, user_name: str, target: Message, emoji: str, guest: bool = False) -> None:
+        """A human reacted to a message: the members see it next time they look at the group."""
+        self._append(Message(USER, user_name, f"[给 {target.speaker_name} 的「{_preview(target.text, 20)}」点了 {emoji}]", (), time.time(),
+                             guest=guest))
 
     def _remember_tg(self, message: Message, tg_id: int | None) -> None:
         if not tg_id:
