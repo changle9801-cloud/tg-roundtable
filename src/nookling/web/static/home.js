@@ -680,6 +680,7 @@ class HomeApp {
     canvas.addEventListener("pointerdown", (e) => {
       down = [e.clientX, e.clientY];
       if (this.arranging && this.planMode) this.planDown(e);
+      else if (this.arranging && this.armed) this.placeArmed(e);
       else if (this.arranging) this.startDrag(e);
     });
     canvas.addEventListener("pointermove", (e) => (this.plan ? this.planMove(e) : this.drag && this.moveDrag(e)));
@@ -937,6 +938,7 @@ class HomeApp {
 
   toggleArrange() {
     this.arranging = !this.arranging;
+    this.armed = null;
     this.selectedPiece = "";
     this.selected = "";
     this.arrangeBtn.textContent = this.arranging ? "布置好了" : "布置家具";
@@ -954,6 +956,7 @@ class HomeApp {
 
   setPlanMode(on) {
     this.planMode = on;
+    this.armed = null;
     this.planMarks.visible = on;
     this.selectedPiece = "";
     this.selectedRoom = "";
@@ -1216,16 +1219,62 @@ class HomeApp {
       this.resize();
     }
     if (!on) return;
-    const key = JSON.stringify(this.data.types);
-    if (key !== this.shelfKey || !this.shelf.childElementCount) {
+    if (!this.shelf.childElementCount) this.shelf.replaceChildren(...renderShelf(this));
+    const d = this.data;
+    const key = JSON.stringify([d.types, d.pieces, d.rooms.map((r) => [r.id, r.name, r.level]), d.floors,
+                                this.selectedPiece, this.armed?.id, this.shelfPage]);
+    if (key !== this.shelfKey) {
       this.shelfKey = key;
-      this.shelf.replaceChildren(...renderShelf(this));
+      this.shelfFill();
     }
+  }
+
+  // A row in the shelf's list of placed pieces: show its floor and select it.
+  pickPiece(piece) {
+    const level = this.levelOf[piece.room] ?? 0;
+    if (level !== this.view) this.setView(level);
+    this.selectedPiece = piece.id;
+    this.editorKey = "";
+    this.showHighlight();
+    this.renderPanel();
+    this.renderShelf();
+  }
+
+  // On a phone: a card tapped is held ready, and the next tap on the house puts it there.
+  async placeArmed(e) {
+    const type = this.armed;
+    const { point } = this.groundAt(e);
+    const spot = point && this.spotUnder(point, type, 0);
+    if (!spot) return;
+    const piece = { type: type.id, room: spot.r.room.id, at: spot.at, turn: 0 };
+    const reason = this.fitCheck({ id: "", ...piece }, type);
+    this.showGhost(type, piece, !reason, true);
+    if (reason) {
+      say(reason, true);
+      setTimeout(() => this.cardDrag || this.hideGhost(), 1200);
+      return;
+    }
+    this.armed = null;
+    try { this.selectedPiece = (await send("POST", "/api/home/pieces", piece)).id; } catch (err) { say(err.message, true); }
+    this.hideGhost();
+    this.layoutKey = "";
+    this.editorKey = "";
+    await this.poll();
   }
 
   // A card pressed: dragged out it becomes a piece where it is let go; just clicked, it goes into a room's first free spot.
   cardDown(e, type) {
     if (e.button) return;
+    if (e.pointerType !== "mouse") { // a finger: tap the card, then tap a spot (a swipe just scrolls the shelf)
+      const card = e.currentTarget, done = new AbortController();
+      card.addEventListener("pointerup", () => {
+        done.abort();
+        this.armed = this.armed?.id === type.id ? null : type;
+        this.renderShelf();
+      }, { signal: done.signal });
+      card.addEventListener("pointercancel", () => done.abort(), { signal: done.signal });
+      return;
+    }
     const card = e.currentTarget, start = [e.clientX, e.clientY];
     try { card.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
     this.cardDrag = { type, turn: 0, piece: null, reason: "", moved: false, last: null };
@@ -1536,8 +1585,11 @@ class HomeApp {
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     const aspect = w / h;
-    // The shelf covers the left of the picture while arranging: fit the house into what is left beside it.
-    const covered = this.shelf && !this.shelf.hidden ? Math.min(this.shelf.offsetWidth + 12, w * 0.6) : 0;
+    // The shelf covers the left of the picture while arranging (the bottom on a narrow screen):
+    // fit the house into what is left beside it.
+    const shelf = this.shelf && !this.shelf.hidden, strip = shelf && matchMedia("(max-width: 600px)").matches;
+    const left = shelf && !strip ? Math.min(this.shelf.offsetWidth + 12, w * 0.6) : 0;
+    const below = strip ? Math.min(this.shelf.offsetHeight + 12, h * 0.6) : 0;
     let view = 14;
     if (this.bounds) {
       // Fit the whole house: the corners of the ground, seen from the camera, decide the frame.
@@ -1551,11 +1603,11 @@ class HomeApp {
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));
       }
-      view = Math.max(halfY, (halfX * h) / (w - covered)) * 1.04;
+      view = Math.max((halfY * h) / (h - below), (halfX * h) / (w - left)) * 1.04;
     }
-    const shift = (covered / h) * view; // half the covered width, in units
-    this.camera.left = -view * aspect - shift; this.camera.right = view * aspect - shift;
-    this.camera.top = view; this.camera.bottom = -view;
+    const sx = (left / h) * view, sy = (below / h) * view; // half the covered width and height, in units
+    this.camera.left = -view * aspect - sx; this.camera.right = view * aspect - sx;
+    this.camera.top = view - sy; this.camera.bottom = -view - sy;
     this.camera.updateProjectionMatrix();
   }
 

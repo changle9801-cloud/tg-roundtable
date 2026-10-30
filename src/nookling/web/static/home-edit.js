@@ -60,51 +60,106 @@ function section(title, ...children) {
 const SHELF_GROUPS = ["我做的", "客厅", "卧室", "书房", "厨房", "娱乐", "装饰", "储物间", "楼梯", "其他"];
 
 export function renderShelf(app) {
-  const search = el("input");
-  search.type = "search";
-  search.placeholder = "找家具";
-  search.value = app.shelfQuery || "";
+  app.shelfPage ||= "kinds";
+  const pages = el("div", "home-shelf-pages");
+  const pageBtns = [["kinds", "家具"], ["placed", "摆着的"]].map(([id, label]) => {
+    const b = el("button", "", label);
+    b.type = "button";
+    b.onclick = () => { app.shelfPage = id; app.renderShelf(); };
+    b.dataset.page = id;
+    return b;
+  });
   const close = el("button", "", "‹");
   close.type = "button";
   close.title = "收起";
   close.onclick = () => app.toggleShelf(false);
+  pages.append(...pageBtns, close);
+  const search = el("input");
+  search.type = "search";
+  search.placeholder = "找家具";
+  search.value = app.shelfQuery || "";
+  search.oninput = () => { app.shelfQuery = search.value; fill(); };
   const head = el("div", "home-shelf-head");
-  head.append(search, close);
+  head.append(pages, search);
   const list = el("div", "home-shelf-list");
-  const kinds = Object.values(app.data.types).filter((t) => t.id !== "base/parcel");
+  const hint = el("p", "home-shelf-hint muted small");
+  let shown = "";
   const fill = () => {
-    const q = search.value.trim().toLowerCase();
-    const groups = new Map(SHELF_GROUPS.map((g) => [g, []]));
-    for (const t of kinds) {
-      if (q && !`${t.name} ${(t.tags || []).join(" ")}`.toLowerCase().includes(q)) continue;
-      const g = t.id.startsWith("mine/") ? "我做的" : (t.tags || []).find((x) => groups.has(x)) || "其他";
-      groups.get(g).push(t);
-    }
-    const out = [];
-    for (const [name, ts] of groups) {
-      if (!ts.length) continue;
-      const cards = el("div", "home-cards");
-      for (const t of ts) {
-        const card = el("button", "home-card");
-        card.type = "button";
-        card.title = `${t.name}：拖到房间里，或点一下放进去`;
-        const img = el("img");
-        img.alt = "";
-        img.draggable = false;
-        app.thumb(t).then((url) => { img.src = url; }).catch(() => {});
-        card.append(img, el("span", "", t.name + ((t.functions || []).length ? " ⚡" : "")),
-          el("span", "muted", `${t.size[0]}×${t.size[1]} 格`));
-        card.onpointerdown = (e) => app.cardDown(e, t);
-        cards.append(card);
-      }
-      out.push(el("h4", "", name), cards);
-    }
+    const d = app.data, q = search.value.trim().toLowerCase(), top = list.scrollTop, sideways = list.scrollLeft;
+    for (const b of pageBtns) b.classList.toggle("on", b.dataset.page === app.shelfPage);
+    const out = app.shelfPage === "placed" ? placedRows(app, d, q) : kindCards(app, d, q);
     if (!out.length) out.push(el("p", "muted small", "没有找到。"));
     list.replaceChildren(...out);
+    list.scrollTop = top;
+    list.scrollLeft = sideways;
+    const sel = list.querySelector(".home-placed.selected");
+    if (sel && app.selectedPiece !== shown) { // newly selected (maybe by clicking it in the house): bring its row into sight
+      const a = sel.offsetTop - list.offsetTop, b = sel.offsetLeft - list.offsetLeft;
+      if (a < list.scrollTop || a + sel.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = a - list.clientHeight / 2;
+      if (b < list.scrollLeft || b + sel.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = b - list.clientWidth / 2;
+    }
+    if (app.shelfPage === "placed") shown = app.selectedPiece;
+    hint.textContent = app.armed ? `点一下房间里的位置，把${app.armed.name}放在那里；再点一下卡片就不放了。`
+      : app.shelfPage === "placed" ? "点一件：切到它那一层并选中它，右边可以改它。"
+      : "拖到房间里放下，绿的放得下、红的放不下；拖的时候按 R 转向。点一下：放进选中家具所在的房间。手机上：点卡片，再点房间里的位置。";
   };
-  search.oninput = () => { app.shelfQuery = search.value; fill(); };
-  fill();
-  return [head, list, el("p", "home-shelf-hint muted small", "拖到房间里放下，绿的放得下、红的放不下；拖的时候按 R 转向。点一下：放进选中家具所在的房间。")];
+  app.shelfFill = fill;
+  return [head, list, hint];
+}
+
+function kindCards(app, d, q) {
+  const groups = new Map(SHELF_GROUPS.map((g) => [g, []]));
+  for (const t of Object.values(d.types)) {
+    if (t.id === "base/parcel" || (q && !`${t.name} ${(t.tags || []).join(" ")}`.toLowerCase().includes(q))) continue;
+    const g = t.id.startsWith("mine/") ? "我做的" : (t.tags || []).find((x) => groups.has(x)) || "其他";
+    groups.get(g).push(t);
+  }
+  const out = [];
+  for (const [name, ts] of groups) {
+    if (!ts.length) continue;
+    const cards = el("div", "home-cards");
+    for (const t of ts) {
+      const card = el("button", "home-card" + (app.armed?.id === t.id ? " armed" : ""));
+      card.type = "button";
+      card.title = `${t.name}：拖到房间里，或点一下放进去`;
+      const img = el("img");
+      img.alt = "";
+      img.draggable = false;
+      app.thumb(t).then((url) => { img.src = url; }).catch(() => {});
+      card.append(img, el("span", "", t.name + ((t.functions || []).length ? " ⚡" : "")), el("span", "muted", `${t.size[0]}×${t.size[1]} 格`));
+      card.onpointerdown = (e) => app.cardDown(e, t);
+      cards.append(card);
+    }
+    out.push(el("h4", "", name), cards);
+  }
+  return out;
+}
+
+// Every placed piece, room by room (and floor by floor when there are several).
+function placedRows(app, d, q) {
+  const floors = d.floors || [{ level: 0, name: "一楼" }];
+  const out = [];
+  for (const f of floors) {
+    const block = [];
+    for (const room of d.rooms.filter((r) => (r.level ?? 0) === f.level)) {
+      const rows = [];
+      for (const piece of d.pieces.filter((p) => p.room === room.id)) {
+        const type = d.types[piece.type] || { name: piece.type };
+        const name = piece.name || type.name;
+        if (q && !`${name} ${type.name} ${room.name}`.toLowerCase().includes(q)) continue;
+        const row = el("button", "home-placed" + (app.selectedPiece === piece.id ? " selected" : ""));
+        row.type = "button";
+        row.append(el("span", "", name + ((piece.functions || []).length ? " ⚡" : "")), piece.name ? el("span", "muted", type.name) : "",
+          el("span", "muted home-placed-room", room.name)); // shown on a phone, where the room headings are not
+        row.onclick = () => app.pickPiece(piece);
+        rows.push(row);
+      }
+      if (rows.length) block.push(el("h4", "", room.name), ...rows);
+    }
+    if (block.length && floors.length > 1) out.push(el("h4", "home-placed-floor", f.name));
+    out.push(...block);
+  }
+  return out;
 }
 
 export function renderEditor(app) {
@@ -122,7 +177,7 @@ export function renderEditor(app) {
     await app.poll();
   };
   if (app.planMode) return [el("h2", "", "布置"), modes, ...planPanel(app, d, act)];
-  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "从左边的家具栏拖家具进来。拖动摆着的家具换位置（按 R 转向），点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
+  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "从家具栏拖家具进来（手机上点卡片、再点位置）。拖动摆着的家具换位置（按 R 转向），点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
 
   // ---- the selected piece ----
   const piece = d.pieces.find((p) => p.id === app.selectedPiece);
