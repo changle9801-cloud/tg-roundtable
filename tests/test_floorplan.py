@@ -99,3 +99,20 @@ def test_furniture_still_keeps_clear_of_doors(tmp_path):
     from nookling.furniture import PlacementError
     with pytest.raises(PlacementError, match="挡住门"):
         home.place({"type": "base/beanbag", "room": bedroom("codex"), "at": [4, 8]})
+
+
+def test_a_room_with_no_way_in_is_left_alone(tmp_path):
+    home = house(tmp_path)
+    study_doors = [d for d in home.doors if "study" in floorplan.door_sides(d, home.rooms)]
+    home.doors = [d for d in home.doors if d not in study_doors]  # the study's only door is gone
+    assert home.shut_rooms() == {"study"}
+    assert "study" in home.view(MEMBERS)["unreachable"]
+    home.begin("codex", "read", "磁吸手柄")  # the computers are all in the study
+    assert (home.where["codex"].room, home.where["codex"].piece) == ("living", "")
+    home.where["grok"].room = "study"
+    home.begin("claude", "private", "聊聊", peer="grok", peer_home=True)
+    assert home.where["claude"].verb == "phone"  # she can't get to Grok: a phone call
+    home.begin("claude", "idle", "想去书房坐会儿，看看书")
+    assert home.where["claude"].room != "study"
+    home.doors.extend(study_doors)
+    assert home.shut_rooms() == set()

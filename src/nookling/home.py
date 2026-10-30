@@ -455,27 +455,35 @@ class Home:
         """A daily-life activity starts: she goes where it happens."""
         here = self.where.get(member) or Place(bedroom(member), "rest")
         now = self.now()
+        shut = self.shut_rooms()
         if action in ACTIVITIES:
             verb, function, fallback = ACTIVITIES[action]
             piece = self.carrier(member, function, here.room)
-            if not piece and not any(r["id"] == fallback for r in self.rooms):
+            if not piece and (fallback in shut or not any(r["id"] == fallback for r in self.rooms)):
                 fallback = "living"
             place = Place(piece["room"] if piece else fallback, verb, detail, now, True, piece=piece["id"] if piece else "")
         elif action == "private" and peer:
-            if peer_home and peer in self.where:
+            if peer_home and peer in self.where and self.where[peer].room not in shut:
                 place = Place(self.where[peer].room, "visit", detail, now, True, peer, here.room)
             else:
                 place = Place(here.room, "phone", detail, now, True, peer)
         else:  # resting: wherever her own reason says, or the sofa
             room = next((rid for rid, words in REST_ROOMS if words.search(detail or "")), "living")
-            place = Place(bedroom(member) if room == "bed" else room, "rest", detail, now, False)
+            room = bedroom(member) if room == "bed" else room
+            place = Place("living" if room in shut else room, "rest", detail, now, False)
         self._move(member, place)
+
+    def shut_rooms(self) -> set[str]:
+        """Rooms nobody can walk into from the front door (no door, or doors only to each other).
+        Members are not sent there; the page marks them red."""
+        return set(floorplan.unreachable(self.doors, self.rooms)) if self.doors else set()
 
     def carrier(self, member: str, function: str, here: str) -> dict | None:
         """The piece she goes to for a function: in her room if there is one, else a shared room,
         else her own bedroom. Never a piece in someone else's bedroom."""
         mine = bedroom(member)
-        pieces = [p for p in self.pieces or [] if function in (p.get("functions") or [])
+        shut = self.shut_rooms()
+        pieces = [p for p in self.pieces or [] if function in (p.get("functions") or []) and p["room"] not in shut
                   and (not p["room"].startswith("bed-") or p["room"] == mine)]
         return min(pieces, key=lambda p: (p["room"] != here, p["room"] == mine), default=None)
 

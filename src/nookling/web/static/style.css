@@ -447,3 +447,4 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .home-preview { width: 240px; height: 160px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(#eef3f8, #f6f3ea); }
 .home-model { display: flex; flex-direction: column; gap: 4px; }
 .home-field input[type=color] { width: 60px; height: 30px; padding: 0; border: none; background: none; }
+.home-warn { color: var(--err); margin: 0 0 8px; }

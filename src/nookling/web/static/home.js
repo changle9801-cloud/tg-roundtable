@@ -61,7 +61,8 @@ function layout(data, level = 0) {
   const fr = rects[frontRoom];
   const front = frontDoor ? { x: frontDoor.x, z: frontDoor.z } : { x: fr.x + fr.w / 2, z: fr.z + fr.d };
   const out = frontDoor ? { front: [0, 1], back: [0, -1], left: [-1, 0], right: [1, 0] }[wallOf(fr, frontDoor)] : [0, 1];
-  return { W, D, X0, Z0, rects, doors, front, frontRoom, outside: { x: front.x + out[0] * 3, z: front.z + out[1] * 3 } };
+  return { W, D, X0, Z0, rects, doors, front, frontRoom, frontInside: frontDoor && fr ? inFront(fr, frontDoor) : front,
+           outside: { x: front.x + out[0] * 3, z: front.z + out[1] * 3 } };
 }
 
 // Walking from room to room: through doors only. Rooms are rectangles, so a straight line
@@ -85,6 +86,87 @@ function route(L, fromRoom, toRoom, from, to) {
   for (let at = toRoom; prev[at]; at = prev[at].room) steps.unshift({ ...prev[at], into: at });
   const pts = [];
   for (const { room, door, into } of steps) pts.push(inFront(L.rects[room], door), { x: door.x, z: door.z }, inFront(L.rects[into], door));
+  pts.push(to);
+  return pts;
+}
+
+// ---------- walking around furniture: A* on the grid of cells ----------
+// A cell is walkable if it is inside a room and not under furniture that blocks the way. Walls
+// between rooms are crossed only where a door is. A walk may move across the piece it starts or
+// ends on (a seat inside a sofa, the middle of a bed).
+
+const cellKey = (x, z) => `${x},${z}`;
+
+function walkGrid(L, data) {
+  const rooms = new Map(), blocked = new Map(), passes = new Set();
+  for (const r of Object.values(L.rects)) {
+    const [ax, az] = r.room.at;
+    for (let i = 0; i < r.room.size[0]; i++) for (let j = 0; j < r.room.size[1]; j++) rooms.set(cellKey(ax + i, az + j), r.room.id);
+  }
+  for (const piece of data.pieces) {
+    const type = data.types[piece.type], r = L.rects[piece.room];
+    if (!type || !type.blocks || !r) continue;
+    const [tw, td] = turnedSize(type.size, piece.turn);
+    const [ax, az] = r.room.at;
+    for (let i = 0; i < tw; i++) for (let j = 0; j < td; j++) blocked.set(cellKey(ax + piece.at[0] + i, az + piece.at[1] + j), piece.id);
+  }
+  for (const d of L.doors) {
+    if (d.outside || d.rooms.length !== 2) continue;
+    const [x, z] = d.at;
+    for (let i = 0; i < (d.width ?? 3); i++) {
+      const [a, b] = d.line === "z" ? [cellKey(x + i, z - 1), cellKey(x + i, z)] : [cellKey(x - 1, z + i), cellKey(x, z + i)];
+      passes.add(`${a}|${b}`).add(`${b}|${a}`);
+    }
+  }
+  return { rooms, blocked, passes };
+}
+
+function walkPath(G, from, to) {
+  if (!G) return null;
+  const cell = (p) => [Math.floor(p.x / CELL + 1e-9), Math.floor(p.z / CELL + 1e-9)];
+  const [sx, sz] = cell(from), [gx, gz] = cell(to);
+  const start = cellKey(sx, sz), goal = cellKey(gx, gz);
+  if (!G.rooms.has(start) || !G.rooms.has(goal)) return null;
+  const own = new Set([G.blocked.get(start), G.blocked.get(goal)].filter(Boolean)); // the pieces she gets off or onto
+  const open = (k) => G.rooms.has(k) && (!G.blocked.has(k) || own.has(G.blocked.get(k)));
+  const cross = (a, b) => G.rooms.get(a) === G.rooms.get(b) || G.passes.has(`${a}|${b}`);
+  const h = (x, z) => Math.hypot(x - gx, z - gz);
+  const cost = new Map([[start, 0]]), came = new Map(), frontier = [[h(sx, sz), sx, sz]];
+  const done = new Set();
+  let found = false;
+  for (let guard = 0; frontier.length && guard < 20000; guard++) {
+    let best = 0;
+    for (let i = 1; i < frontier.length; i++) if (frontier[i][0] < frontier[best][0]) best = i;
+    const [, x, z] = frontier.splice(best, 1)[0];
+    const here = cellKey(x, z);
+    if (here === goal) { found = true; break; }
+    if (done.has(here)) continue;
+    done.add(here);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const next = cellKey(x + dx, z + dz);
+      if (!open(next) || !cross(here, next)) continue;
+      if (dx && dz) { // diagonal: inside one room, not cutting a corner
+        const a = cellKey(x + dx, z), b = cellKey(x, z + dz);
+        if (!open(a) || !open(b) || G.rooms.get(a) !== G.rooms.get(here) || G.rooms.get(b) !== G.rooms.get(here)
+            || G.rooms.get(next) !== G.rooms.get(here)) continue;
+      }
+      const c = cost.get(here) + (dx && dz ? Math.SQRT2 : 1);
+      if (c < (cost.get(next) ?? Infinity)) {
+        cost.set(next, c);
+        came.set(next, here);
+        frontier.push([c + h(x + dx, z + dz), x + dx, z + dz]);
+      }
+    }
+  }
+  if (!found) return null;
+  const cells = [];
+  for (let k = goal; k !== start; k = came.get(k)) cells.unshift(k.split(",").map(Number));
+  // Cell centres, keeping only the turns.
+  const pts = [];
+  for (let i = 0; i < cells.length - 1; i++) {
+    const [x, z] = cells[i], prev = i ? cells[i - 1] : [sx, sz], next = cells[i + 1];
+    if (x - prev[0] !== next[0] - x || z - prev[1] !== next[1] - z) pts.push({ x: (x + 0.5) * CELL, z: (z + 0.5) * CELL });
+  }
   pts.push(to);
   return pts;
 }
@@ -612,7 +694,9 @@ class HomeApp {
       const hall = room.kind === "hall";
       const kind = room.id.startsWith("bed-") ? "bed" : hall ? "hall" : room.id;
       const tile = room.floor?.tile || 1;
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile));
+      const look = surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile);
+      if ((data.unreachable || []).includes(room.id)) look.color.lerp(new THREE.Color(0xe57373), look.map ? 0.5 : 0.6);
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), look);
       floor.position.set(r.x + r.w / 2, hall ? -0.03 : -0.04, r.z + r.d / 2);
       this.house.add(floor);
       if (!hall || room.walls) walls(this.house, r, room.walls); // hallways are open, like the old corridors
@@ -641,6 +725,7 @@ class HomeApp {
       this.pieceAt[piece.id] = centre;
       if (type.screen) (this.screens[piece.room] ||= []).push(centre);
     }
+    this.walk = walkGrid(L, data);
     this.center = new THREE.Vector3((L.X0 + L.W) / 2, 0, (L.Z0 + L.D) / 2);
     if (!this.aimed) this.aimCamera(); // keep the viewer's own angle and zoom across redraws
     else this.resize(); // the house may have grown: fit it again
@@ -838,7 +923,7 @@ class HomeApp {
   apply(data) {
     if (this.drag) return; // the redraw would snatch the piece from under the pointer
     this.data = data;
-    const key = JSON.stringify([data.rooms, data.pieces, data.available, data.types]);
+    const key = JSON.stringify([data.rooms, data.doors, data.unreachable, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
       this.build(data);
@@ -871,12 +956,13 @@ class HomeApp {
       } else if (fig.room !== person.room || fig.spotKey !== `${spot.x},${spot.z}`) {
         const from = fig.room;
         let pts;
-        if (out) pts = [...route(L, from, L.frontRoom, fig.root.position, L.front), L.front, L.outside];
+        const go = (a, ra, rb, b) => walkPath(this.walk, a, b) || route(L, ra, rb, a, b);
+        if (out) pts = [...go(fig.root.position, from, L.frontRoom, L.frontInside), L.front, L.outside];
         else if (from === "out") {
           fig.root.visible = true;
           fig.root.position.set(L.outside.x, 0, L.outside.z);
-          pts = [L.front, ...route(L, L.frontRoom, person.room, L.front, spot)];
-        } else pts = route(L, from, person.room, fig.root.position, spot);
+          pts = [L.front, ...go(L.frontInside, L.frontRoom, person.room, spot)];
+        } else pts = go(fig.root.position, from, person.room, spot);
         fig.walkTo(pts);
         fig.room = person.room;
       }
@@ -973,7 +1059,8 @@ class HomeApp {
       node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
     };
     const placed = [];
-    const names = Object.fromEntries(this.data.rooms.map((r) => [r.id, r.name]));
+    const shut = new Set(this.data.unreachable || []);
+    const names = Object.fromEntries(this.data.rooms.map((r) => [r.id, shut.has(r.id) ? `${r.name}（进不去）` : r.name]));
     for (const r of this.roomLabels) put("room:" + r.id, "home-room-label", names[r.id] || r.id, r.pos);
     for (const fig of this.figures.values()) {
       if (!fig.root.visible) continue;
@@ -1033,6 +1120,9 @@ class HomeApp {
       row.append(dot, text, when);
       return row;
     });
+    const shut = (d.unreachable || []).map((id) => d.rooms.find((r) => r.id === id)?.name || id);
+    const warning = shut.length ? el("p", "home-warn small",
+      `${shut.join("、")}没有门通到大门，成员进不去，也不会被安排去那里。要给它开一扇门。`) : null;
     const list = el("div", "home-list");
     list.append(...rows);
     const detail = el("div", "home-detail");
@@ -1054,7 +1144,7 @@ class HomeApp {
     } else {
       detail.append(el("p", "muted small", "点一个人看她在干什么；点卧室桌上的红本子翻日记。拖动旋转，滚轮缩放。"));
     }
-    this.panel.replaceChildren(el("h2", "", "家里"), list, detail);
+    this.panel.replaceChildren(...[el("h2", "", "家里"), warning, list, detail].filter(Boolean));
   }
 
   lookEditor(p) {
@@ -1151,3 +1241,5 @@ async function sendJSON(method, path, body) {
   if (!res.ok) throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
   return data;
 }
+
+export { layout, walkGrid, walkPath, route }; // for checking walks from the browser console
