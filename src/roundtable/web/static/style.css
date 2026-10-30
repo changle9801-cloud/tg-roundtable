@@ -363,3 +363,9 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .affinity th, .affinity td { padding: 4px 6px; text-align: center; white-space: nowrap; }
 .affinity thead th { color: var(--muted); font-weight: 500; }
 .affinity tbody th { text-align: left; }
+.urges { margin-top: 10px; font-size: 13px; }
+.urges summary { cursor: pointer; color: var(--muted); }
+.urge-group { border-top: 1px solid var(--border); padding: 8px 0; }
+.urge-group ul { margin: 4px 0 0; padding-left: 4px; list-style: none; }
+.urge-group li { padding: 2px 0; }
+.urge-group .why { color: var(--muted); font-size: 12px; padding-left: 18px; word-break: break-word; }

@@ -2039,7 +2039,8 @@ function renderStatus(s) {
         h("div", {},
           h("button", { disabled: !r.busy, onclick: () => roomAction(r.key, "stop") }, "中止本轮"), " ",
           h("button", { class: "danger", onclick: () => roomAction(r.key, "reset") }, "清空记忆"))),
-      h("ul", { class: "room-msgs" }, ...r.recent.map((m) => h("li", {}, h("b", {}, m.speaker + ":"), m.text))))) :
+      h("ul", { class: "room-msgs" }, ...r.recent.map((m) => h("li", {}, h("b", {}, m.speaker + ":"), m.text))),
+      urgesPanel(r))) :
     [h("div", { class: "muted" }, "重启后还没有群里的消息。")]));
 
   const events = s.events || [];
@@ -2061,6 +2062,40 @@ function renderStatus(s) {
   const atBottom = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 30;
   logs.textContent = (s.logs || []).join("\n");
   if (atBottom) logs.scrollTop = logs.scrollHeight;
+}
+
+const urgesOpen = new Set(); // rooms whose "刚才谁想说话" is unfolded, kept across status refreshes
+
+function urgeStep(s) {
+  const pct = (n) => `${Math.round(n * 100)}%`;
+  const line = {
+    "想说话": () => s.hit ? `✋ ${s.who} 想说（${pct(s.chance)}，掷 ${s.roll}）` : `· ${s.who} 不想说（${pct(s.chance)}，掷 ${s.roll}）`,
+    "吵醒": () => s.hit ? `⏰ ${s.who} 被吵醒了（${pct(s.chance)}）` : `💤 ${s.who} 没被吵醒（${pct(s.chance)}）`,
+    "欠的回答": () => `📌 ${s.who} 该她回：${s.why}`,
+    "保底": () => `🫴 ${s.who}：${s.why}`,
+    "说了": () => `💬 ${s.who} 说了：${s.why}`,
+    "没说": () => `🤐 ${s.who} ${s.why}`,
+    "出错了": () => `⚠️ ${s.who} 出错了：${s.why}`,
+  }[s.what];
+  const rolled = s.chance !== null && s.chance !== undefined;
+  return h("li", { class: rolled && !s.hit ? "muted" : "" },
+    line ? line() : `${s.what} ${s.who} ${s.why}`,
+    rolled ? h("div", { class: "why" }, s.why) : null);
+}
+
+function urgesPanel(r) {
+  const groups = r.urges || [];
+  if (!groups.length) return null;
+  const when = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return h("details", {
+    class: "urges", open: urgesOpen.has(r.key),
+    ontoggle: (e) => e.target.open ? urgesOpen.add(r.key) : urgesOpen.delete(r.key),
+  },
+    h("summary", {}, "刚才谁想说话"),
+    h("p", { class: "muted small" }, "每条消息落地后，每个醒着的人算一个想说话的分数各掷一次；想说的人里最想说的先说。被点名的直接说，你的消息没人想回时最想说的先回一句。睡着、额度用完的人不在里面。"),
+    ...groups.map((g) => h("div", { class: "urge-group" },
+      h("div", {}, h("span", { class: "muted small" }, when(g.ts) + " "), h("b", {}, `对「${g.for}」`)),
+      h("ul", {}, ...g.steps.map(urgeStep)))));
 }
 
 async function roomAction(key, action) {

@@ -1679,6 +1679,7 @@ class Runtime:
                 "busy": room.busy,
                 "message_count": len(room.messages),
                 "recent": [{"speaker": m.speaker_name, "text": m.text} for m in room.messages[-12:]],
+                "urges": room.decision_report(),
             }
             for room in self.rooms.values()
             if room.key != TEST_CHAT

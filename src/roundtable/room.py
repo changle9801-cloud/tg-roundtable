@@ -45,7 +45,8 @@ TO_ALL = re.compile(r"你们|大家|各位|所有人|都在")
 # "嗯", "好的", "哈哈": the user only acknowledges; one answer is plenty.
 BRIEF = re.compile(r"^\s*(?:嗯+|哦+|噢+|喔+|好+的?|行|ok|okay|哈+|嘿+|h{2,}|收到|了解|知道了)[\s。.!！~～…]*$", re.I)
 THREAD = 3  # messages back that count as "she is in this exchange"
-DECISIONS_KEPT = 60  # recent dice rolls and their reasons, for the status page
+DECISIONS_KEPT = 120  # recent dice rolls, owed answers and outcomes with their reasons, for the status page
+REPORTED_MESSAGES = 6  # messages shown under "刚才谁想说话"
 
 
 def _draws_everyone(message: Message) -> bool:
@@ -68,6 +69,7 @@ class _Turn:
     seen: list[Message] = field(default_factory=list)  # what the speaker was shown this turn
     recheck: bool = False
     recheck_request: Message | None = None
+    about: Message | None = None  # the message it was picked to answer (for the status page)
 
 
 @dataclass
@@ -372,8 +374,11 @@ class ChatRoom:
                     priority = next((p for pid in state.recheck for p in owed if p.id == pid), None)
                     if priority or owed:
                         speaker = priority or self.moderator.pick(owed, latest, state.last_speaker)
+                        self._note("欠的回答", speaker.name, latest, "要她核对" if speaker is priority else
+                                   "阿明点了她" if speaker.id in state.called else "被朋友 @，或该她接着说")
                     elif state.discussion_next:
                         speaker = candidates[0]  # the other one in a shared link's exchange
+                        self._note("欠的回答", speaker.name, latest, "分享的链接，两人接着聊")
                     else:
                         speaker = self._eager(candidates, latest, state)
                     room_for_more = speaker is not None  # else nobody wants to say anything about it
@@ -388,6 +393,7 @@ class ChatRoom:
                         state.recheck.remove(speaker.id)
                     turn = self._start_turn(speaker, state.turns[speaker.id], recheck_request=recheck_request,
                                             discussion_followup=bool(state.discussion_next))
+                    turn.about = latest
                     pending[turn.task] = turn
                     last_start = loop.time()
                     continue
@@ -410,15 +416,29 @@ class ChatRoom:
                 self.cursors[turn.speaker.id] = min(turn.prev_cursor, len(self.messages))  # cut off: not answered
                 await self._end_activity(turn.speaker)
 
-    def _roll(self, chance: Urge, what: str) -> bool:
+    def _roll(self, chance: Urge, what: str, about: Message | None = None) -> bool:
         """Roll the dice for one chance, and keep why (debug log, status page)."""
         rng = getattr(self.moderator, "rng", random)
         roll = rng.random()
         hit = roll < chance.value
-        self.decisions.append({"ts": time.time(), "what": what, "who": chance.member, "chance": round(chance.value, 2),
-                               "why": chance.explain(), "roll": round(roll, 2), "hit": hit})
+        self._note(what, chance.member, about, chance.explain(), chance=round(chance.value, 2), roll=round(roll, 2), hit=hit)
         log.debug("[%s] %s：%s 掷 %.2f → %s", self.key, what, chance.explain(), roll, "是" if hit else "否")
         return hit
+
+    def _note(self, what: str, who: str, about: Message | None, why: str = "", **roll) -> None:
+        """Keep one step of who-speaks-next for the status page: a roll, an owed answer, or what came of it."""
+        self.decisions.append({"ts": time.time(), "what": what, "who": who, "why": why,
+                               "for": f"{about.speaker_name}：{_preview(about.text, 40)}" if about else "",
+                               "for_ts": about.ts if about else 0.0,
+                               "chance": roll.get("chance"), "roll": roll.get("roll"), "hit": roll.get("hit")})
+
+    def decision_report(self) -> list[dict]:
+        """"刚才谁想说话": the latest messages, newest first, each with who rolled, was owed, spoke or passed."""
+        groups: dict[tuple[float, str], dict] = {}
+        for d in self.decisions:
+            if d["for"]:
+                groups.setdefault((d["for_ts"], d["for"]), {"for": d["for"], "ts": d["for_ts"], "steps": []})["steps"].append(d)
+        return sorted(groups.values(), key=lambda g: g["ts"], reverse=True)[:REPORTED_MESSAGES]
 
     def _busy(self, p: Participant) -> bool:
         return self.routines is not None and self.routines.status(p) == BUSY
@@ -435,7 +455,7 @@ class ChatRoom:
             return awake
         state.wake_tried = True  # the user says something and everyone is asleep
         rng = getattr(self.moderator, "rng", random)
-        if self._roll(urge.woken_by_user(), "吵醒"):
+        if self._roll(urge.woken_by_user(), "吵醒", latest):
             sleeper = rng.choice(candidates)
             self.routines.wake(sleeper)
             log.info("[%s] %s 被吵醒了", self.key, sleeper.name)
@@ -449,7 +469,7 @@ class ChatRoom:
         for p in sleepers:
             if p.id == message.speaker_id or p.id not in named:
                 continue
-            if self._roll(urge.woken_by_friend(p, at=p.id in message.mentions), "吵醒"):
+            if self._roll(urge.woken_by_friend(p, at=p.id in message.mentions), "吵醒", message):
                 self.routines.wake(p)
                 state.granted.add(p.id)  # woken to answer it
                 woken.append(p)
@@ -474,6 +494,7 @@ class ChatRoom:
             speaker = self._most_eager(state.floor, candidates, latest, state)
             if speaker is not None:
                 log.debug("[%s] 没人想说，%s 先回一句", self.key, speaker.name)
+                self._note("保底", speaker.name, latest, "没人想说，最想说的她先回一句")
             return speaker
         return None
 
@@ -493,7 +514,7 @@ class ChatRoom:
         wants, everyone = [], []
         for p, chance, comeback in self._urges(candidates, latest, state):
             everyone.append((chance.raw, p.id))
-            if self._roll(chance, "想说话"):
+            if self._roll(chance, "想说话", latest):
                 wants.append((chance.raw, p.id))
                 if comeback:
                     state.talked_back.add(p.id)
@@ -601,6 +622,7 @@ class ChatRoom:
             raw = turn.task.result()
         except ParticipantError as e:
             log.warning("%s failed: %s", speaker.id, e)
+            self._note("出错了", speaker.name, turn.about, str(e)[:120])
             self.cursors[speaker.id] = min(turn.prev_cursor, len(self.messages))
             if not newer_recheck:
                 state.failed.add(speaker.id)
@@ -609,7 +631,10 @@ class ChatRoom:
             await self.sink.notice(self.key, f"{speaker.name} 出错了：{e}")
             return
 
-        if await self._publish(speaker, raw, turn.seen) is None:
+        posted = await self._publish(speaker, raw, turn.seen)
+        self._note("说了" if posted is not None else "没说", speaker.name, turn.about,
+                   _preview(posted, 40) if posted is not None else "看了，觉得不用回（PASS）")
+        if posted is None:
             if newer_recheck:
                 return
             if state.discussion_author:

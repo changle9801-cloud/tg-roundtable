@@ -50,14 +50,24 @@ def test_what_makes_her_want_to_speak():
 async def test_the_room_keeps_why_it_rolled(make, store):
     from roundtable.config import RoundConfig
 
-    a, b = make("a", ["嗯"]), make("b", ["好"])
+    a, b, c = make("a", ["嗯"]), make("b", ["好"]), make("c", [])
     cfg = RoundConfig(max_turns_per_model=2, call_timeout=5, follow_up_chance=0.5, follow_up_decay=0.4)
-    room = ChatRoom("chat", [a, b], FakeSink(), cfg, store, RuleModerator(random.Random(1)))
-    room.add_user_message("me", "hi")
+    room = ChatRoom("chat", [a, b, c], FakeSink(), cfg, store, RuleModerator(random.Random(1)))
+    room.moderator.rng.random = lambda: 0.99  # nobody wants to: the most eager answers anyway
+    room.add_user_message("阿明", "@C 你在吗")
     await room.wait_idle()
-    rolls = list(room.decisions)
-    assert {r["what"] for r in rolls} == {"想说话"} and len(rolls) >= 2  # both rolled for the user's message
-    assert "还没回这条 0.2" in rolls[0]["why"] and isinstance(rolls[0]["hit"], bool)
+    room.add_user_message("阿明", "今天好冷")
+    await room.wait_idle()
+    report = room.decision_report()
+    assert [g["ts"] for g in report] == sorted((g["ts"] for g in report), reverse=True)  # newest first
+    by_message = {g["for"]: g for g in report}
+    newest, older = by_message["阿明：今天好冷"], by_message["阿明：@C 你在吗"]
+    owed = [(s["what"], s["who"], s["why"]) for s in older["steps"]]
+    assert owed[:2] == [("欠的回答", "C", "阿明点了她"), ("没说", "C", "看了，觉得不用回（PASS）")]
+    steps = newest["steps"]
+    rolled = [s for s in steps if s["what"] == "想说话"]
+    assert len(rolled) == 3 and not any(s["hit"] for s in rolled) and "还没回这条 0.2" in rolled[0]["why"]
+    assert any(s["what"] == "保底" for s in steps) and any(s["what"] == "说了" for s in steps)
 
 
 def test_who_likes_answering_whom():
