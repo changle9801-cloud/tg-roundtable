@@ -254,7 +254,14 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def edit_room(request):
         body = await request.json()
-        response = house(lambda: runtime.home.rename_room(request.match_info["rid"], body.get("name", "")))
+        rid = request.match_info["rid"]
+
+        def change():  # floor and walls, a new name, or both
+            looks = {k: body[k] for k in ("floor", "walls") if k in body}
+            room = runtime.home.dress_room(rid, looks) if looks else runtime.home.room(rid)
+            return runtime.home.rename_room(rid, body["name"]) if "name" in body else room
+
+        response = house(change)
         runtime.refresh_prompts()
         return response
 
@@ -266,6 +273,18 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def upload_model(request):
         data = await request.read()
         return house(lambda: models.store(runtime.store.data_dir, data))
+
+    async def upload_image(request):
+        data = await request.read()
+        return house(lambda: models.store_image(runtime.store.data_dir, data))
+
+    async def get_image(request):
+        name = request.match_info["name"]
+        path = models.image_path(runtime.store.data_dir, name)
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": models.IMAGE_TYPES[name.rsplit(".", 1)[1]],
+                                               "Cache-Control": "private, max-age=86400"})
 
     async def get_model(request):
         path = models.path_of(runtime.store.data_dir, request.match_info["name"])
@@ -577,6 +596,8 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_delete("/api/home/rooms/{rid}", remove_room)
     app.router.add_post("/api/home/models", upload_model)
     app.router.add_get("/api/home/models/{name}", get_model)
+    app.router.add_post("/api/home/images", upload_image)
+    app.router.add_get("/api/home/images/{name}", get_image)
     app.router.add_get('/api/games', get_games)
     app.router.add_put('/api/games', update_games)
     app.router.add_post('/api/games/stop', stop_game)

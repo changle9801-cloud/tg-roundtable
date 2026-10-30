@@ -143,6 +143,30 @@ function ball(r, color, x, y, z) {
 
 const shade = (color, k) => new THREE.Color(color).multiplyScalar(k);
 
+const textureLoader = new THREE.TextureLoader();
+const pictures = new Map(); // uploaded picture -> its texture, loaded once
+
+// A material showing an uploaded picture, repeated rx × ry times (floor tiles, wallpaper), or a colour.
+function surfaceMaterial(look, fallback, rx = 1, ry = 1) {
+  if (!look || !look.image) return new THREE.MeshLambertMaterial({ color: look?.color ?? fallback });
+  if (!pictures.has(look.image)) {
+    const t = textureLoader.load(`/api/home/images/${look.image}`);
+    t.colorSpace = THREE.SRGBColorSpace;
+    pictures.set(look.image, t);
+  }
+  const map = pictures.get(look.image).clone();
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(Math.max(rx, 0.01), Math.max(ry, 0.01));
+  map.needsUpdate = true;
+  return new THREE.MeshLambertMaterial({ map });
+}
+
+// The coloured part of a picture-holding piece (a frame's canvas, a poster, a rug) shows its picture.
+function picture(mesh, piece) {
+  if (piece.image) mesh.material = surfaceMaterial({ image: piece.image }, 0xffffff);
+  return mesh;
+}
+
 const TEMPLATES = {
   bed: (g, W, D, H, c) => {
     g.add(box(W, 0.35, D, c, 0, 0, 0));
@@ -160,7 +184,7 @@ const TEMPLATES = {
     g.add(cylinder(0.06, H - 0.2, 0x555555, 0, 0, 0));
     g.add(cylinder(0.2, 0.18, c, 0, H - 0.2, 0));
   },
-  rug: (g, W, D, H, c) => g.add(box(W, 0.02, D, c, 0, 0, 0)),
+  rug: (g, W, D, H, c, piece) => g.add(picture(box(W, 0.02, D, c, 0, 0, 0), piece)),
   "computer-desk": (g, W, D, H, c) => {
     g.add(box(W, H, 0.7, c, 0, 0, -D / 2 + 0.35));
     g.add(box(0.8, 0.5, 0.06, 0x263238, 0, H + 0.06, -D / 2 + 0.2));
@@ -204,11 +228,11 @@ const TEMPLATES = {
     g.add(box(0.02, H * 0.9, 0.02, shade(c, 0.6), 0, H * 0.05, D / 2 + 0.01));
     for (const side of [-1, 1]) g.add(box(0.04, 0.25, 0.04, 0xd4af37, side * 0.12, H * 0.5, D / 2 + 0.03));
   },
-  poster: (g, W, D, H, c) => g.add(box(W * 0.8, H, 0.03, c, 0, 0.9, -D / 2 + 0.05)),
+  poster: (g, W, D, H, c, piece) => g.add(picture(box(W * 0.8, H, 0.03, c, 0, 0.9, -D / 2 + 0.05), piece)),
   table: (g, W, D, H, c) => g.add(box(W, H, D, c, 0, 0, 0)),
-  frame: (g, W, D, H, c) => {
+  frame: (g, W, D, H, c, piece) => {
     g.add(box(W * 0.8, H, 0.05, 0xffffff, 0, 0.95, -D / 2 + 0.05));
-    g.add(box(W * 0.66, H - 0.14, 0.02, c, 0, 1.02, -D / 2 + 0.08));
+    g.add(picture(box(W * 0.66, H - 0.14, 0.02, c, 0, 1.02, -D / 2 + 0.08), piece));
   },
   fridge: (g, W, D, H, c) => {
     g.add(box(W * 0.9, H, D * 0.8, c, 0, 0, 0));
@@ -317,7 +341,12 @@ function drawPiece(parent, rect, piece, type, clickable, available) {
 const FLOORS = { bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
 const WALL = 0xd9d4cc, WALL_H = 0.7, DOOR_W = 1.5;
 
-function walls(g, r) {
+function walls(g, r, look) {
+  const segment = (w, h, d, x, y, z, length) => {
+    const mesh = box(w, h, d, WALL, x, y, z);
+    if (look) mesh.material = surfaceMaterial(look, WALL, length / (look.tile || 1), h / (look.tile || 1));
+    return mesh;
+  };
   // Low walls a hair inside the room, with door gaps; neighbours' walls never share a face (no flicker).
   const inset = 0.06, t = 0.12;
   const edges = [
@@ -335,7 +364,7 @@ function walls(g, r) {
       const stop = gc === null ? end : gc - DOOR_W / 2;
       if (stop - start > 0.05) {
         const len = stop - start, mid = start + len / 2;
-        g.add(horizontal ? box(len, WALL_H, t, WALL, mid, 0, z1) : box(t, WALL_H, len, WALL, x1, 0, mid));
+        g.add(horizontal ? segment(len, WALL_H, t, mid, 0, z1, len) : segment(t, WALL_H, len, x1, 0, mid, len));
       }
       if (gc !== null) start = gc + DOOR_W / 2;
     }
@@ -561,13 +590,20 @@ class HomeApp {
   }
 
   async poll() {
+    let data;
     try {
       const res = await fetch("/api/home", { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
-      this.apply(await res.json());
-      this.offline(false);
+      data = await res.json();
     } catch {
-      this.offline(true);
+      this.offline(true); // the service is not answering
+      return;
+    }
+    this.offline(false);
+    try {
+      this.apply(data);
+    } catch (e) {
+      console.error("家没画出来：", e); // a drawing bug, not the service being down
     }
   }
 
@@ -603,10 +639,11 @@ class HomeApp {
       const r = L.rects[room.id];
       if (!r) continue;
       const kind = room.id.startsWith("bed-") ? "bed" : room.id;
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.08, r.d), new THREE.MeshLambertMaterial({ color: FLOORS[kind] ?? 0xeeeeee }));
+      const tile = room.floor?.tile || 1;
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.08, r.d), surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile));
       floor.position.set(r.x + r.w / 2, -0.04, r.z + r.d / 2);
       this.house.add(floor);
-      walls(this.house, r);
+      walls(this.house, r, room.walls);
       const lines = [];
       for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, 0.012, r.z, r.x + i * CELL, 0.012, r.z + r.d);
       for (let j = 0; j <= room.size[1]; j++) lines.push(r.x, 0.012, r.z + j * CELL, r.x + r.w, 0.012, r.z + j * CELL);

@@ -177,3 +177,57 @@ def test_the_page_can_draw_every_template():
     block = js[js.index("const TEMPLATES = {"):js.index("const turnedSize")]
     drawn = set(re.findall(r'^\s{2}"?([a-z-]+)"?: \(', block, re.M))
     assert drawn == set(TEMPLATES)
+
+
+# ---- floors, walls, pictures (2e) ----
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+
+
+def test_pictures_are_checked_before_they_are_kept(tmp_path):
+    saved = models.store_image(tmp_path, PNG)
+    assert saved["file"].endswith(".png") and models.image_path(tmp_path, saved["file"]).is_file()
+    assert models.image_path(tmp_path, "../home.json") is None
+    for bad, why in ((b"<svg onload=alert(1)>", "PNG"), (b"\xff\xd8\xff" + b"0" * (6 * 1024 * 1024), "太大")):
+        with pytest.raises(models.ModelError, match=why):
+            models.store_image(tmp_path, bad)
+
+
+def test_a_room_gets_its_own_floor_and_walls_and_keeps_them(tmp_path):
+    home = house(tmp_path)
+    tiles = models.store_image(tmp_path, PNG)["file"]
+    room = home.dress_room("kitchen", {"floor": {"image": tiles, "tile": 9}, "walls": {"color": "#AABBCC"}})
+    assert room["floor"] == {"image": tiles, "tile": 5.0} and room["walls"] == {"color": "#aabbcc"}
+    again = Home(tmp_path).room("kitchen")
+    assert again["floor"]["image"] == tiles and again["walls"]["color"] == "#aabbcc"  # after a restart
+    home.dress_room("kitchen", {"walls": None})
+    assert "walls" not in home.room("kitchen")
+    with pytest.raises(PlacementError, match="先上传"):
+        home.dress_room("kitchen", {"floor": {"image": "0123456789abcdef.png"}})
+    with pytest.raises(PlacementError, match="颜色"):
+        home.dress_room("kitchen", {"walls": {"color": "red"}})
+
+
+def test_only_frames_posters_and_rugs_show_pictures(tmp_path):
+    home = house(tmp_path)
+    mural = models.store_image(tmp_path, PNG)["file"]
+    frame = next(p for p in home.pieces if p["type"] == "base/frame")
+    assert home.edit_piece(frame["id"], {"image": mural})["image"] == mural
+    assert "image" not in home.edit_piece(frame["id"], {"image": None})
+    bed = next(p for p in home.pieces if p["type"] == "base/bed")
+    with pytest.raises(PlacementError, match="画框"):
+        home.edit_piece(bed["id"], {"image": mural})
+
+
+async def test_the_page_can_dress_a_room(admin):  # noqa: F811
+    await login(admin)
+    up = await admin.post("/api/home/images", data=PNG, headers={"Origin": admin.origin})
+    name = (await up.json())["file"]
+    resp = await admin.put("/api/home/rooms/living", json={"floor": {"image": name, "tile": 1.5}, "walls": {"color": "#ffffff"}},
+                           headers={"Origin": admin.origin})
+    room = await resp.json()
+    assert resp.status == 200 and room["floor"] == {"image": name, "tile": 1.5} and room["name"] == "客厅"
+    got = await admin.get(f"/api/home/images/{name}")
+    assert got.status == 200 and got.headers["Content-Type"] == "image/png"
+    bad = await admin.post("/api/home/images", data=b"GIF89a", headers={"Origin": admin.origin})
+    assert bad.status == 400

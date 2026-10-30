@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import furniture, owner
+from . import furniture, models, owner
 from .furniture import BEDROOM_DOORS, BEDROOM_SIZE, BUILTIN_TYPES, SHARED_ROOMS, PlacementError
 from .games.spire_bridge import atomic_json
 
@@ -63,6 +63,8 @@ ACTIVITIES = {
 DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
 ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
 ROOM_NAME_MAX = 8
+PICTURE_TEMPLATES = ("frame", "poster", "rug")  # pieces that can show a picture (a mural is a framed one)
+TILE_RANGE = (0.25, 5.0)  # units one floor tile or wallpaper image covers before it repeats
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
 
 
@@ -224,6 +226,17 @@ class Home:
             piece["color"] = color.lower() if color else None
         if "name" in changes:
             piece["name"] = str(changes["name"] or "").strip()[:16] or None
+        if "image" in changes:
+            template = self.all_types().get(piece["type"], {}).get("template")
+            if template not in PICTURE_TEMPLATES:
+                raise PlacementError("只有画框、海报、地毯能放图片")
+            image = changes["image"]
+            if image and models.image_path(self.path.parent, str(image)) is None:
+                raise PlacementError("图片要先上传")
+            if image:
+                piece["image"] = str(image)
+            else:
+                piece.pop("image", None)
         if "functions" in changes:
             if piece["type"] == "base/parcel":
                 raise PlacementError("纸箱的功能跟着它的工具走")
@@ -292,6 +305,38 @@ class Home:
         room = {"id": "room-" + furniture.new_id()[2:], "name": name, "icon": "🚪", "shared": True,
                 "size": list(ROOM_SIZES[size]), "doors": [{"wall": "back"}]}
         self.rooms.append(room)
+        self.save()
+        return room
+
+    def surface(self, raw) -> dict | None:
+        """A floor or wall look: {"color": "#rrggbb"} or {"image": <uploaded picture>, "tile": units}."""
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise PlacementError("地面、墙面的格式不对")
+        if raw.get("image"):
+            if models.image_path(self.path.parent, str(raw["image"])) is None:
+                raise PlacementError("图片要先上传")
+            try:
+                tile = float(raw.get("tile", 1))
+            except (TypeError, ValueError):
+                raise PlacementError("图案大小写数字") from None
+            return {"image": str(raw["image"]), "tile": round(min(TILE_RANGE[1], max(TILE_RANGE[0], tile)), 2)}
+        color = str(raw.get("color") or "")
+        if not HEX.match(color):
+            raise PlacementError("颜色要写成 #rrggbb")
+        return {"color": color.lower()}
+
+    def dress_room(self, rid: str, changes: dict) -> dict:
+        """The owner sets a room's floor and walls (``None`` puts the default back)."""
+        room = self.room(rid)
+        for part in ("floor", "walls"):
+            if part in changes:
+                look = self.surface(changes[part])
+                if look is None:
+                    room.pop(part, None)
+                else:
+                    room[part] = look
         self.save()
         return room
 

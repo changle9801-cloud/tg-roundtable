@@ -52,7 +52,7 @@ function checkboxes(names, chosen, onChange) {
 
 function section(title, ...children) {
   const s = el("div", "home-edit-section");
-  s.append(el("h3", "", title), ...children);
+  s.append(el("h3", "", title), ...children.filter(Boolean));
   return s;
 }
 
@@ -84,12 +84,23 @@ export function renderEditor(app) {
     remove.onclick = () => act(async () => { await send("DELETE", `/api/home/pieces/${piece.id}`); app.selectedPiece = ""; });
     const row = el("div", "home-look");
     row.append(color, turn, remove);
+    let pic = null; // a frame, poster or rug can show a picture
+    if (["frame", "poster", "rug"].includes(type.template)) {
+      pic = el("div", "home-look");
+      const file = pickImage(async (name) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { image: name })));
+      pic.append(el("span", "muted small", piece.image ? "有图片" : "放一张图片"), file);
+      if (piece.image) {
+        const off = el("button", "", "去掉图片");
+        off.onclick = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { image: null }));
+        pic.append(off);
+      }
+    }
     const fns = piece.type === "base/parcel"
       ? el("p", "muted small", "纸箱的功能跟着它的工具走：到「工具」页面给工具选一个功能，纸箱就拆开了。")
       : checkboxes(functionNames(d), piece.functions || [],
         (next) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { functions: next })));
     out.push(section(`选中：${piece.name || type.name}`, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
-      name, row, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
+      name, row, pic, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
   }
 
   // ---- adding a piece ----
@@ -148,7 +159,9 @@ export function renderEditor(app) {
     n.value = r.name;
     n.maxLength = 8;
     n.onchange = () => act(() => send("PUT", `/api/home/rooms/${r.id}`, { name: n.value }));
-    row.append(n);
+    const dress = el("button", "", "外观");
+    dress.onclick = () => openRoomLook(app, r);
+    row.append(n, dress);
     if (!r.id.startsWith("bed-") && r.id !== "living") {
       const del = el("button", "danger", "删");
       del.onclick = () => act(() => send("DELETE", `/api/home/rooms/${r.id}`));
@@ -169,6 +182,65 @@ export function renderEditor(app) {
   roomRow.append(roomName, size, addRoom);
   out.push(section("房间", roomList, roomRow, el("p", "muted small", "只能删空的、不是卧室的房间；客厅有大门，不能删。")));
   return out;
+}
+
+// A file picker that uploads a picture (PNG, JPG, WebP) and hands back its saved name.
+function pickImage(done) {
+  const file = el("input");
+  file.type = "file";
+  file.accept = ".png,.jpg,.jpeg,.webp";
+  file.onchange = async () => {
+    const f = file.files[0];
+    if (!f) return;
+    try { done((await send("POST", "/api/home/images", await f.arrayBuffer(), true)).file); }
+    catch (e) { say(e.message, true); }
+  };
+  return file;
+}
+
+// ---- a room's floor and walls: a colour, or a picture repeated like tiles or wallpaper ----
+
+function openRoomLook(app, room) {
+  const draft = { floor: room.floor || null, walls: room.walls || null };
+  const body = el("div", "home-kind-editor");
+  const part = (key, label) => {
+    const box = el("div", "home-edit-section");
+    const render = () => {
+      const look = draft[key];
+      const color = el("input");
+      color.type = "color";
+      color.value = look?.color || (key === "floor" ? "#efe6da" : "#d9d4cc");
+      color.oninput = () => { draft[key] = { color: color.value }; render(); };
+      const reset = el("button", "", "用默认的");
+      reset.onclick = () => { draft[key] = null; render(); };
+      const row = el("div", "home-look");
+      row.append(el("span", "muted small", "颜色"), color, el("span", "muted small", "或图片"),
+        pickImage((name) => { draft[key] = { image: name, tile: look?.tile || 1 }; render(); }), reset);
+      const now = look?.image ? `图片 ${look.image}` : look?.color ? `颜色 ${look.color}` : "默认";
+      box.replaceChildren(el("h3", "", label), el("p", "muted small", `现在：${now}`), row);
+      if (look?.image) {
+        const tile = el("input");
+        tile.type = "number"; tile.min = 0.25; tile.max = 5; tile.step = 0.25; tile.value = look.tile || 1;
+        tile.onchange = () => (draft[key] = { ...look, tile: Number(tile.value) });
+        const t = el("div", "home-look");
+        t.append(el("span", "muted small", "一张图铺多大（米）"), tile);
+        box.append(t);
+      }
+    };
+    render();
+    return box;
+  };
+  const save = el("button", "primary", "保存");
+  save.onclick = async () => {
+    try {
+      await send("PUT", `/api/home/rooms/${room.id}`, draft);
+      app.modal.hidden = true;
+      await app.poll();
+    } catch (e) { say(e.message, true); }
+  };
+  body.append(el("h2", "", `${room.name}的外观`), part("floor", "地面（地砖、地板）"), part("walls", "墙面（墙纸、颜色）"),
+    el("p", "muted small", "图片会像地砖、墙纸一样重复铺开。只收 PNG、JPG、WebP，最大 5 MB。"), save);
+  app.showModal(body);
 }
 
 // ---- making or changing a kind of furniture ----
