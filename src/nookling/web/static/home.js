@@ -435,35 +435,54 @@ function drawPiece(parent, rect, piece, type, clickable, available) {
 }
 
 const FLOORS = { hall: 0xe9e4dc, bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
-const WALL = 0xd9d4cc, WALL_H = 0.7;
+const WALL = 0xd9d4cc, WALL_H = 0.7, WALL_TALL = 2.6, LINTEL = 2.1;
+const OUTWARD = { back: [0, -1], front: [0, 1], left: [-1, 0], right: [1, 0] };
 
-function walls(g, r, look) {
+// A room's walls, a hair inside the room (neighbours' walls never share a face, so no flicker). Each wall is
+// a low part, always drawn, and above it the rest of a full-height wall (a lintel over a door), which
+// showWalls hides, shows or makes see-through as the camera turns. Without `uppers`, only the low part.
+// `rooms` (cell -> room) tells what is behind each stretch of wall: another room, or outside.
+function walls(g, r, look, rooms, uppers) {
   const segment = (w, h, d, x, y, z, length) => {
     const mesh = box(w, h, d, WALL, x, y, z);
     if (look) mesh.material = surfaceMaterial(look, WALL, length / (look.tile || 1), h / (look.tile || 1));
     return mesh;
   };
-  // Low walls a hair inside the room, with door gaps; neighbours' walls never share a face (no flicker).
   const inset = 0.06, t = 0.12;
-  const edges = [
-    ["back", r.x + inset, r.z + inset, r.x + r.w - inset, r.z + inset],
-    ["front", r.x + inset, r.z + r.d - inset, r.x + r.w - inset, r.z + r.d - inset],
-    ["left", r.x + inset, r.z + inset, r.x + inset, r.z + r.d - inset],
-    ["right", r.x + r.w - inset, r.z + inset, r.x + r.w - inset, r.z + r.d - inset],
-  ];
-  for (const [wall, x1, z1, x2, z2] of edges) {
-    const horizontal = z1 === z2;
-    const gaps = r.doors.filter((dp) => dp.wall === wall).map((dp) => [horizontal ? dp.x : dp.z, dp.w]).sort((a, b) => a[0] - b[0]);
-    let start = horizontal ? x1 : z1;
-    const end = horizontal ? x2 : z2;
-    for (const gap of [...gaps, null]) {
-      const gc = gap && gap[0], half = gap ? gap[1] / 2 : 0;
-      const stop = gap === null ? end : gc - half;
-      if (stop - start > 0.05) {
-        const len = stop - start, mid = start + len / 2;
-        g.add(horizontal ? segment(len, WALL_H, t, mid, 0, z1, len) : segment(t, WALL_H, len, x1, 0, mid, len));
+  const [ax, az] = r.room.at, [cols, rows] = r.room.size;
+  const sides = { // cells along the wall, and the cell just beyond the i-th of them
+    back: [cols, (i) => [ax + i, az - 1]], front: [cols, (i) => [ax + i, az + rows]],
+    left: [rows, (i) => [ax - 1, az + i]], right: [rows, (i) => [ax + cols, az + i]],
+  };
+  for (const [wall, [n, beyond]] of Object.entries(sides)) {
+    const horizontal = wall === "back" || wall === "front";
+    const gaps = r.doors.filter((dp) => dp.wall === wall).map((dp) => {
+      const c = (horizontal ? dp.x - r.x : dp.z - r.z) / CELL, half = dp.w / CELL / 2;
+      return [Math.round(c - half), Math.round(c + half)];
+    });
+    const kind = (i) => `${gaps.some(([a, b]) => i >= a && i < b) ? "door" : "wall"}:${rooms?.get(cellKey(...beyond(i))) ? "inside" : "outside"}`;
+    for (let i = 0; i < n;) { // stretches of the wall that are alike: wall or door, a room or outside behind
+      const k = kind(i);
+      let j = i + 1;
+      while (j < n && kind(j) === k) j++;
+      const from = Math.max(i * CELL, inset), to = Math.min(j * CELL, n * CELL - inset), len = to - from, mid = (from + to) / 2;
+      const [x, z] = horizontal ? [r.x + mid, wall === "back" ? r.z + inset : r.z + r.d - inset]
+                                : [wall === "left" ? r.x + inset : r.x + r.w - inset, r.z + mid];
+      const part = (y, h) => segment(horizontal ? len : t, h, horizontal ? t : len, x, y, z, len);
+      const [what, behind] = k.split(":");
+      if (len > 0.05 && what === "wall") g.add(part(0, WALL_H));
+      if (len > 0.05 && uppers) {
+        const y = what === "door" ? LINTEL : WALL_H, upper = part(y, WALL_TALL - y);
+        if (behind === "inside") { // another room behind: see-through, so it never hides that room
+          upper.material.transparent = true;
+          upper.material.opacity = 0.28;
+          upper.material.depthWrite = false;
+        }
+        upper.userData.outward = OUTWARD[wall];
+        uppers.push(upper);
+        g.add(upper);
       }
-      if (gap !== null) start = gc + half;
+      i = j;
     }
   }
   for (const door of r.doors.filter((dp) => dp.outside)) g.add(box(1.2, 1.9, 0.12, 0x6d4c41, door.x, 0, door.z));
@@ -778,6 +797,9 @@ class HomeApp {
     this.pieceAt = {}; // piece id -> its centre and the way its front faces, for standing in front of it
     this.furnitureLevels = {};
     this.walks = {};
+    for (const lv of this.levels) if (this.Ls[lv]) this.walks[lv] = walkGrid(this.Ls[lv], data, wells[lv] || []);
+    this.uppers = []; // the tall parts of the walls of the floor being viewed
+    this.wallKey = "";
     for (const lv of this.levels) {
       const Lx = this.Ls[lv];
       if (!Lx) continue;
@@ -800,7 +822,9 @@ class HomeApp {
         const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), look);
         floor.position.set(r.x + r.w / 2, hall ? -0.03 : -0.04, r.z + r.d / 2);
         g.add(floor);
-        if (!hall || room.walls) walls(g, r, room.walls); // hallways are open, like the old corridors
+        if (!hall || room.walls) { // hallways are open, like the old corridors
+          walls(g, r, room.walls, this.walks[lv].rooms, lv === this.view ? this.uppers : null); // lower floors: low walls
+        }
         if (lv === this.view) {
           const lines = [];
           for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, base + 0.012, r.z, r.x + i * CELL, base + 0.012, r.z + r.d);
@@ -841,7 +865,6 @@ class HomeApp {
       }
     }
     this.wells = wells;
-    for (const lv of this.levels) if (this.Ls[lv]) this.walks[lv] = walkGrid(this.Ls[lv], data, wells[lv] || []);
     if (this.L) for (const d of this.L.doors) { // a mark on every door of the floor being viewed, for the floor-plan mode
       const along = d.line === "z";
       const mark = new THREE.Mesh(new THREE.BoxGeometry(along ? d.w : 0.3, 0.08, along ? 0.3 : d.w),
@@ -860,6 +883,24 @@ class HomeApp {
     }
     this.showHighlight();
     this.renderFloors();
+    this.showWalls();
+  }
+
+  // The tall part of each wall, by where the camera is: a wall facing the camera stays low so the room is seen
+  // over it; one facing away is full height (see-through when another room is behind it, from walls()).
+  // Seen from above (arranging), all walls are low.
+  showWalls() {
+    if (!this.uppers) return;
+    const v = this.camera.position.clone().sub(this.controls.target).setY(0);
+    const len = v.length() || 1, side = (c) => (c / len > 0.2 ? 1 : c / len < -0.2 ? -1 : 0);
+    const [sx, sz] = [side(v.x), side(v.z)], top = this.arranging || (!sx && !sz);
+    const key = top ? "top" : `${sx},${sz}`;
+    if (key === this.wallKey) return;
+    this.wallKey = key;
+    for (const m of this.uppers) {
+      const [nx, nz] = m.userData.outward;
+      m.visible = !top && nx * sx + nz * sz < 0;
+    }
   }
 
   // ---- floors: which one is being looked at ----
@@ -1598,7 +1639,7 @@ class HomeApp {
       const inv = this.camera.matrixWorldInverse;
       let halfX = 0, halfY = 0;
       const B = this.bounds, y0 = (this.view || 0) * STOREY;
-      for (const x of [B.X0 - 1, B.X1 + 1]) for (const z of [B.Z0 - 1, B.Z1 + 3]) for (const y of [y0, y0 + 1.5]) {
+      for (const x of [B.X0 - 1, B.X1 + 1]) for (const z of [B.Z0 - 1, B.Z1 + 3]) for (const y of [y0, y0 + WALL_TALL]) {
         const p = new THREE.Vector3(x, y, z).applyMatrix4(inv);
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));
@@ -1625,6 +1666,7 @@ class HomeApp {
       fig.root.visible = !(fig.out && !fig.path.length) && lvl > -0.45 && lvl < 0.55; // on this floor, or half-way up its stairs
     }
     this.controls.update();
+    this.showWalls();
     this.renderer.render(this.scene, this.camera);
     this.drawLabels();
   }
