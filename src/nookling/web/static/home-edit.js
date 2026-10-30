@@ -1,0 +1,259 @@
+// Arranging the house (docs/furniture.md, 2d): the side panel while 「布置家具」 is on — the selected
+// piece, adding furniture, the owner's own kinds of furniture, and rooms. Every change goes to the
+// server, which checks it ("放不下", "挡住门了"); the house then redraws from what was saved.
+
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+export async function send(method, path, body, raw = false) {
+  const res = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": raw ? "application/octet-stream" : "application/json" },
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
+  return data;
+}
+
+export function say(text, isError = false) {
+  if (typeof window.toast === "function") window.toast(text, isError);
+  else if (isError) alert(text);
+}
+
+// Every function name the house knows: built-in ones, and any used on furniture or by tools.
+function functionNames(d) {
+  const names = { ...d.function_names };
+  for (const f of d.available || []) names[f] ||= f.startsWith("tool.") ? `还没拆箱的工具（${f.slice(5)}）` : f;
+  for (const p of d.pieces) for (const f of p.functions || []) names[f] ||= f;
+  for (const t of Object.values(d.types)) for (const f of t.functions || []) names[f] ||= f;
+  return names;
+}
+
+function checkboxes(names, chosen, onChange) {
+  const box = el("div", "home-fns");
+  for (const [f, label] of Object.entries(names)) {
+    if (f.startsWith("tool.")) continue; // an unlinked tool belongs to its box only
+    const input = el("input");
+    input.type = "checkbox";
+    input.checked = chosen.includes(f);
+    input.onchange = () => onChange(input.checked ? [...chosen, f] : chosen.filter((x) => x !== f));
+    const row = el("label", "home-fn");
+    row.append(input, el("span", "", label), el("code", "", f));
+    box.append(row);
+  }
+  return box;
+}
+
+function section(title, ...children) {
+  const s = el("div", "home-edit-section");
+  s.append(el("h3", "", title), ...children);
+  return s;
+}
+
+export function renderEditor(app) {
+  const d = app.data;
+  const rooms = Object.fromEntries(d.rooms.map((r) => [r.id, r]));
+  const out = [el("h2", "", "布置"), el("p", "muted small", "拖动家具换位置，点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
+  const act = async (fn, done) => {
+    try { await fn(); if (done) say(done); } catch (e) { say(e.message, true); }
+    await app.poll();
+  };
+
+  // ---- the selected piece ----
+  const piece = d.pieces.find((p) => p.id === app.selectedPiece);
+  if (piece) {
+    const type = d.types[piece.type] || {};
+    const name = el("input");
+    name.value = piece.name || "";
+    name.placeholder = type.name || "";
+    name.maxLength = 16;
+    name.onchange = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { name: name.value }));
+    const color = el("input");
+    color.type = "color";
+    color.value = piece.color || type.color || "#888888";
+    color.onchange = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { color: color.value }));
+    const turn = el("button", "", "转 90°");
+    turn.onclick = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { turn: (piece.turn + 90) % 360 }));
+    const remove = el("button", "danger", "删掉");
+    remove.onclick = () => act(async () => { await send("DELETE", `/api/home/pieces/${piece.id}`); app.selectedPiece = ""; });
+    const row = el("div", "home-look");
+    row.append(color, turn, remove);
+    const fns = piece.type === "base/parcel"
+      ? el("p", "muted small", "纸箱的功能跟着它的工具走：到「工具」页面给工具选一个功能，纸箱就拆开了。")
+      : checkboxes(functionNames(d), piece.functions || [],
+        (next) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { functions: next })));
+    out.push(section(`选中：${piece.name || type.name}`, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
+      name, row, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
+  }
+
+  // ---- adding a piece ----
+  const kind = el("select");
+  const groups = { 内置: [], 我做的: [] };
+  for (const t of Object.values(d.types)) if (t.id !== "base/parcel") groups[t.id.startsWith("mine/") ? "我做的" : "内置"].push(t);
+  for (const [label, list] of Object.entries(groups)) {
+    if (!list.length) continue;
+    const g = el("optgroup");
+    g.label = label;
+    for (const t of list) { const o = el("option", "", t.name); o.value = t.id; g.append(o); }
+    kind.append(g);
+  }
+  if (app.addKind) kind.value = app.addKind;
+  kind.onchange = () => (app.addKind = kind.value);
+  const into = el("select");
+  for (const r of d.rooms) { const o = el("option", "", r.name); o.value = r.id; into.append(o); }
+  if (app.addRoom) into.value = app.addRoom;
+  into.onchange = () => (app.addRoom = into.value);
+  const add = el("button", "", "放进去");
+  add.onclick = () => act(async () => { app.selectedPiece = (await send("POST", "/api/home/pieces", { type: kind.value, room: into.value })).id; });
+  const addRow = el("div", "home-look");
+  addRow.append(kind, into, add);
+  out.push(section("添加家具", addRow));
+
+  // ---- the owner's own kinds ----
+  const mine = Object.values(d.types).filter((t) => t.id.startsWith("mine/"));
+  const list = el("div", "home-kinds");
+  for (const t of mine) {
+    const row = el("div", "home-kind");
+    const edit = el("button", "", "改");
+    edit.onclick = () => openKind(app, t);
+    const del = el("button", "danger", "删");
+    del.onclick = () => act(() => send("DELETE", `/api/home/types/${t.id}`));
+    row.append(el("span", "", `${t.name}${t.model ? " · 模型" : ""}`), edit, del);
+    list.append(row);
+  }
+  if (!mine.length) list.append(el("p", "muted small", "还没有自己做的家具。"));
+  const make = el("button", "", "新做一种");
+  make.onclick = () => openKind(app, null);
+  const copyOf = el("select");
+  for (const t of Object.values(d.types)) if (t.id.startsWith("base/") && t.id !== "base/parcel") {
+    const o = el("option", "", t.name); o.value = t.id; copyOf.append(o);
+  }
+  const copy = el("button", "", "复制一份");
+  copy.onclick = () => act(async () => openKind(app, await send("POST", "/api/home/types", { copy_of: copyOf.value })));
+  const kindRow = el("div", "home-look");
+  kindRow.append(make, copyOf, copy);
+  out.push(section("我做的家具", list, kindRow, el("p", "muted small", "内置的家具不能直接改：复制一份，改成自己的。")));
+
+  // ---- rooms ----
+  const roomList = el("div", "home-kinds");
+  for (const r of d.rooms) {
+    const row = el("div", "home-kind");
+    const n = el("input");
+    n.value = r.name;
+    n.maxLength = 8;
+    n.onchange = () => act(() => send("PUT", `/api/home/rooms/${r.id}`, { name: n.value }));
+    row.append(n);
+    if (!r.id.startsWith("bed-") && r.id !== "living") {
+      const del = el("button", "danger", "删");
+      del.onclick = () => act(() => send("DELETE", `/api/home/rooms/${r.id}`));
+      row.append(del);
+    }
+    roomList.append(row);
+  }
+  const roomName = el("input");
+  roomName.placeholder = "新房间的名字";
+  roomName.maxLength = 8;
+  const size = el("select");
+  for (const [k, label] of [["small", "小"], ["medium", "中"], ["large", "大"]]) {
+    const o = el("option", "", `${label}（${d.room_sizes[k][0] / 2}×${d.room_sizes[k][1] / 2}）`); o.value = k; size.append(o);
+  }
+  const addRoom = el("button", "", "加一间");
+  addRoom.onclick = () => act(() => send("POST", "/api/home/rooms", { name: roomName.value, size: size.value }));
+  const roomRow = el("div", "home-look");
+  roomRow.append(roomName, size, addRoom);
+  out.push(section("房间", roomList, roomRow, el("p", "muted small", "只能删空的、不是卧室的房间；客厅有大门，不能删。")));
+  return out;
+}
+
+// ---- making or changing a kind of furniture ----
+
+function openKind(app, existing) {
+  const d = app.data;
+  const draft = existing ? JSON.parse(JSON.stringify(existing))
+    : { template: "sofa", name: "", size: [...d.templates.sofa.size], height: d.templates.sofa.height, color: d.templates.sofa.color, functions: [], model: null };
+  const body = el("div", "home-kind-editor");
+  const preview = el("div", "home-preview");
+  const render = () => {
+    body.replaceChildren();
+    const field = (label, input) => { const f = el("label", "home-field"); f.append(el("span", "muted small", label), input); return f; };
+    const name = el("input");
+    name.value = draft.name;
+    name.placeholder = d.templates[draft.template]?.name || "";
+    name.maxLength = 16;
+    name.oninput = () => (draft.name = name.value);
+    const template = el("select");
+    for (const [k, t] of Object.entries(d.templates)) { const o = el("option", "", t.name); o.value = k; o.selected = k === draft.template; template.append(o); }
+    template.onchange = () => {
+      const t = d.templates[template.value];
+      Object.assign(draft, { template: template.value, size: [...t.size], height: t.height, color: t.color });
+      render();
+    };
+    const num = (value, min, max, step, set) => {
+      const i = el("input");
+      i.type = "number"; i.min = min; i.max = max; i.step = step; i.value = value;
+      i.onchange = () => { set(Number(i.value)); app.showPreview(preview, draft); };
+      return i;
+    };
+    const color = el("input");
+    color.type = "color";
+    color.value = draft.color;
+    color.oninput = () => { draft.color = color.value; app.showPreview(preview, draft); };
+    const sizes = el("div", "home-look");
+    sizes.append(num(draft.size[0], 1, 24, 1, (v) => (draft.size[0] = v)), el("span", "", "×"),
+      num(draft.size[1], 1, 24, 1, (v) => (draft.size[1] = v)), el("span", "muted small", "格（一格半米）"));
+    const model = el("div", "home-model");
+    const file = el("input");
+    file.type = "file";
+    file.accept = ".glb";
+    const info = el("p", "muted small", draft.model ? `模型：${draft.model.file}` : "可以上传 Tripo 等导出的 .glb，替换上面的样子。");
+    file.onchange = async () => {
+      const f = file.files[0];
+      if (!f) return;
+      info.textContent = "上传中…";
+      try {
+        const got = await send("POST", "/api/home/models", await f.arrayBuffer(), true);
+        draft.model = { file: got.file, turn: 0, scale: 1 };
+        info.textContent = `${(got.bytes / 1048576).toFixed(1)} MB，约 ${got.triangles} 个三角面${got.animations.length ? `，动画：${got.animations.join("、")}` : ""}`
+          + (got.triangles > 100000 ? "。面数有点多，手机上可能会卡。" : "");
+        render();
+      } catch (e) { info.textContent = e.message; }
+    };
+    model.append(file, info);
+    if (draft.model) {
+      const turn = el("select");
+      for (const a of [0, 90, 180, 270]) { const o = el("option", "", `转 ${a}°`); o.value = a; o.selected = draft.model.turn === a; turn.append(o); }
+      turn.onchange = () => { draft.model.turn = Number(turn.value); app.showPreview(preview, draft); };
+      const drop = el("button", "danger", "不用模型");
+      drop.onclick = () => { draft.model = null; render(); };
+      const row = el("div", "home-look");
+      row.append(turn, el("span", "muted small", "大小"), num(draft.model.scale, 0.2, 3, 0.1, (v) => (draft.model.scale = v)), drop);
+      model.append(row);
+    }
+    const save = el("button", "primary", existing ? "保存" : "做好了");
+    save.onclick = async () => {
+      try {
+        const payload = { name: draft.name, template: draft.template, size: draft.size, height: draft.height,
+                          color: draft.color, functions: draft.functions, model: draft.model };
+        if (existing) await send("PUT", `/api/home/types/${existing.id}`, payload);
+        else await send("POST", "/api/home/types", payload);
+        app.modal.hidden = true;
+        await app.poll();
+      } catch (e) { say(e.message, true); }
+    };
+    body.append(el("h2", "", existing ? `改：${existing.name}` : "新做一种家具"),
+      field("名字", name), field("样子", template), field("占地", sizes),
+      field("高度（米）", num(draft.height, 0.01, 3, 0.05, (v) => (draft.height = v))), field("颜色", color),
+      preview, field("模型", model),
+      field("默认挂的功能（摆出来时带上，之后每件可以改）", checkboxes(functionNames(d), draft.functions, (next) => { draft.functions = next; render(); })),
+      el("p", "muted small", "坐、躺的位置按样子和大小自动算：沙发每两格一个座位，床一个躺的位置。"), save);
+    app.showPreview(preview, draft);
+  };
+  render();
+  app.showModal(body);
+}

@@ -212,3 +212,92 @@ def tool_functions(links: dict[str, list[str]], tool_id: str) -> list[str]:
 
 
 BUILTIN_TYPES["base/parcel"] = _type("parcel", "纸箱", "parcel", (2, 2), 0.7, "#c8a26b", tags=["储物间"])
+
+
+# ---- templates: the built-in looks a kind of furniture is drawn with, and its defaults ----
+
+TEMPLATES = {  # name, default size (cells), height, colour, blocks the way, is a screen
+    "bed": ("床", (3, 5), 0.47, "#a1887f", True, False),
+    "sofa": ("沙发", (6, 2), 0.9, "#5c6bc0", True, False),
+    "armchair": ("单人沙发", (2, 2), 0.9, "#8d6e63", True, False),
+    "chair": ("椅子", (1, 1), 0.45, "#8d6e63", True, False),
+    "beanbag": ("懒人沙发", (2, 2), 0.4, "#ff8a65", True, False),
+    "writing-desk": ("书桌", (3, 1), 0.7, "#bcaaa4", True, False),
+    "computer-desk": ("电脑桌", (3, 3), 0.72, "#d7ccc8", True, False),
+    "table": ("桌子", (4, 2), 0.4, "#bcaaa4", True, False),
+    "dining-table": ("餐桌和椅子", (4, 4), 0.72, "#d7ccc8", True, False),
+    "bookshelf": ("书架", (5, 1), 2.0, "#8d6e63", True, False),
+    "wardrobe": ("衣柜", (4, 2), 2.0, "#a1887f", True, False),
+    "tv": ("电视", (6, 1), 1.85, "#212121", True, True),
+    "fridge": ("冰箱", (2, 2), 1.9, "#eceff1", True, False),
+    "counter": ("柜台", (8, 1), 0.9, "#b0bec5", True, False),
+    "floor-lamp": ("落地灯", (1, 1), 1.1, "#ffe082", True, False),
+    "plant": ("盆栽", (1, 1), 1.1, "#66bb6a", True, False),
+    "rug": ("地毯", (4, 3), 0.02, "#d7ccc8", False, False),
+    "frame": ("画框", (2, 1), 0.6, "#90caf9", False, False),
+    "poster": ("海报", (2, 1), 0.9, "#ef9a9a", False, False),
+    "boxes": ("纸箱堆", (3, 3), 1.2, "#bcaaa4", True, False),
+    "parcel": ("纸箱", (2, 2), 0.7, "#c8a26b", True, False),
+}
+MAX_SIZE = 24  # cells, either way
+MAX_TYPES = 200
+
+
+def auto_uses(template: str, size) -> list[dict]:
+    """Where people sit or lie on a kind of furniture, worked out from its template and size."""
+    w, d = size
+    if template == "sofa":
+        n = max(1, w // 2)
+        return [_sit((i + 0.5) * w / n, d * 0.45, 0, 0.05) for i in range(n)]
+    if template in ("armchair", "chair", "beanbag"):
+        return [_sit(w / 2, d / 2, 0, 0.05 if template != "chair" else 0.0)]
+    if template == "bed":
+        return [{"pose": "lie", "at": [w / 2, d * 0.56], "face": 0, "y": 0.5}, _sit(w + 0.6, d * 0.72, 90)]
+    if template == "computer-desk":
+        return [_sit(w / 2, d - 0.8, 180)]
+    if template == "writing-desk":
+        return [_sit(w / 2, d + 0.7, 180)]
+    if template == "dining-table":
+        n = max(1, w // 2)
+        return ([_sit((i + 0.5) * w / n, 0.4, 0) for i in range(n)]
+                + [_sit((i + 0.5) * w / n, d - 0.4, 180) for i in range(n)])
+    return []
+
+
+def make_type(raw: dict, tid: str, base: dict | None = None) -> dict:
+    """A kind of furniture the owner made, checked. ``base``: the kind being edited, if any."""
+    if not isinstance(raw, dict):
+        raise PlacementError("家具种类格式不对")
+    old = base or {}
+    template = str(raw.get("template") or old.get("template") or "")
+    if template not in TEMPLATES:
+        raise PlacementError(f"没有这个样子：{template}")
+    tname, tsize, theight, tcolor, tblocks, tscreen = TEMPLATES[template]
+    name = str(raw.get("name") or old.get("name") or tname).strip()[:16]
+    try:
+        size = [int(v) for v in (raw.get("size") or old.get("size") or tsize)]
+        height = float(raw.get("height") if raw.get("height") is not None else old.get("height", theight))
+    except (TypeError, ValueError):
+        raise PlacementError("尺寸要写成整数格，高度写数字") from None
+    if len(size) != 2 or not all(1 <= v <= MAX_SIZE for v in size):
+        raise PlacementError(f"尺寸是 1 到 {MAX_SIZE} 格")
+    if not 0.01 <= height <= 3:
+        raise PlacementError("高度在 0.01 到 3 之间")
+    color = str(raw.get("color") or old.get("color") or tcolor)
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise PlacementError("颜色要写成 #rrggbb")
+    functions = raw.get("functions", old.get("functions", []))
+    if not isinstance(functions, list) or not all(isinstance(f, str) and FUNCTION_RE.match(f) for f in functions):
+        raise PlacementError("功能名要像 video.watch 这样")
+    model = raw.get("model", old.get("model"))
+    if model is not None and not (isinstance(model, dict) and re.fullmatch(r"[0-9a-f]{16}\.glb", str(model.get("file", "")))):
+        raise PlacementError("模型要先上传")
+    if model is not None:
+        model = {"file": model["file"], "turn": int(model.get("turn", 0)) % 360,
+                 "scale": min(3.0, max(0.2, float(model.get("scale", 1))))}
+    same_shape = old and old.get("template") == template and old.get("size") == size
+    uses = old["uses"] if same_shape and old.get("uses") is not None else auto_uses(template, size)
+    return {"id": tid, "name": name, "template": template, "size": size, "height": round(height, 3),
+            "color": color.lower(), "model": model, "blocks": tblocks, "uses": uses,
+            "screen": {"face": 0} if tscreen else None, "functions": list(dict.fromkeys(functions)),
+            "tags": [str(t)[:8] for t in (raw.get("tags") or old.get("tags") or [])][:6]}

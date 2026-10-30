@@ -22,7 +22,8 @@ from ..participants import ParticipantError
 from ..participants.api import PROVIDERS
 from ..prompts import DEFAULT_SYSTEM_PROMPT, PLACEHOLDERS
 from ..settings import apply_secret_changes, masked_secrets
-from ..furniture import FUNCTIONS
+from .. import models
+from ..furniture import FUNCTIONS, PlacementError
 from ..memory import LEARN_INSTRUCTIONS
 from ..kaomoji import STARTER as KAOMOJI_STARTER, parse_lines
 from ..stickers import KINDS as STICKER_KINDS
@@ -211,6 +212,66 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def home_choose_look(request):
         return web.json_response(await runtime.choose_look(request.match_info["pid"]))
+
+    # ---- the furniture manager (docs/furniture.md, 2d) ----
+
+    def house(change):
+        """Run a change to the house; its refusals ("放不下", "挡住门了") come back as a 400 with the reason."""
+        try:
+            return web.json_response(change())
+        except (PlacementError, models.ModelError) as e:
+            raise ConfigError(str(e)) from None
+
+    async def new_type(request):
+        body = await request.json()
+        return house(lambda: runtime.home.save_type(body))
+
+    async def edit_type(request):
+        body = await request.json()
+        return house(lambda: runtime.home.save_type(body, request.match_info["tid"]))
+
+    async def remove_type(request):
+        return house(lambda: runtime.home.delete_type(request.match_info["tid"]) or {"ok": True})
+
+    async def new_piece(request):
+        body = await request.json()
+        if body.get("at") is not None:
+            return house(lambda: runtime.home.place({k: body[k] for k in ("type", "room", "at", "turn") if k in body}))
+        return house(lambda: runtime.home.put(str(body.get("type", "")), str(body.get("room", ""))))
+
+    async def edit_piece(request):
+        body = await request.json()
+        return house(lambda: runtime.home.edit_piece(request.match_info["pid"], body))
+
+    async def remove_piece(request):
+        return house(lambda: runtime.home.remove(request.match_info["pid"]) or {"ok": True})
+
+    async def new_room(request):
+        body = await request.json()
+        response = house(lambda: runtime.home.add_room(body.get("name", ""), str(body.get("size", ""))))
+        runtime.refresh_prompts()  # the members' prompt lists the rooms of the house
+        return response
+
+    async def edit_room(request):
+        body = await request.json()
+        response = house(lambda: runtime.home.rename_room(request.match_info["rid"], body.get("name", "")))
+        runtime.refresh_prompts()
+        return response
+
+    async def remove_room(request):
+        response = house(lambda: runtime.home.delete_room(request.match_info["rid"]) or {"ok": True})
+        runtime.refresh_prompts()
+        return response
+
+    async def upload_model(request):
+        data = await request.read()
+        return house(lambda: models.store(runtime.store.data_dir, data))
+
+    async def get_model(request):
+        path = models.path_of(runtime.store.data_dir, request.match_info["name"])
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": "model/gltf-binary", "Cache-Control": "private, max-age=86400"})
 
     async def get_games(request):
         return web.json_response(runtime.games.status())
@@ -505,6 +566,17 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_get("/api/home/diary/{pid}", home_diary)
     app.router.add_put("/api/home/looks/{pid}", home_look)
     app.router.add_post("/api/home/looks/{pid}/choose", home_choose_look)
+    app.router.add_post("/api/home/types", new_type)
+    app.router.add_put("/api/home/types/{tid:mine/[a-z0-9]+}", edit_type)
+    app.router.add_delete("/api/home/types/{tid:mine/[a-z0-9]+}", remove_type)
+    app.router.add_post("/api/home/pieces", new_piece)
+    app.router.add_put("/api/home/pieces/{pid}", edit_piece)
+    app.router.add_delete("/api/home/pieces/{pid}", remove_piece)
+    app.router.add_post("/api/home/rooms", new_room)
+    app.router.add_put("/api/home/rooms/{rid}", edit_room)
+    app.router.add_delete("/api/home/rooms/{rid}", remove_room)
+    app.router.add_post("/api/home/models", upload_model)
+    app.router.add_get("/api/home/models/{name}", get_model)
     app.router.add_get('/api/games', get_games)
     app.router.add_put('/api/games', update_games)
     app.router.add_post('/api/games/stop', stop_game)

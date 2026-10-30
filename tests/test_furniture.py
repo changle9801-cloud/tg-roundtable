@@ -122,7 +122,7 @@ def test_reading_takes_a_computer_and_prefers_the_room_she_is_in(tmp_path):
     home.begin("codex", "browse")
     assert home.where["codex"].piece == second["id"]
     for p in [p for p in home.pieces if "web.read" in p["functions"]]:
-        home.remove(p["id"])
+        home.edit_piece(p["id"], {"functions": []})  # nothing reads any more
     home.begin("codex", "write")  # nothing to read or write at: the study, as before furniture
     assert (home.where["codex"].room, home.where["codex"].piece) == ("study", "")
 

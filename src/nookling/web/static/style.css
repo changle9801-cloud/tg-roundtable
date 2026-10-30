@@ -425,3 +425,25 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
   .tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
   .tabs button { flex: none; }
 }
+/* arranging the house */
+.home-arrange {
+  position: absolute; right: 12px; top: 12px; z-index: 2;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+.home-arrange.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.home-edit-section { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+.home-edit-section h3 { font-size: 14px; margin: 0 0 6px; }
+.home-edit-section > input { width: 100%; margin-bottom: 6px; }
+.home-fns { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; }
+.home-fn { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center; font-size: 13px; }
+.home-fn code { font-size: 11px; color: var(--muted); }
+.home-kinds { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.home-kind { display: flex; gap: 6px; align-items: center; }
+.home-kind > span, .home-kind > input { flex: 1; min-width: 0; }
+.home-look select, .home-look input:not([type=color]) { min-width: 0; max-width: 100%; }
+.home-kind-editor { display: flex; flex-direction: column; gap: 8px; }
+.home-field { display: flex; flex-direction: column; gap: 2px; }
+.home-field input[type=number] { width: 70px; }
+.home-preview { width: 240px; height: 160px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(#eef3f8, #f6f3ea); }
+.home-model { display: flex; flex-direction: column; gap: 4px; }
+.home-field input[type=color] { width: 60px; height: 30px; padding: 0; border: none; background: none; }

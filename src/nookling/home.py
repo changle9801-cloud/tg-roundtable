@@ -61,6 +61,8 @@ ACTIVITIES = {
     "share": ("share", "chat.telegram", "living"),
 }
 DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
+ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
+ROOM_NAME_MAX = 8
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
 
 
@@ -190,11 +192,129 @@ class Home:
         self.save()
         return piece
 
-    def remove(self, pid: str) -> None:
-        before = len(self.pieces or [])
-        self.pieces = [p for p in self.pieces or [] if p["id"] != pid]
-        if len(self.pieces) == before:
+    def piece(self, pid: str) -> dict:
+        found = next((p for p in self.pieces or [] if p["id"] == pid), None)
+        if found is None:
             raise PlacementError("没有这件家具")
+        return found
+
+    def remove(self, pid: str) -> None:
+        """Take a piece out of the house. Pieces that do something (carry functions) stay; clear them first."""
+        piece = self.piece(pid)
+        if piece["type"] == "base/parcel":
+            raise PlacementError("纸箱在「工具」页面给工具选好功能后会自己拆掉")
+        if piece.get("functions"):
+            raise PlacementError("这件家具挂着功能，先把功能去掉再删")
+        self.pieces.remove(piece)
+        for place in self.where.values():
+            if place.piece == pid:
+                place.piece = ""
+        self.save()
+
+    def edit_piece(self, pid: str, changes: dict) -> dict:
+        """The owner changes one piece: where it is, which way it faces, its colour, name, functions."""
+        piece = self.piece(pid)
+        if any(k in changes for k in ("room", "at", "turn")):
+            self.move(pid, room=changes.get("room"), at=changes.get("at"),
+                      turn=None if changes.get("turn") is None else int(changes["turn"]))
+        if "color" in changes:
+            color = changes["color"]
+            if color is not None and not HEX.match(str(color)):
+                raise PlacementError("颜色要写成 #rrggbb")
+            piece["color"] = color.lower() if color else None
+        if "name" in changes:
+            piece["name"] = str(changes["name"] or "").strip()[:16] or None
+        if "functions" in changes:
+            if piece["type"] == "base/parcel":
+                raise PlacementError("纸箱的功能跟着它的工具走")
+            fns = changes["functions"]
+            if not isinstance(fns, list) or not all(isinstance(f, str) and furniture.FUNCTION_RE.match(f) for f in fns):
+                raise PlacementError("功能名要像 video.watch 这样")
+            piece["functions"] = list(dict.fromkeys(fns))
+        self.save()
+        return piece
+
+    def put(self, type_id: str, room: str) -> dict:
+        """Add a piece of this kind where it first fits in a room (then the owner drags it)."""
+        spot = self.free_spot(type_id, [room])
+        if spot is None:
+            raise PlacementError(f"{self.room(room)['name']}里放不下了")
+        return self.place({"type": type_id, "room": room, "at": list(spot[1])})
+
+    # ---- kinds of furniture the owner makes ----
+
+    def save_type(self, raw: dict, tid: str | None = None) -> dict:
+        """Make a kind (or a copy of one, with ``copy_of``), or change one of the owner's own kinds."""
+        if tid is not None and not tid.startswith("mine/"):
+            raise PlacementError("内置的家具不能直接改，先复制一份")
+        base = None
+        if tid is not None:
+            base = self.types.get(tid)
+            if base is None:
+                raise PlacementError("没有这种家具")
+        elif raw.get("copy_of"):
+            base = self.all_types().get(raw["copy_of"])
+            if base is None:
+                raise PlacementError("没有这种家具可以复制")
+            raw = {**raw, "name": raw.get("name") or f"{base['name']}（复制）"}
+        if tid is None:
+            if len(self.types) >= furniture.MAX_TYPES:
+                raise PlacementError("自己做的家具种类太多了")
+            tid = "mine/" + furniture.new_id()[2:]
+        made = furniture.make_type(raw, tid, base)
+        if tid in self.types:  # a bigger kind must still fit wherever its pieces stand
+            trial = {**self.all_types(), tid: made}
+            for piece in [p for p in self.pieces or [] if p["type"] == tid]:
+                try:
+                    furniture.check(piece, self.room(piece["room"]), trial, self.pieces)
+                except PlacementError as e:
+                    raise PlacementError(f"改了以后，{self.room(piece['room'])['name']}里的那件放不下：{e}") from None
+        self.types[tid] = made
+        self.save()
+        return made
+
+    def delete_type(self, tid: str) -> None:
+        if tid not in self.types:
+            raise PlacementError("只能删自己做的家具种类")
+        if any(p["type"] == tid for p in self.pieces or []):
+            raise PlacementError("家里还摆着这种家具，先把它们删掉")
+        del self.types[tid]
+        self.save()
+
+    # ---- rooms the owner adds ----
+
+    def add_room(self, name: str, size: str) -> dict:
+        name = str(name or "").strip()[:ROOM_NAME_MAX]
+        if not name:
+            raise PlacementError("房间要有名字")
+        if size not in ROOM_SIZES:
+            raise PlacementError("房间大小只能是小、中、大")
+        room = {"id": "room-" + furniture.new_id()[2:], "name": name, "icon": "🚪", "shared": True,
+                "size": list(ROOM_SIZES[size]), "doors": [{"wall": "back"}]}
+        self.rooms.append(room)
+        self.save()
+        return room
+
+    def rename_room(self, rid: str, name: str) -> dict:
+        room = self.room(rid)
+        name = str(name or "").strip()[:ROOM_NAME_MAX]
+        if not name:
+            raise PlacementError("房间要有名字")
+        room["name"] = name
+        self.save()
+        return room
+
+    def delete_room(self, rid: str) -> None:
+        room = self.room(rid)
+        if rid.startswith("bed-"):
+            raise PlacementError("卧室不能删")
+        if rid == "living":
+            raise PlacementError("客厅有大门，不能删")
+        if any(p["room"] == rid for p in self.pieces or []):
+            raise PlacementError("房间里还有家具，先搬走或删掉")
+        if any(place.room == rid for place in self.where.values()):
+            raise PlacementError("有人在这个房间里")
+        self.rooms.remove(room)
         self.save()
 
     def residents(self, members) -> list[str]:
@@ -213,6 +333,8 @@ class Home:
         if action in ACTIVITIES:
             verb, function, fallback = ACTIVITIES[action]
             piece = self.carrier(member, function, here.room)
+            if not piece and not any(r["id"] == fallback for r in self.rooms):
+                fallback = "living"
             place = Place(piece["room"] if piece else fallback, verb, detail, now, True, piece=piece["id"] if piece else "")
         elif action == "private" and peer:
             if peer_home and peer in self.where:
@@ -391,6 +513,9 @@ class Home:
         reads = [r for r in self.diary_reads if r["member"] in members][-30:]
         return {"rooms": self.rooms, "pieces": self.pieces or [], "types": self.all_types(),
                 "available": sorted(available or ()), "function_names": furniture.FUNCTIONS,
+                "templates": {k: {"name": v[0], "size": list(v[1]), "height": v[2], "color": v[3]}
+                              for k, v in furniture.TEMPLATES.items() if k != "parcel"},
+                "room_sizes": {k: list(v) for k, v in ROOM_SIZES.items()},
                 "people": people, "accessories": ACCESSORIES, "verbs": VERBS,
                 "diary_reads": reads, "now": self.now()}
 

@@ -3,6 +3,9 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
+import { GLTFLoader } from "/static/vendor/GLTFLoader.js";
+import { RoomEnvironment } from "/static/vendor/RoomEnvironment.js";
+import { renderEditor, say, send } from "/static/home-edit.js";
 
 const POLL_MS = 5000;
 const STALE_SECONDS = 3 * 3600; // awake but nothing happened for this long: she is dimmed, not faked busy
@@ -63,16 +66,34 @@ function layout(rooms) {
   if (byId.study) { const r = put(byId.study, 0, zB); hallX = r.w + HALL / 2; depthB = r.d; }
   if (byId.fun) depthB = Math.max(depthB, put(byId.fun, hallX + HALL / 2, zB).d);
   const zC = zB + depthB + HALL;
-  let xc = 0, depthC = 0;
   const rowC = ["kitchen", "living", "storage"].map((id) => byId[id]).filter(Boolean);
   for (const room of rooms) if (!rects[room.id] && !rowC.includes(room)) rowC.push(room);
-  for (const room of rowC) { const r = put(room, xc, zC); xc += r.w; depthC = Math.max(depthC, r.d); }
-  const W = Math.max(x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0), xc);
+  // Rooms the owner added go on the end of row C; a full row starts a new one below, behind a corridor.
+  const limit = Math.max(20, x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0));
+  const rows = [[]];
+  let width = 0;
+  for (const room of rowC) {
+    const w = room.size[0] * CELL;
+    if (width + w > limit && rows.at(-1).length) { rows.push([]); width = 0; }
+    rows.at(-1).push(room);
+    width += w;
+  }
+  const corridors = [depthA + HALL / 2, zB + depthB + HALL / 2];
+  let z = zC, widest = 0;
+  rows.forEach((row, i) => {
+    if (i > 0) { corridors.push(z + HALL / 2); z += HALL; }
+    let xx = 0, depth = 0;
+    for (const room of row) { const r = put(room, xx, z); xx += r.w; depth = Math.max(depth, r.d); }
+    widest = Math.max(widest, xx);
+    z += depth;
+  });
+  const W = Math.max(x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0), widest);
   const living = rects.living || Object.values(rects)[0];
   const front = living.doors.find((d) => d.outside) || { x: living.x + living.w / 2, z: living.z + living.d };
   return {
-    W, D: zC + depthC, rects, front, hallX, outside: { x: front.x, z: front.z + 3 },
-    corridors: [depthA + HALL / 2, zB + depthB + HALL / 2], spans: { A: depthA, B: [zB, depthB], C: zC },
+    W, D: z, rects, front, hallX, outside: { x: front.x, z: front.z + 3 }, corridors,
+    leftX: rows.length > 1 ? -HALL / 2 : null, // a side hall joins the extra rows to the others
+    spans: { A: depthA, B: [zB, depthB], C: zC },
   };
 }
 
@@ -90,7 +111,11 @@ function route(L, fromRoom, toRoom, from, to) {
   if (!da || !db) return [to];
   const ca = corridorFor(L, da), cb = corridorFor(L, db);
   const pts = [{ x: da.x, z: da.z }, { x: da.x, z: ca }];
-  if (ca !== cb) pts.push({ x: L.hallX, z: ca }, { x: L.hallX, z: cb });
+  if (ca !== cb) {
+    const near = L.corridors.slice(0, 2);
+    const hall = near.includes(ca) && near.includes(cb) || L.leftX === null ? L.hallX : L.leftX;
+    pts.push({ x: hall, z: ca }, { x: hall, z: cb });
+  }
   pts.push({ x: db.x, z: cb }, { x: db.x, z: db.z }, to);
   return pts;
 }
@@ -164,6 +189,22 @@ const TEMPLATES = {
     g.add(box(W, 0.6, 0.3, shade(c, 0.8), 0, 0.3, -D / 2 + 0.15));
   },
   beanbag: (g, W, D, H, c) => g.add(cylinder(Math.min(W, D) / 2, H, c, 0, 0, 0)),
+  armchair: (g, W, D, H, c) => {
+    g.add(box(W * 0.9, 0.42, D * 0.9, c, 0, 0, 0.02));
+    g.add(box(W * 0.9, H - 0.42, 0.22, shade(c, 0.8), 0, 0.42, -D * 0.45 + 0.11));
+    for (const side of [-1, 1]) g.add(box(0.16, 0.25, D * 0.8, shade(c, 0.85), side * (W * 0.45 - 0.08), 0.42, 0.05));
+  },
+  chair: (g, W, D, H, c) => {
+    g.add(box(W * 0.8, 0.06, D * 0.8, c, 0, H - 0.06, 0));
+    for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(box(0.05, H - 0.06, 0.05, shade(c, 0.7), dx * W * 0.35, 0, dz * D * 0.35));
+    g.add(box(W * 0.8, 0.45, 0.05, c, 0, H, -D * 0.38));
+  },
+  wardrobe: (g, W, D, H, c) => {
+    g.add(box(W, H, D, c, 0, 0, 0));
+    g.add(box(0.02, H * 0.9, 0.02, shade(c, 0.6), 0, H * 0.05, D / 2 + 0.01));
+    for (const side of [-1, 1]) g.add(box(0.04, 0.25, 0.04, 0xd4af37, side * 0.12, H * 0.5, D / 2 + 0.03));
+  },
+  poster: (g, W, D, H, c) => g.add(box(W * 0.8, H, 0.03, c, 0, 0.9, -D / 2 + 0.05)),
   table: (g, W, D, H, c) => g.add(box(W, H, D, c, 0, 0, 0)),
   frame: (g, W, D, H, c) => {
     g.add(box(W * 0.8, H, 0.05, 0xffffff, 0, 0.95, -D / 2 + 0.05));
@@ -207,25 +248,70 @@ function useSpot(rect, piece, type, use) {
   };
 }
 
+const loader = new GLTFLoader();
+const models = new Map(); // file -> Promise of its scene, loaded once
+
+function loadModel(file) {
+  if (!models.has(file)) {
+    models.set(file, new Promise((ok, fail) => loader.load(`/api/home/models/${file}`, (gltf) => ok(gltf.scene), undefined, fail)));
+  }
+  return models.get(file);
+}
+
+// A model scaled to fit the footprint and height (keeping its proportions), on the floor, centred.
+function fitModel(scene, W, D, H, model) {
+  const inner = scene.clone(true);
+  inner.rotation.y = (-(model.turn || 0) * Math.PI) / 180;
+  const pivot = new THREE.Group();
+  pivot.add(inner);
+  pivot.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(pivot);
+  const size = box.getSize(new THREE.Vector3());
+  const k = Math.min(W / (size.x || 1), D / (size.z || 1), H > 0.05 ? H / (size.y || 1) : Infinity) * (model.scale || 1);
+  pivot.scale.setScalar(Number.isFinite(k) ? k : 1);
+  pivot.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(pivot);
+  const centre = box.getCenter(new THREE.Vector3());
+  pivot.position.set(-centre.x, -box.min.y, -centre.z);
+  return pivot;
+}
+
+function greyOut(g) {
+  g.traverse((o) => {
+    if (!o.material) return;
+    o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+    for (const m of [].concat(o.material)) {
+      if (!m.color) continue;
+      const c = m.color, grey = c.r * 0.3 + c.g * 0.59 + c.b * 0.11;
+      c.setRGB(grey, grey, grey);
+    }
+  });
+}
+
 function drawPiece(parent, rect, piece, type, clickable, available) {
   const g = new THREE.Group();
+  g.userData.pieceId = piece.id;
   const [w, d] = type.size;
   const draw = TEMPLATES[type.template] || TEMPLATES.table;
   draw(g, w * CELL, d * CELL, type.height, piece.color || type.color, piece, clickable);
   // Furniture whose functions nothing can do right now (its tool is off) is drawn grey.
   const fns = piece.functions || [];
-  if (fns.length && !fns.some((f) => available.has(f))) {
-    g.traverse((o) => {
-      if (!o.material) return;
-      o.material = o.material.clone();
-      const c = o.material.color, grey = c.r * 0.3 + c.g * 0.59 + c.b * 0.11;
-      c.setRGB(grey, grey, grey);
-    });
+  const grey = fns.length && !fns.some((f) => available.has(f));
+  if (grey) greyOut(g);
+  if (type.model) {
+    loadModel(type.model.file).then((scene) => {
+      const keep = g.children.filter((o) => o.userData.diary || o.userData.parcel); // still clickable
+      g.clear();
+      g.add(fitModel(scene, w * CELL, d * CELL, type.height, type.model));
+      for (const o of keep) { o.visible = false; g.add(o); }
+      if (grey) greyOut(g);
+    }).catch(() => { /* a model that won't load: the template stays */ });
   }
   const [tw, td] = turnedSize(type.size, piece.turn);
   g.rotation.y = (-piece.turn * Math.PI) / 180;
   g.position.set(rect.x + (piece.at[0] + tw / 2) * CELL, 0, rect.z + (piece.at[1] + td / 2) * CELL);
   parent.add(g);
+  return g;
 }
 
 const FLOORS = { bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
@@ -400,7 +486,12 @@ class HomeApp {
     this.panel = el("div", "home-panel card");
     this.modal = el("div", "home-modal");
     this.modal.hidden = true;
-    this.stage.append(this.labelLayer, this.banner);
+    this.arrangeBtn = el("button", "home-arrange", "布置家具");
+    this.arrangeBtn.type = "button";
+    this.arrangeBtn.onclick = () => this.toggleArrange();
+    this.arranging = false;
+    this.selectedPiece = "";
+    this.stage.append(this.labelLayer, this.banner, this.arrangeBtn);
     const wrap = el("div", "home-wrap");
     wrap.append(this.stage, this.panel);
     root.append(wrap, this.modal);
@@ -414,6 +505,9 @@ class HomeApp {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.stage.prepend(this.renderer.domElement);
     this.scene = new THREE.Scene();
+    // Something soft to reflect: uploaded models' metal (glTF's default) would otherwise look black.
+    this.scene.environment = new THREE.PMREMGenerator(this.renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.6;
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a99f, 1.6));
     const sun = new THREE.DirectionalLight(0xffffff, 1.2);
     sun.position.set(-8, 14, 10);
@@ -428,13 +522,25 @@ class HomeApp {
     this.controls.enablePan = true;
     this.house = new THREE.Group();
     this.scene.add(this.house);
+    this.furniture = new THREE.Group(); // one group per placed piece, by piece id
+    this.scene.add(this.furniture);
+    this.grid = new THREE.Group(); // the cells, shown while arranging
+    this.grid.visible = false;
+    this.scene.add(this.grid);
+    this.highlight = null;
     this.people = new THREE.Group();
     this.scene.add(this.people);
     this.ray = new THREE.Raycaster();
     let down = null;
-    this.renderer.domElement.addEventListener("pointerdown", (e) => (down = [e.clientX, e.clientY]));
-    this.renderer.domElement.addEventListener("pointerup", (e) => {
-      if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 5) this.click(e);
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener("pointerdown", (e) => {
+      down = [e.clientX, e.clientY];
+      if (this.arranging) this.startDrag(e);
+    });
+    canvas.addEventListener("pointermove", (e) => this.drag && this.moveDrag(e));
+    canvas.addEventListener("pointerup", (e) => {
+      if (this.drag) this.endDrag();
+      else if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 5 && !this.arranging) this.click(e);
       down = null;
     });
     new ResizeObserver(() => this.resize()).observe(this.stage);
@@ -475,13 +581,20 @@ class HomeApp {
 
   build(data) {
     this.house.clear();
+    this.furniture.clear();
+    this.grid.clear();
     this.clickable = [];
     this.L = layout(data.rooms);
     const L = this.L;
     const corridor = new THREE.MeshLambertMaterial({ color: 0xe9e4dc });
     const strip = (w, d, x, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), corridor); m.position.set(x, -0.03, z); this.house.add(m); };
-    for (const c of L.corridors) strip(L.W, HALL, L.W / 2, c);
+    const left = L.leftX === null ? 0 : HALL;
+    for (const c of L.corridors) strip(L.W + left, HALL, (L.W - left) / 2, c);
     strip(HALL, L.spans.B[1], L.hallX, L.spans.B[0] + L.spans.B[1] / 2);
+    if (L.leftX !== null) {
+      const top = L.corridors[0], bottom = L.corridors.at(-1);
+      strip(HALL, bottom - top, L.leftX, (top + bottom) / 2);
+    }
     const ground = new THREE.Mesh(new THREE.BoxGeometry(L.W + 6, 0.05, L.D + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
     ground.position.set(L.W / 2, -0.09, L.D / 2 + 1);
     this.house.add(ground);
@@ -494,6 +607,12 @@ class HomeApp {
       floor.position.set(r.x + r.w / 2, -0.04, r.z + r.d / 2);
       this.house.add(floor);
       walls(this.house, r);
+      const lines = [];
+      for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, 0.012, r.z, r.x + i * CELL, 0.012, r.z + r.d);
+      for (let j = 0; j <= room.size[1]; j++) lines.push(r.x, 0.012, r.z + j * CELL, r.x + r.w, 0.012, r.z + j * CELL);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
+      this.grid.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x9e9384, transparent: true, opacity: 0.45 })));
       this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, 0.2, r.z + r.d - 0.25) });
     }
     // Seats come from the furniture: each use of each placed piece is a spot someone can take.
@@ -503,7 +622,7 @@ class HomeApp {
     for (const piece of data.pieces) {
       const type = data.types[piece.type], r = L.rects[piece.room];
       if (!type || !r) continue;
-      drawPiece(this.house, r, piece, type, this.clickable, new Set(data.available || []));
+      drawPiece(this.furniture, r, piece, type, this.clickable, new Set(data.available || []));
       (type.uses || []).forEach((use, i) => {
         (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...useSpot(r, piece, type, use) });
       });
@@ -513,12 +632,146 @@ class HomeApp {
       this.pieceAt[piece.id] = centre;
       if (type.screen) (this.screens[piece.room] ||= []).push(centre);
     }
-    const span = Math.max(L.W, L.D);
     this.center = new THREE.Vector3(L.W / 2, 0, L.D / 2);
-    this.camera.position.set(this.center.x + span, span * 0.95, this.center.z + span);
+    if (!this.aimed) this.aimCamera(); // keep the viewer's own angle and zoom across redraws
+    else this.resize(); // the house may have grown: fit it again
+    this.showHighlight();
+  }
+
+  // ---- arranging: top-down, on the grid ----
+
+  aimCamera() {
+    if (!this.L) return;
+    const span = Math.max(this.L.W, this.L.D);
     this.controls.target.copy(this.center);
-    this.view = span * 0.62;
+    if (this.arranging) {
+      this.controls.minPolarAngle = 0;
+      this.controls.maxPolarAngle = 0;
+      this.controls.enableRotate = false;
+      this.camera.position.set(this.center.x, span * 2, this.center.z + 0.001);
+    } else {
+      this.controls.minPolarAngle = Math.PI * 0.12;
+      this.controls.maxPolarAngle = Math.PI * 0.42;
+      this.controls.enableRotate = true;
+      this.camera.position.set(this.center.x + span, span * 0.95, this.center.z + span);
+    }
+    this.camera.zoom = 1;
+    this.camera.updateProjectionMatrix();
+    this.aimed = true;
     this.resize();
+  }
+
+  toggleArrange() {
+    this.arranging = !this.arranging;
+    this.selectedPiece = "";
+    this.selected = "";
+    this.arrangeBtn.textContent = this.arranging ? "布置好了" : "布置家具";
+    this.arrangeBtn.classList.toggle("on", this.arranging);
+    this.grid.visible = this.arranging;
+    this.aimCamera();
+    this.showHighlight();
+    this.renderPanel();
+  }
+
+  groundAt(e) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    this.ray.setFromCamera(mouse, this.camera);
+    return { mouse, point: this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3()) };
+  }
+
+  startDrag(e) {
+    this.groundAt(e);
+    const hit = this.ray.intersectObjects(this.furniture.children, true)[0];
+    let g = hit && hit.object;
+    while (g && !g.userData.pieceId) g = g.parent;
+    if (!g) return;
+    const piece = this.data.pieces.find((p) => p.id === g.userData.pieceId);
+    const type = piece && this.data.types[piece.type];
+    if (!type) return;
+    this.controls.enabled = false;
+    this.drag = { group: g, piece, type, room: piece.room, at: [...piece.at] };
+    this.selectedPiece = piece.id;
+    this.showHighlight();
+    this.renderPanel();
+  }
+
+  moveDrag(e) {
+    const { point } = this.groundAt(e);
+    if (!point) return;
+    const r = Object.values(this.L.rects).find((q) => point.x >= q.x && point.x <= q.x + q.w && point.z >= q.z && point.z <= q.z + q.d);
+    if (!r) return;
+    const [tw, td] = turnedSize(this.drag.type.size, this.drag.piece.turn);
+    const cols = r.room.size[0], rows = r.room.size[1];
+    const at = [
+      Math.max(0, Math.min(cols - tw, Math.round((point.x - r.x) / CELL - tw / 2))),
+      Math.max(0, Math.min(rows - td, Math.round((point.z - r.z) / CELL - td / 2))),
+    ];
+    this.drag.room = r.room.id;
+    this.drag.at = at;
+    this.drag.group.position.set(r.x + (at[0] + tw / 2) * CELL, 0, r.z + (at[1] + td / 2) * CELL);
+    this.showHighlight();
+  }
+
+  async endDrag() {
+    const { piece, room, at } = this.drag;
+    this.drag = null;
+    this.controls.enabled = true;
+    if (room !== piece.room || at[0] !== piece.at[0] || at[1] !== piece.at[1]) {
+      try { await send("PUT", `/api/home/pieces/${piece.id}`, { room, at }); } catch (err) { say(err.message, true); }
+      this.layoutKey = ""; // redraw from what was saved, which puts a refused piece back
+    }
+    await this.poll();
+  }
+
+  showHighlight() {
+    if (this.highlight) { this.scene.remove(this.highlight); this.highlight = null; }
+    const g = this.arranging && this.furniture.children.find((c) => c.userData.pieceId === this.selectedPiece);
+    if (!g) return;
+    this.highlight = new THREE.BoxHelper(g, 0xf0a020);
+    this.scene.add(this.highlight);
+  }
+
+  // A small turning picture of a kind of furniture, for the editor.
+  showPreview(box, type) {
+    if (!this.preview) {
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a99f, 1.6));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+      sun.position.set(-4, 8, 6);
+      scene.add(sun);
+      const camera = new THREE.OrthographicCamera(-2, 2, 1.5, -1.5, -50, 50);
+      camera.position.set(4, 3.6, 4);
+      camera.lookAt(0, 0.4, 0);
+      const holder = new THREE.Group();
+      scene.add(holder);
+      this.preview = { renderer, scene, camera, holder };
+      const spin = () => {
+        const shown = this.preview.renderer.domElement.isConnected;
+        if (!shown && this.preview.seen) { this.preview.spinning = this.preview.seen = false; return; } // dialog closed
+        this.preview.seen ||= shown; // not on the page yet: the dialog opens right after this
+        holder.rotation.y += 0.01;
+        renderer.render(scene, camera);
+        requestAnimationFrame(spin);
+      };
+      this.preview.spin = spin;
+    }
+    const { renderer, camera, holder } = this.preview;
+    box.replaceChildren(renderer.domElement);
+    renderer.setSize(240, 160, false);
+    renderer.domElement.style.width = "240px";
+    renderer.domElement.style.height = "160px";
+    holder.clear();
+    const t = { ...type, size: type.size.map((v) => Math.max(1, Number(v) || 1)), height: Number(type.height) || 0.5 };
+    const g = drawPiece(holder, { x: 0, z: 0 }, { id: "preview", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set());
+    const [w, d] = t.size;
+    g.position.set(0, 0, 0);
+    const reach = Math.max(w * CELL, d * CELL, t.height) * 0.9 + 0.3;
+    camera.left = -reach * 1.5; camera.right = reach * 1.5; camera.top = reach; camera.bottom = -reach;
+    camera.updateProjectionMatrix();
+    if (!this.preview.spinning) { this.preview.spinning = true; this.preview.spin(); }
   }
 
   // A seat looking at a screen in the same room, not too far: where you watch TV from.
@@ -574,8 +827,9 @@ class HomeApp {
   }
 
   apply(data) {
+    if (this.drag) return; // the redraw would snatch the piece from under the pointer
     this.data = data;
-    const key = JSON.stringify([data.rooms, data.pieces, data.available]);
+    const key = JSON.stringify([data.rooms, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
       this.build(data);
@@ -745,6 +999,16 @@ class HomeApp {
     if (!d) return;
     const focus = document.activeElement;
     if (focus && this.panel.contains(focus) && /INPUT|SELECT/.test(focus.tagName)) return; // editing a look
+    if (this.arranging) {
+      // Only when the house changed: a rebuild every poll would drop what is picked in the panel.
+      const key = JSON.stringify([d.rooms, d.pieces, d.types, d.available, this.selectedPiece]);
+      if (key !== this.editorKey) {
+        this.editorKey = key;
+        this.panel.replaceChildren(...renderEditor(this));
+      }
+      return;
+    }
+    this.editorKey = "";
     const rows = d.people.map((p) => {
       const row = el("button", "home-row" + (this.selected === p.id ? " selected" : ""));
       row.type = "button";
