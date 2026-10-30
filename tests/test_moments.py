@@ -8,6 +8,7 @@ and the chances computed along the way can be read from ``room.decisions``.
 from __future__ import annotations
 
 import random
+import time
 from statistics import mean
 
 from conftest import FakeSink
@@ -119,3 +120,35 @@ async def test_two_friends_bicker_a_little_then_stop(make, store):
         await room.wait_idle()
         longest.append(len(room.sink.posts))
     assert max(longest) <= 4 and mean(longest) < 2.6
+
+
+async def test_twenty_minutes_later_you_still_means_her(make, store):
+    # Codex answered 阿明 about magnetic controllers; 20 quiet minutes later 阿明 asks "你有想玩的游戏吗".
+    codex, deepseek = member(make, "codex"), member(make, "deepseek")
+    room = room_with([codex, deepseek], store)
+    t = time.time()
+    room._append(Message("user", "阿明", "磁吸手柄真的靠谱吗", (), t - 1230))
+    room._append(Message("codex", "Codex", "我看悬", (), t - 1200))
+    room.cursors = {p.id: len(room.messages) for p in (codex, deepseek)}
+    room._append(Message("user", "阿明", "你有想玩的游戏吗", (), t))
+    await room._run_round()
+    assert "刚和阿明说话的是她" in chance(room, "Codex")["why"] and chance(room, "Codex")["chance"] >= 0.8
+
+    # A post nobody asked for, 20 minutes ago, is not a conversation still going on.
+    room2 = room_with([member(make, "codex"), member(make, "deepseek")], store)
+    room2._append(Message("codex", "Codex", "刚看了个访谈", (), t - 1200))
+    room2.cursors = {"codex": 1, "deepseek": 1}
+    room2._append(Message("user", "阿明", "你有想玩的游戏吗", (), t))
+    await room2._run_round()
+    assert "刚和" not in chance(room2, "Codex")["why"]
+
+
+async def test_wanting_to_answer_you_survives_someone_going_first(make, store):
+    # "你们都各自想玩什么游戏": three want to answer; after the first, the others still get their say.
+    people = [member(make, pid, ["种田", "拆迁", "上天"]) for pid in ("a", "b", "c")]
+    room = room_with(people, store, quiet=False)
+    room.moderator.rng.random = lambda: 0.3  # under answering everyone (0.6), over a later afterthought
+    room.add_user_message("阿明", "你们都各自想玩什么游戏")
+    await room.wait_idle()
+    assert {pid for pid, _ in room.sink.posts} == {"a", "b", "c"}  # everyone who wanted to got their say
+    assert any(d["what"] == "还想回" for d in room.decisions)

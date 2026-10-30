@@ -15,16 +15,19 @@ import uuid
 from pathlib import Path
 
 from .config import ConfigError
+from .diary import FEELINGS
 from .mcp_servers.reader import read_post
 from .participants.base import ParticipantError
 from .sources import source_key, source_list
+from .video_reading import is_video_url
 
 
 class LifeWorkbench:
-    def __init__(self, data_dir: Path, ask, read=None):
+    def __init__(self, data_dir: Path, ask, read=None, read_video=None):
         self.root = data_dir / "life_artifacts"
         self.ask = ask
         self.read = read or self._read
+        self.read_video = read_video
 
     @staticmethod
     async def _read(url, focus=""):
@@ -73,13 +76,19 @@ class LifeWorkbench:
         evidence, artifacts, errors = [], [], []
         focus = str(proposal.get("focus") or "")[:160]
         for candidate in candidates:
-            result = await self.read(candidate["url"], focus=focus) if focus else await self.read(candidate["url"])
+            if is_video_url(candidate["url"]):
+                result = (await self.read_video(member, candidate["url"]) if self.read_video else
+                          {"status": "unavailable", "reason": "未分配可用的视频阅读工具"})
+            else:
+                result = await self.read(candidate["url"], focus=focus) if focus else await self.read(candidate["url"])
             if result.get("status") != "ok" or not result.get("content", "").strip():
                 errors.append(str(result.get("reason") or "没有读到正文")[:200])
                 continue
             source = {"url": result["url"], "title": result.get("title") or candidate["url"],
                       "read_level": result.get("read_level") or "应用实际取得的文字片段",
                       "excerpt": result["content"][:800]}
+            if len(result["content"]) > 6000:
+                source["read_level"] += "；本次整理仅读取前 6000 字"
             artifacts.append(self.save(member, "reading", source["title"],
                                        json.dumps(result, ensure_ascii=False, indent=2), [source]))
             evidence.append({**source, "content": result["content"][:6000]})
@@ -92,8 +101,12 @@ class LifeWorkbench:
                   + '\n只输出 JSON：{"outcome":"progress或nothing_new", "title":"这次发现",'
                     '"progress":"确实了解到什么、还缺什么", "take":"自己的看法",'
                     '"next_step":"下一次具体想做什么", "follow_up":"keep或private或share",'
-                    '"peer":"", "message":"", "goal_status":"active或done或paused"}。'
-                    '没有新发现就 nothing_new，此时 progress 说明具体缺了什么，next_step 提出下一步怎么避开这次障碍。不要宣称做过资料之外的事情。')
+                    '"peer":"", "message":"", "goal_status":"active或done或paused",'
+                    '"diary":"想留给自己的两三句感受，可留空", "feelings":{}, "topics":["具体话题关键词"]}。'
+                    '觉得普通、啰嗦或无聊也可以照实说，不必找收获、安排下一步或强行分享。没有新发现可用 nothing_new，'
+                    'progress 仍说明实际读到了什么。diary 只依据这次资料，不编未见的画面或亲身经历。'
+                    'feelings 从这些标签选零到三个，值是 0 到 1 的强度：' + '、'.join(FEELINGS)
+                    + '。topics 用二到六个简短具体词，方便日后聊到时想起来。')
         try:
             answer = await self._json(member, prompt)
         except (ConfigError, ParticipantError):
@@ -133,7 +146,9 @@ class LifeWorkbench:
                   "输出内容应是完整的小作品，下一步另外记录。\n可引用的实际阅读资料："
                   + json.dumps(sources, ensure_ascii=False)
                   + '\n只输出 JSON：{"title":"作品名称", "content":"完整的 Markdown 作品内容",'
-                    '"next_step":"后面还想做什么", "goal_status":"active或done或paused"}。')
+                    '"next_step":"后面还想做什么", "goal_status":"active或done或paused",'
+                    '"diary":"写完以后想给自己留的短感受，可空", "feelings":{}, "topics":[]}。'
+                    '日记只记写作本身的感受，不把作品里的虚构情节写成自己的经历。情绪标签可选：' + '、'.join(FEELINGS))
         result = await self._json(member, prompt)
         content = str(result.get("content") or "").strip()
         if not content or len(content) > 16000:
@@ -146,4 +161,5 @@ class LifeWorkbench:
         artifact = self.save(member, kind, title, document + provenance, sources)
         return {"outcome": "progress", "title": title, "progress": f"已保存{title}（{len(content)}字）；文件内容可查看。",
                 "next_step": str(result.get("next_step") or "")[:300], "goal_status": result.get("goal_status", "active"),
-                "sources": sources, "artifacts": [artifact], "follow_up": "keep"}
+                "sources": sources, "artifacts": [artifact], "follow_up": "keep",
+                **{key: result.get(key) for key in ("diary", "feelings", "topics")}}

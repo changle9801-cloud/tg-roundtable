@@ -356,7 +356,7 @@ def build_turn_prompt(
     # No "your turn" and no remaining-turn count: those read as an assignment to say something.
     lines.append(
         f"（你看到了群里的新消息。想接就接，像平时在群里那样随口说；没什么想说的就只回复 {PASS_TOKEN}。"
-        "群里大多数消息只有一两个人回。）"
+        "即使别人已经回答，你仍然可以接她的话，表达自己的感受或不同意见，不必提供新知识。）"
     )
     if repeats:
         lines.append(reminder(repeats))

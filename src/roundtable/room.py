@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 MAX_HISTORY = 400  # messages kept in memory per chat
 MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
 ANSWERING_SECONDS = 600  # the user speaks right after a member: likely talking to that member,
+ANSWERING_QUIET_SECONDS = 3 * 3600  # (longer when she was answering him and the group stayed quiet since)
 ANSWERING_STREAK = 2  # who usually answers first, unless it already did this many times in a row
 # "你们…", "大家…": the user talks to the whole group, so more members chime in.
 TO_ALL = re.compile(r"你们|大家|各位|所有人|都在")
@@ -90,6 +91,8 @@ class _RoundState:
     wake_tried: bool = False  # nobody was up: the dice were rolled for waking someone
     wake_checked: set[int] = field(default_factory=set)  # members' messages already rolled for waking a friend
     talked_back: set[str] = field(default_factory=set)  # one comeback each per round, so two can't go on forever
+    keen: dict[str, float] = field(default_factory=dict)  # wanted to answer the opening message, not done yet
+    weighed: set[str] = field(default_factory=set)  # already rolled for answering the opening message (once each)
     to_all: bool = False  # the user's message spoke to everyone ("你们", "大家") or showed a picture
     brief: bool = False  # the user's message only acknowledged something ("嗯")
     discussion_author: str | None = None
@@ -160,6 +163,7 @@ class ChatRoom:
         on_draw: DrawHook | None = None,
         reactions: bool = False,
         routines: Routines | None = None,
+        has_experience: Callable[[str, str], bool] | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -183,6 +187,7 @@ class ChatRoom:
         self.on_draw = on_draw  # called when a member takes on a drawing request
         self.reactions = reactions  # members may react to messages with an emoji
         self.routines = routines  # who is asleep or busy right now; None: everyone is always up
+        self.has_experience = has_experience  # own memory relevance only; no private text enters the room
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
         # Models already have the saved history in their own sessions, so nothing is unseen.
@@ -517,8 +522,17 @@ class ChatRoom:
         wants, everyone = [], []
         for p, chance, comeback in self._urges(candidates, latest, state):
             everyone.append((chance.raw, p.id))
+            if p.id in state.keen and p.id not in state.spoke:
+                # She already wanted to answer the opening message; someone else just went first.
+                wants.append((max(chance.raw, state.keen[p.id]), p.id))
+                self._note("还想回", p.name, latest, "之前就想回开头那条，别人先说了，她接着排队")
+                continue
+            opener = p.id not in state.spoke and p.id not in state.weighed
+            state.weighed.add(p.id)
             if self._roll(chance, "想说话", latest):
                 wants.append((chance.raw, p.id))
+                if opener:
+                    state.keen[p.id] = chance.raw
                 if comeback:
                     state.talked_back.add(p.id)
         return wants, everyone
@@ -533,6 +547,7 @@ class ChatRoom:
         about = self._about.get(id(latest), set())
         answering = self._answering(latest)
         text = " ".join([latest.text, *[str(s.get(k, "")) for s in latest.sources for k in ("title", "excerpt")]]).casefold()
+        memory_topic = " ".join(m.text for m in self.messages[max(0, i - 2):i + 1])
         liveliness = self.follow_up_chance / urge.DEFAULT_LIVELINESS
         out = []
         for p in candidates:
@@ -541,12 +556,13 @@ class ChatRoom:
             comeback = not latest.from_user and p.id not in state.talked_back
             follows = comeback and before is not None and not before.from_user and before.speaker_id == p.id
             chance = urge.wants_to_speak(
-                p, pending=p.id not in state.spoke, replies=state.started, answering=p.id == answering,
+                p, pending=p.id not in state.spoke and p.id not in state.weighed, replies=state.started, answering=p.id == answering,
                 to_all=state.to_all, brief=state.brief, named=comeback and p.id in named, follows=follows,
                 about=p.id in about, in_thread=p.id in recent,
                 fondness=0.0 if latest.guest else self.affinity.get(p.id, {}).get(latest.speaker_id, 0.0),
                 of=latest.speaker_name, user=latest.speaker_name if latest.from_user else "阿明",
                 interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
+                experienced=bool(self.has_experience and self.has_experience(p.id, memory_topic)),
                 liveliness=liveliness, crowding=self.follow_up_decay)
             out.append((p, chance, comeback and (follows or p.id in named)))
         return out
@@ -559,7 +575,11 @@ class ChatRoom:
         i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
         while i >= 0 and self.messages[i].from_user:
             i -= 1
-        if i < 0 or latest.ts - self.messages[i].ts > ANSWERING_SECONDS:
+        if i < 0:
+            return None
+        # She was answering a human and nobody spoke since: "你" still means her a good while later.
+        was_answering = i > 0 and self.messages[i - 1].from_user
+        if latest.ts - self.messages[i].ts > (ANSWERING_QUIET_SECONDS if was_answering else ANSWERING_SECONDS):
             return None
         # Already answered first several times running: let someone else have a go.
         who, streak, k = self.messages[i].speaker_id, 0, i

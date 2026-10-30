@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -188,25 +189,31 @@ def grok_rules(servers: Sequence[ToolServer]) -> list[str]:
 
 # ---- talking to a server from the admin page ----
 
-async def list_tools(server: ToolServer) -> list[dict]:
-    """Connect once and return the server's tools as [{name, description}]."""
+@asynccontextmanager
+async def _session(server: ToolServer):
     from mcp import ClientSession
     from mcp.client.sse import sse_client
     from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
+    if server.transport == "stdio":
+        params = StdioServerParameters(command=server.command, args=server.args, env={**os.environ, **server.env})
+        transport = stdio_client(params)
+    elif server.transport == "sse":
+        transport = sse_client(server.url, headers=server.headers)
+    else:
+        transport = streamable_http_client(server.url, http_client=create_mcp_http_client(headers=server.headers))
+    async with transport as streams:
+        async with ClientSession(streams[0], streams[1]) as session:
+            await session.initialize()
+            yield session
+
+
+async def list_tools(server: ToolServer) -> list[dict]:
+    """Connect once and return the server's tools as [{name, description}]."""
     async def run() -> list[dict]:
-        if server.transport == "stdio":
-            params = StdioServerParameters(command=server.command, args=server.args, env={**os.environ, **server.env})
-            transport = stdio_client(params)
-        elif server.transport == "sse":
-            transport = sse_client(server.url, headers=server.headers)
-        else:
-            transport = streamable_http_client(server.url, http_client=create_mcp_http_client(headers=server.headers))
-        async with transport as streams:
-            async with ClientSession(streams[0], streams[1]) as session:
-                await session.initialize()
-                result = await session.list_tools()
+        async with _session(server) as session:
+            result = await session.list_tools()
         return [{"name": t.name, "description": (t.description or "").strip()} for t in result.tools]
 
     try:
@@ -215,6 +222,21 @@ async def list_tools(server: ToolServer) -> list[dict]:
         raise ConfigError(f"{LIST_TIMEOUT} 秒内没连上 {server.name}") from None
     except Exception as e:  # noqa: BLE001 - whatever the server or command did, show it
         raise ConfigError(f"连不上 {server.name}：{_first_error(e)}") from None
+
+
+async def call_tool(server: ToolServer, name: str, arguments: dict):
+    """Use an explicitly allowed tool to obtain an application-owned receipt."""
+    if not server.enabled or name not in server.allowed:
+        raise ConfigError(f"没有获准使用 {server.name} 的 {name}")
+    async def run():
+        async with _session(server) as session:
+            return await session.call_tool(name, arguments)
+    try:
+        return await asyncio.wait_for(run(), server.timeout)
+    except asyncio.TimeoutError:
+        raise ConfigError(f"{server.name} 在 {server.timeout} 秒内没有返回") from None
+    except Exception as e:
+        raise ConfigError(f"{server.name} 未完成：{_first_error(e)}") from None
 
 
 def _first_error(e: BaseException) -> str:

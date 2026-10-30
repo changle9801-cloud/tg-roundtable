@@ -27,6 +27,7 @@ Nothing is kept: downloads go to a temporary folder that is deleted after each v
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 import tempfile
@@ -131,20 +132,18 @@ def _watch(url: str, frames: int, work: Path) -> list:
         return ["视频没能下载下来。"]
 
     transcript = _transcribe(video)
+    transcript_length = len(transcript)
     if len(transcript) > MAX_TRANSCRIPT:
         transcript = transcript[:MAX_TRANSCRIPT] + "……（后面太长，省略了）"
     description = (info.get("description") or "").strip()
-    header = [
-        f"标题：{info.get('title')}",
-        f"作者：{info.get('channel') or info.get('uploader') or '未知'}",
-        f"时长：{duration / 60:.1f} 分钟" if duration else "",
-        f"简介：{description[:400]}" if description else "",
-        "说话内容（本地语音识别，可能有错字）：",
-        transcript or "（没有识别到说话，可能是纯音乐或没有人声）",
-    ]
-    out: list = ["\n".join(line for line in header if line)]
-    out += [Image(data=jpg, format="jpeg") for jpg in _frames(video, duration, frames)]
-    return out
+    pictures = [Image(data=jpg, format="jpeg") for jpg in _frames(video, duration, frames)]
+    extent = (f"视频语音转录（本地识别，可能有错字），取得 {transcript_length} 字"
+              + (f"，仅保留前 {MAX_TRANSCRIPT} 字" if transcript_length > MAX_TRANSCRIPT else "")
+              + (f"；抽取 {len(pictures)} 张画面，并非完整观看" if pictures else "；未读取画面"))
+    receipt = {"status": "ok", "url": info.get("webpage_url") or url, "title": info.get("title") or "视频",
+               "author": info.get("channel") or info.get("uploader") or "未知", "seconds": duration,
+               "description": description[:400], "content": transcript, "read_level": extent}
+    return [json.dumps(receipt, ensure_ascii=False), *pictures]
 
 
 def _audio(video: Path):

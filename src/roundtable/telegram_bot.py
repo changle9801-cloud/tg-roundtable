@@ -37,6 +37,7 @@ HELP = """\
 /reset  清空所有模型的记忆，重新开始
 /turns N  设置每个模型每轮最多发言几次
 /status  查看状态和群 ID
+/家  看看她们在家里哪个房间、在干嘛（也可以写 /home）
 /收藏 名称  回复一个贴纸、动图或图片，把它存进表情库，模型以后也能发
             （也可以写 /save；名称后面加「| 什么时候用」更好）"""
 
@@ -303,6 +304,11 @@ def build_router(runtime: Runtime) -> Router:
             f"群 ID：{msg.chat.id}\n成员：{names}\n每轮发言上限：{room.max_turns}\n"
             f"当前状态：{state}\n记忆中的消息数：{len(room.messages)}"
         )
+
+    @r.message(group, Command("home", "家"))
+    async def home(msg: TgMessage):
+        if allowed(msg):
+            await msg.answer(runtime.home_text())
 
     @r.message(group, Command("stop"))
     async def stop(msg: TgMessage):

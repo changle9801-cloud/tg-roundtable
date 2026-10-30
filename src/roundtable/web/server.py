@@ -192,6 +192,23 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def step_life(request):
         return web.json_response(runtime.start_life(request.match_info["pid"]))
 
+    async def get_home(request):
+        return web.json_response(runtime.home_view())
+
+    async def home_diary(request):
+        return web.json_response(runtime.diary_book(request.match_info["pid"], request.query.get("day", "")))
+
+    async def home_look(request):
+        body = await request.json()
+        try:
+            look = runtime.home.set_look(request.match_info["pid"], str(body.get("color", "")), str(body.get("accessory", "")))
+        except ValueError as e:
+            raise ConfigError(str(e)) from None
+        return web.json_response(look)
+
+    async def home_choose_look(request):
+        return web.json_response(await runtime.choose_look(request.match_info["pid"]))
+
     async def get_games(request):
         return web.json_response(runtime.games.status())
 
@@ -481,6 +498,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     app = web.Application(middlewares=[guard], client_max_size=100 * 1024 * 1024)
     app.router.add_get("/api/life", get_life)
+    app.router.add_get("/api/home", get_home)
+    app.router.add_get("/api/home/diary/{pid}", home_diary)
+    app.router.add_put("/api/home/looks/{pid}", home_look)
+    app.router.add_post("/api/home/looks/{pid}/choose", home_choose_look)
     app.router.add_get('/api/games', get_games)
     app.router.add_put('/api/games', update_games)
     app.router.add_post('/api/games/stop', stop_game)

@@ -106,7 +106,6 @@ async def test_self_chosen_goal_writes_file_and_continues_from_it_after_restart(
     assert "第一颗星星" in r.life_workbench.read_artifact(artifact)
     assert item.goal == GOAL["goal"] and item.artifact_ids == [artifact["id"]]
     assert not r.life.shares
-    assert "这次先自己选一件想做的小事" in script.calls[0][1]
     assert "第一颗星星" not in r.life.prompt_section("codex")
     assert "第一颗星星" in r.life.prompt_section("claude")
     again = Runtime(r.store)
@@ -120,14 +119,16 @@ async def test_self_chosen_goal_writes_file_and_continues_from_it_after_restart(
     assert len(again.life.artifacts) == 2
 
 
-async def test_initial_goal_choice_does_not_turn_another_chat_into_progress(tmp_path):
+async def test_no_goal_private_chat_is_allowed_without_turning_it_into_work(tmp_path):
     r = runtime(tmp_path)
-    script = Script({"action": "private", "peer": "codex", "message": "又聊用户的项目吧"})
+    script = Script({"action": "private", "peer": "codex", "message": "今天看了什么"},
+                    {"message": "还没看到有意思的", "done": True})
     r._life_ask = script.ask
     r.start_life("claude")
     await r._life_task
-    assert not r.life.threads and not r.life.artifacts and not r.life.interests
-    assert "还没有选出" in r.life.events[-1]["note"]
+    assert len(r.life.threads) == 1
+    assert not r.life.artifacts and not r.life.interests
+    assert r.life.threads[0]["messages"][-1]["text"] == "还没看到有意思的"
 
 
 async def test_forged_model_summary_is_replaced_with_actual_reading_evidence(tmp_path):

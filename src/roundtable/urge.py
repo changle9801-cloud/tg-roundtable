@@ -74,7 +74,7 @@ def _activity(cfg) -> str:
 def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: bool, named: bool, follows: bool,
                    interested: bool, said: int, busy: bool, liveliness: float, crowding: float,
                    brief: bool = False, about: bool = False, in_thread: bool = False,
-                   fondness: float = 0.0, of: str = "", user: str = "阿明") -> Urge:
+                    fondness: float = 0.0, of: str = "", user: str = "阿明", experienced: bool = False) -> Urge:
     """How much she wants to say something now that the latest message has landed.
 
     ``replies``: replies already started since the message that opened the round; the more
@@ -101,6 +101,8 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
         parts.append(("在这段对话里", IN_THREAD))
     if interested:
         parts.append(("对上兴趣", INTEREST))
+    if experienced:
+        parts.append(("自己的相关经历", 0.3))
     parts.append(("底子", BASE))
     level = _activity(p.cfg)
     factors = [(f"活跃度{ACTIVITY_NAMES.get(level, level)}", ACTIVITY.get(level, 1.0))]

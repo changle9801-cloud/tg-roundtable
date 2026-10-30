@@ -20,6 +20,7 @@
       <button role="tab" data-tab="stickers">表情</button>
       <button role="tab" data-tab="memory">记忆 <span id="memory-badge" class="badge" hidden></span></button>
       <button role="tab" data-tab="journal">见闻</button>
+      <button role="tab" data-tab="home">家</button>
       <button role="tab" data-tab="life">日常</button>
       <button role="tab" data-tab="tools">工具</button>
       <button role="tab" data-tab="status">状态</button>
@@ -395,6 +396,12 @@
       <div id="journal"></div>
     </section>
 
+    <section id="tab-home" class="tab-panel">
+      <div class="section-head"><h1>家</h1></div>
+      <p class="muted">她们做日常活动时会走到对应的房间：看东西在书房，玩游戏在娱乐室，睡觉在自己卧室，忙的时候出门。走路只是把真实的换房间画出来。</p>
+      <div id="home-root"></div>
+    </section>
+
     <section id="tab-life" class="tab-panel">
       <div class="section-head"><h1>日常</h1></div>
       <p class="muted">参加的成员各自关注一些事，可以继续了解、找群友私聊（会轮流找不同的人），也可以先歇着。
@@ -444,6 +451,7 @@
   </div>
   <div id="toast" class="toast" hidden></div>
 
+  <script type="importmap">{"imports": {"three": "/static/vendor/three.module.min.js"}}</script>
   <script src="/static/app.js"></script>
 </body>
 </html>

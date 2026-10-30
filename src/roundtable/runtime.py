@@ -55,7 +55,8 @@ from .drawing import (
     supports_drawing,
 )
 from .journal import JournalStore, browse_once
-from .life import LifeEngine, LifeStore
+from .home import ACCESSORIES, Home
+from .life import LifeEngine, LifeStore, object_reply
 from .life_work import LifeWorkbench
 from .games.spire import GameService, highlights, make_game_actor
 from .games.social import GameConversation
@@ -159,7 +160,8 @@ class Runtime:
         self.browsing = ProactiveScheduler(store.data_dir / "browse_plan.json", prefix="browse")
         self.journal = JournalStore(store.data_dir)
         self.life = LifeStore(store.data_dir)
-        self.life_workbench = LifeWorkbench(store.data_dir, lambda pid, prompt: self._life_ask(pid, prompt))
+        self.life_workbench = LifeWorkbench(store.data_dir, lambda pid, prompt: self._life_ask(pid, prompt),
+                                           read_video=self._life_video)
         self.games = GameService(store.data_dir, self._game_actor, self._game_social)
         self.game_memories = GameMemoryStore(store.data_dir)
         self.games.profile = self.game_memories.profile
@@ -184,6 +186,7 @@ class Runtime:
         self._life_task: asyncio.Task | None = None
         self._life_member = ""
         self.drawings = DrawLog(store.data_dir)
+        self.home = Home(store.data_dir)
         self._browsing_now: set[str] = set()
         self._background: set[asyncio.Task] = set()
         self.sink = TelegramSink(self)
@@ -251,6 +254,7 @@ class Runtime:
             (self.life.prompt_section(pc.id, {m.id: m.name for m in config.participants}) if background
              else self.life.chat_summary(pc.id)),
             self.game_memories.prompt_section(pc.id),
+            self.home.prompt_section(pc.id) if hasattr(self, "home") else "",
             self.memory.prompt_section(pc.id, config.memory_learn),
             self.feedback.prompt_section(pc.id),
             self.stickers.prompt_section(limit, pc.id),
@@ -296,6 +300,7 @@ class Runtime:
             p.tools = tools_for(p.cfg, self.config.tools)
         self.participants = built
         self.participant_errors = errors
+        self.home.ensure({pc.id: pc.name for pc in self.config.enabled_participants})
         self.refresh_prompts()
         for room in self.rooms.values():
             room.update(built, self.config.round, self.sticker_limit, self.config.no_coding, self.config.reactions_enabled)
@@ -384,9 +389,11 @@ class Runtime:
             self.life.private_recall(pc.id, prompt, {m.id: m.name for m in self.config.participants}),
             self.life.artifact_recall(pc.id, prompt),
             self.life.progress_recall(pc.id, prompt),
+            self.life.diary.recall(pc.id, query),
             self.game_memories.recall(pc.id, query, names) or self.life.game_recall(pc.id, query),
             self.life.game_board(pc.id, query, {m.id: m.name for m in self.config.participants}),
             Runtime._game_chat_context(self, pc.id, query),
+            self.home.tell(pc.id) if hasattr(self, "home") else "",
             chat_style_context(pc),
         ) if part)
 
@@ -411,6 +418,8 @@ class Runtime:
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
+                has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
+                                                      or self.game_memories.recall(pid, text)),
             )
             # Old life shares predate the explicit origin field. Match public records,
             # without rewriting the transcript or exposing any private activity.
@@ -844,8 +853,74 @@ class Runtime:
         return (not self.games.running and not any(room.busy for room in self.rooms.values())
                 and not self._browsing_now.intersection(self.config.life.members))
 
+    def diary_entries(self) -> list[dict]:
+        """Every member's diary: daily-life entries plus game memories, newest first."""
+        # Game entries remain owned by GameMemoryStore: edits/hiding apply here too.
+        diary = self.life.diary.view()
+        for m in self.game_memories.memories:
+            if m.status == "hidden":
+                continue
+            provenance = f"旁观 {m.watched} 玩游戏时：" if m.watched else "自己玩游戏时："
+            diary.append({"id": "game:" + m.id, "member": m.member, "ref": m.id, "kind": "game",
+                          "title": m.subject, "event": provenance + m.story, "thoughts": provenance + m.story,
+                          "feelings": {m.feeling: m.intensity}, "topics": m.tags, "sources": [], "at": m.at,
+                          "day": datetime.fromtimestamp(m.at).date().isoformat(), "strength": round(m.strength(time.time()), 3)})
+        return sorted(diary, key=lambda e: e["at"], reverse=True)
+
+    # ---- the home ----
+
+    def _residents(self) -> dict[str, str]:
+        return {p.id: p.name for p in self.config.enabled_participants}
+
+    def home_view(self) -> dict:
+        chat = self.proactive_chat()
+        room = self.rooms.get(chat) if chat else None
+        phone = {}
+        for m in room.messages if room else ():
+            if not m.from_user:
+                phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
+        return self.home.view(self._residents(), phone)
+
+    def home_text(self) -> str:
+        """`/家` in the group: who is where, in fixed words anyone there may see."""
+        return self.home.guest_lines(self._residents())
+
+    def diary_book(self, pid: str, day: str = "") -> dict:
+        """Her diary on the bedroom desk. The cover lists days; opening a day is reading it, and she will know."""
+        if pid not in self._residents():
+            raise ConfigError("没有这位成员")
+        entries = [e for e in self.diary_entries() if e["member"] == pid]
+        days = sorted({e["day"] for e in entries}, reverse=True)
+        if not day:
+            return {"member": pid, "days": [{"day": d, "count": sum(e["day"] == d for e in entries)} for d in days]}
+        if day not in days:
+            raise ConfigError("这一天没有日记")
+        self.home.read_diary(pid, day)
+        return {"member": pid, "day": day, "entries": [e for e in entries if e["day"] == day],
+                "reads": [r for r in self.home.diary_reads if r["member"] == pid][-10:]}
+
+    async def choose_look(self, pid: str) -> dict:
+        """She picks her own colour and accessory for the house, once when the owner asks."""
+        if pid not in self._residents():
+            raise ConfigError("没有这位成员")
+        now = self.home.looks.get(pid, {})
+        options = "、".join(f"{key}（{name}）" for key, name in ACCESSORIES.items())
+        prompt = (now_line() + "\n这不是群聊。阿明在家里给每个人做了一个方块小人，你可以给自己挑外形。"
+                  f"\n现在是颜色 {now.get('color')}、配饰 {ACCESSORIES.get(now.get('accessory'), '无')}。"
+                  f"\n配饰只能从这些里选一个：{options}。颜色写成 #rrggbb，按你自己的喜好挑。"
+                  '\n只输出 JSON：{"color":"#rrggbb","accessory":"清单里的英文 ID","why":"一句话，为什么这么挑"}')
+        choice = object_reply(await self._life_ask(pid, prompt))
+        try:
+            look = self.home.set_look(pid, str(choice.get("color", "")), str(choice.get("accessory", "")))
+        except ValueError as e:
+            raise ConfigError(f"她挑的不行：{e}") from None
+        why = str(choice.get("why") or "")[:200]
+        self.life.event(pid, "look", f"给自己挑了外形：{ACCESSORIES[look['accessory']]}，{look['color']}" + (f"。{why}" if why else ""))
+        return {**look, "why": why}
+
     def life_status(self) -> dict:
         names = {p.id: p.name for p in self.config.participants}
+        diary = self.diary_entries()
         plans = {}
         for p in self.participants:
             if p.id in self.config.life.members:
@@ -856,7 +931,7 @@ class Runtime:
                                "passive_limit": self._life_private_limit(p.id),
                                "limit": self._life_days(p.id)}
         return {**self.life.public(), "names": names, "settings": asdict(self.config.life), "games": self.games.status(),
-                "running": self._life_member, "plans": plans}
+                "running": self._life_member, "plans": plans, "diary": diary}
 
     def start_life(self, pid: str) -> dict:
         if not self._life_enabled(pid):
@@ -1116,12 +1191,15 @@ class Runtime:
 
     async def _play_game(self, pid: str, *, automatic=False, peer=None) -> dict:
         self._member(pid)  # Recheck enabled membership before launching anything.
+        self.home.begin(pid, "play", "《杀戮尖塔》")
         try:
             result = await self.games.play(pid, automatic=automatic, peer=peer)
         except asyncio.CancelledError:
             if self.games.latest.get('member') == pid and 'ended_at' in self.games.latest:
                 self._record_game(self.games.latest)
             raise
+        finally:
+            self.home.end(pid)
         self._record_game(result)
         return result
 
@@ -1168,7 +1246,25 @@ class Runtime:
                 "个人行动可让应用代读具体公开网页，或保存笔记、收藏、创作文字。成果归自己保留，分享仍需另行决定。"
                 "没有搜索能力时可请朋友找链接，不能假装已经查到。个人活动与被朋友找去私聊分开计数。\n"
                 f"最近的公开群聊（不是给你的新任务）：\n{recent}\n"
-                f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, room) else '暂不合适，可以先留着，下次再决定'}。")
+                f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, room) else '暂不合适，可以先留着，下次再决定'}。\n"
+                + self.life.diary.recall(pid, "最近看了什么")
+                + ("\n" + told if (told := self.home.tell(pid)) else ""))
+
+    def _life_moved(self, pid: str, action: str, decision: dict, item) -> None:
+        """A daily-life step chose what to do: she goes to the room where it happens."""
+        title = item.title if item else ""
+        if action == "work":
+            plan = decision.get("work") if isinstance(decision.get("work"), dict) else {}
+            self.home.begin(pid, "write" if plan.get("operation") == "write" else "read", title)
+        elif action == "private":
+            peer = str(decision.get("peer") or "")
+            friend = next((p for p in self.participants if p.id == peer), None)
+            home = friend is not None and self.routines.status(friend) not in (ASLEEP, BUSY)
+            self.home.begin(pid, "private", title or str(decision.get("reason") or "")[:60], peer=peer, peer_home=home)
+        elif action == "idle":
+            self.home.begin(pid, "idle", str(decision.get("reason") or ""))
+        elif action != "play":  # a game moves her when it really starts
+            self.home.begin(pid, action, title or ("随便看看" if action == "browse" else ""))
 
     def _life_can_browse(self, pid: str) -> bool:
         p = self._member(pid)
@@ -1193,6 +1289,19 @@ class Runtime:
 
     async def _life_verify(self, pid: str, result: dict) -> dict:
         return await self.life_workbench.research(pid, result, self.life.prompt_section(pid) + "\n" + self._life_context(pid))
+
+    async def _life_video(self, pid: str, url: str) -> dict:
+        from .tools import call_tool
+        from .video_reading import video_receipt
+        server = next((s for s in tools_for(self._member(pid).cfg, self.config.tools)
+                       if "watch_video" in s.allowed), None)
+        if server is None:
+            return {"status": "unavailable", "reason": "这位成员没有获准使用看视频工具，可以找有工具的朋友"}
+        try:
+            result = await call_tool(server, "watch_video", {"url": url, "frames": 0})
+        except ConfigError as error:
+            return {"status": "unavailable", "reason": str(error)}
+        return video_receipt(result, url)
 
     async def _life_work(self, pid, item, plan):
         # Continue from actual files, not merely a promise or an old summary.
@@ -1254,7 +1363,7 @@ class Runtime:
                                 play=lambda member, peer=None: self._play_game(member, automatic=True, peer=peer),
                                 can_play=lambda member: (self.games.available(member, automatic=True)
                                                          and not self.game_memories.resting(member)),
-                                play_note=self.game_memories.play_note)
+                                play_note=self.game_memories.play_note, moved=self._life_moved)
             can_explore = self._life_can_browse(pid)
             # Friends it can message: the others in daily life with activities left today.
             awake = {m.id for m in self.participants if not self._asleep(m)}
@@ -1268,6 +1377,7 @@ class Runtime:
             log.warning("%s 日常活动失败：%s", pid, error)
             self.life.event(pid, "error", str(error))
         finally:
+            self.home.end(pid)
             self._life_task = None
             self._life_member = ""
             self.refresh_prompts()
@@ -1395,6 +1505,8 @@ class Runtime:
         """Someone just woke up or is going to bed: it may say so, or answer what it missed."""
         chat = self.proactive_chat()
         room = self.room(chat) if chat else None
+        for p in self.participants:
+            self.home.settle(p.id, self.routines.status(p))
         for p, before, after in self.routines.changes(self.participants, self._routine_last):
             if before == ASLEEP:
                 self._routine_events.append((p.id, "wake", time.time()))

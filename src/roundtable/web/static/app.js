@@ -1670,6 +1670,44 @@ async function addMemory() {
 // ---------- continuing daily life ----------
 
 let lifeData = null;
+const diaryFilter = { member: "", day: "", feeling: "" };
+
+function renderDiary(d) {
+  const entries = d.diary || [];
+  const selector = (key, label, values) => field(label, h("select", {
+    onchange: (e) => { diaryFilter[key] = e.target.value; renderLife(); },
+  }, h("option", { value: "", selected: diaryFilter[key] === "" }, "全部"),
+  ...values.map(([value, title]) => h("option", { value, selected: diaryFilter[key] === value }, title))));
+  const days = [...new Set(entries.map((e) => e.day))].sort().reverse();
+  const feelings = [...new Set(entries.flatMap((e) => Object.keys(e.feelings)))].sort();
+  const shown = entries.filter((e) => (!diaryFilter.member || e.member === diaryFilter.member)
+    && (!diaryFilter.day || e.day === diaryFilter.day) && (!diaryFilter.feeling || diaryFilter.feeling in e.feelings));
+  const groups = new Map();
+  for (const entry of shown) {
+    const key = `${entry.day} · ${d.names[entry.member] || entry.member}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return h("section", { class: "card", id: "life-diary" },
+    h("h2", {}, "她们的日记"),
+    h("p", { class: "muted small" }, "活动后随手留下的感受，按天放在一起。无聊、失望也可以记；没有想写的就留白。只有本人会想起这些内容，分享到群里后朋友才知道。"),
+    h("div", { class: "life-grid" },
+      selector("member", "谁的日记", Object.entries(d.names)),
+      selector("day", "哪一天", days.map((day) => [day, day])),
+      selector("feeling", "当时的感受", feelings.map((feeling) => [feeling, feeling]))),
+    ...[...groups].map(([label, items]) => h("div", { class: "life-interest" }, h("h3", {}, label),
+      ...items.map((entry) => h("article", { class: "life-message" },
+        h("b", {}, entry.title),
+        h("span", { class: "muted small" }, " · " + new Date(entry.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+        h("p", { style: "white-space:pre-wrap" }, entry.thoughts),
+        Object.keys(entry.feelings).length ? h("p", { class: "row-gap small" },
+          ...Object.keys(entry.feelings).map((feeling) => h("span", { class: "pill" }, feeling))) : null,
+        h("details", {}, h("summary", { class: "muted small" }, "经历与来源"), h("p", {}, entry.event),
+          ...entry.sources.map((source) => h("p", { class: "small" },
+            h("a", { href: source.url, target: "_blank", rel: "noopener noreferrer" }, source.title || "查看来源"),
+            h("span", { class: "muted" }, " · " + source.read_level)))))))),
+    !shown.length ? h("p", { class: "muted" }, entries.length ? "这个范围内还没有日记。" : "还没有日记。下次真实活动后，她们可以留下自己的感受。") : null);
+}
 const LIFE_ACTIONS = { idle: "先歇着", work: "推进个人目标", play: "实际玩游戏", blocked: "这次没做成", browse: "随手看看", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
 
 function renderLifeSettings() {
@@ -1719,7 +1757,7 @@ function renderLifeSettings() {
       field("活动与分享时间段", textInput(cfg.hours, (v) => { cfg.hours = v; }, { placeholder: "10-23" }))),
     h("div", { class: "life-grid" }, numberField("shares_per_day", "每人每天最多发群里几次", 1, 4),
       numberField("quiet_minutes", "群里安静多少分钟后才分享", 0, 1440)),
-    h("p", { class: "muted small" }, "次数是上限，不是任务。不限次数时仍约每小时安排一次个人活动，遵守作息和活动时间。角色自己选目标，阅读回执和作品实际保存后才算成果，可以继续、暂停或收尾。"));
+    h("p", { class: "muted small" }, "次数是上限，不是任务。不限次数时仍约每小时安排一次个人活动。可以随便看视频、读帖子、聊天或休息；只有想持续做一件事时才设目标。日记各自保留，分享单独限流。"));
   if (location.hash === "#life") loadLife();
 }
 
@@ -1767,7 +1805,7 @@ function renderLife() {
           h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title || "查看来源"),
           " · ", s.read_level || "阅读程度未说明")),
         h("div", { class: "muted small" }, `最近进展 ${when(i.updated_at)}`))),
-      !items.length ? h("p", { class: "muted" }, "还没有个人目标。下次活动时，由它自己从兴趣中选择想做的事。") : null,
+      !items.length ? h("p", { class: "muted" }, "暂时没有持续关注的事，可以随便逛逛、找朋友聊聊，或先歇着。") : null,
       h("h3", {}, "实际留下的成果"),
       ...(artifacts.length ? artifacts.map((a) => h("p", { class: "small" },
         h("a", { href: `/api/life/artifacts/${encodeURIComponent(a.id)}`, target: "_blank", rel: "noopener noreferrer" }, a.title),
@@ -1791,6 +1829,7 @@ function renderLife() {
       source.excerpt ? h("p", { class: "small" }, source.excerpt) : null))));
   $("#life-content").replaceChildren(
     renderGamePanel(d),
+    renderDiary(d),
     h("div", { class: "life-grid" }, ...cards),
     h("h2", {}, "分享到群里的内容"),
     h("p", { class: "muted small" }, "仅记录实际发出的分享。群友会收到这些来源摘记，是否接话由各自决定；未分享的事项和私聊仍各自保留。"),
@@ -2073,6 +2112,7 @@ function urgeStep(s) {
     "吵醒": () => s.hit ? `⏰ ${s.who} 被吵醒了（${pct(s.chance)}）` : `💤 ${s.who} 没被吵醒（${pct(s.chance)}）`,
     "欠的回答": () => `📌 ${s.who} 该她回：${s.why}`,
     "保底": () => `🫴 ${s.who}：${s.why}`,
+    "还想回": () => `⏳ ${s.who} 还想回：${s.why}`,
     "说了": () => `💬 ${s.who} 说了：${s.why}`,
     "没说": () => `🤐 ${s.who} ${s.why}`,
     "出错了": () => `⚠️ ${s.who} 出错了：${s.why}`,
@@ -2125,7 +2165,12 @@ function showTab(name) {
   if (name === "memory" && server) loadChats();
   if (name === "journal" && server) loadJournal();
   if (name === "life" && server) loadLife();
+  // The 3D house loads only when its tab opens, and stops drawing when you leave it.
+  if (name === "home") import("/static/home.js").then((m) => m.open($("#home-root"))).catch((e) => toast(e.message, true));
+  else if (homeLoaded) import("/static/home.js").then((m) => m.close());
+  homeLoaded = homeLoaded || name === "home";
 }
+let homeLoaded = false;
 
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 $("#save-btn").onclick = save;
