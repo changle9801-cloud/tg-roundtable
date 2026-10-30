@@ -30,49 +30,73 @@ export function close() {
 }
 
 // ---------- layout: rooms as rectangles on the floor (x to the right, z towards the viewer) ----------
+// Rooms come with a size in grid cells; a cell is half a unit. Row A: bedrooms. Row B: study, a hall,
+// the games room. Row C: kitchen, living room, storage, then any other room.
 
-const ROW_A = 5, HALL = 1.4, ROW_B = 6, ROW_C = 6;
+const CELL = 0.5, HALL = 1.5;
+
+function doorAt(rect, door) {
+  const along = door.wall === "front" || door.wall === "back" ? rect.w : rect.d;
+  const at = door.at !== undefined ? door.at * CELL : along / 2;
+  const spot = {
+    front: { x: rect.x + at, z: rect.z + rect.d }, back: { x: rect.x + at, z: rect.z },
+    left: { x: rect.x, z: rect.z + at }, right: { x: rect.x + rect.w, z: rect.z + at },
+  }[door.wall];
+  return { ...spot, wall: door.wall, outside: !!door.outside };
+}
 
 function layout(rooms) {
-  const beds = rooms.filter((r) => r.id.startsWith("bed-"));
-  const W = Math.max(20, beds.length * 5);
-  const half = W / 2;
   const rects = {};
-  const bw = W / Math.max(1, beds.length);
-  const zB = ROW_A + HALL, zBC = zB + ROW_B, zC = zBC + HALL;
-  beds.forEach((r, i) => {
-    rects[r.id] = { x: i * bw, z: 0, w: bw, d: ROW_A, kind: "bed", owner: r.owner, door: { x: i * bw + bw / 2, z: ROW_A } };
-  });
-  const sideW = half - HALL / 2;
-  rects.study = { x: 0, z: zB, w: sideW, d: ROW_B, kind: "study", door: { x: sideW / 2, z: zBC } };
-  rects.fun = { x: half + HALL / 2, z: zB, w: sideW, d: ROW_B, kind: "fun", door: { x: half + HALL / 2 + sideW / 2, z: zBC } };
-  const kw = W * 0.3, lw = W * 0.45;
-  rects.kitchen = { x: 0, z: zC, w: kw, d: ROW_C, kind: "kitchen", door: { x: kw / 2, z: zC } };
-  rects.living = { x: kw, z: zC, w: lw, d: ROW_C, kind: "living", door: { x: kw + lw / 2, z: zC } };
-  rects.storage = { x: kw + lw, z: zC, w: W - kw - lw, d: ROW_C, kind: "storage", door: { x: kw + lw + (W - kw - lw) / 2, z: zC } };
-  const front = { x: kw + lw / 2, z: zC + ROW_C };
+  const put = (room, x, z) => {
+    const r = { x, z, w: room.size[0] * CELL, d: room.size[1] * CELL, room };
+    r.doors = (room.doors || []).map((d) => doorAt(r, d));
+    rects[room.id] = r;
+    return r;
+  };
+  const byId = Object.fromEntries(rooms.map((r) => [r.id, r]));
+  const beds = rooms.filter((r) => r.id.startsWith("bed-"));
+  let x = 0;
+  for (const room of beds) x += put(room, x, 0).w;
+  const depthA = Math.max(5, ...beds.map((r) => r.size[1] * CELL));
+  const zB = depthA + HALL;
+  let depthB = 0, hallX = 0;
+  if (byId.study) { const r = put(byId.study, 0, zB); hallX = r.w + HALL / 2; depthB = r.d; }
+  if (byId.fun) depthB = Math.max(depthB, put(byId.fun, hallX + HALL / 2, zB).d);
+  const zC = zB + depthB + HALL;
+  let xc = 0, depthC = 0;
+  const rowC = ["kitchen", "living", "storage"].map((id) => byId[id]).filter(Boolean);
+  for (const room of rooms) if (!rects[room.id] && !rowC.includes(room)) rowC.push(room);
+  for (const room of rowC) { const r = put(room, xc, zC); xc += r.w; depthC = Math.max(depthC, r.d); }
+  const W = Math.max(x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0), xc);
+  const living = rects.living || Object.values(rects)[0];
+  const front = living.doors.find((d) => d.outside) || { x: living.x + living.w / 2, z: living.z + living.d };
   return {
-    W, D: zC + ROW_C, half, rects, front,
-    outside: { x: front.x, z: front.z + 3 },
-    corridor: { A: ROW_A + HALL / 2, C: zBC + HALL / 2 },
+    W, D: zC + depthC, rects, front, hallX, outside: { x: front.x, z: front.z + 3 },
+    corridors: [depthA + HALL / 2, zB + depthB + HALL / 2], spans: { A: depthA, B: [zB, depthB], C: zC },
   };
 }
 
-// The corridor a room's door opens onto: bedrooms open to the back one, the rest to the front one.
-const corridorOf = (rect) => (rect.kind === "bed" ? "A" : "C");
+// The corridor in front of a door: the nearest one on the side the door opens to.
+function corridorFor(L, door) {
+  const side = door.wall === "back" ? -1 : 1;
+  const ahead = L.corridors.filter((c) => (c - door.z) * side > 0);
+  return ahead.sort((a, b) => Math.abs(a - door.z) - Math.abs(b - door.z))[0] ?? L.corridors[0];
+}
 
 function route(L, fromRoom, toRoom, from, to) {
   const a = L.rects[fromRoom], b = L.rects[toRoom];
   if (fromRoom === toRoom || !a || !b) return [to];
-  const pts = [{ ...a.door }];
-  const ca = L.corridor[corridorOf(a)], cb = L.corridor[corridorOf(b)];
-  pts.push({ x: a.door.x, z: ca });
-  if (ca !== cb) pts.push({ x: L.half, z: ca }, { x: L.half, z: cb });
-  pts.push({ x: b.door.x, z: cb }, { ...b.door }, to);
+  const da = a.doors.find((d) => !d.outside) || a.doors[0], db = b.doors.find((d) => !d.outside) || b.doors[0];
+  if (!da || !db) return [to];
+  const ca = corridorFor(L, da), cb = corridorFor(L, db);
+  const pts = [{ x: da.x, z: da.z }, { x: da.x, z: ca }];
+  if (ca !== cb) pts.push({ x: L.hallX, z: ca }, { x: L.hallX, z: cb });
+  pts.push({ x: db.x, z: cb }, { x: db.x, z: db.z }, to);
   return pts;
 }
 
-// ---------- furniture and the spots people use ----------
+// ---------- furniture: each template draws one type, sized and coloured, around its footprint's centre ----------
+// Local axes: x to the right, z towards the front (the viewer when turn is 0).
 
 function box(w, h, d, color, x, y, z) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
@@ -86,122 +110,121 @@ function cylinder(r, h, color, x, y, z) {
   return mesh;
 }
 
-// Each furnish() adds meshes to the group and returns spots: {verb group: [{x, z, y, pose, face}]}.
-// face is the angle she looks at (0 = towards the viewer, +z).
-const FACE_BACK = Math.PI, FACE_FRONT = 0;
+function ball(r, color, x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshLambertMaterial({ color }));
+  mesh.position.set(x, y, z);
+  return mesh;
+}
 
-function furnishBed(g, r, clickable) {
-  const { x, z, w } = r;
-  g.add(box(0.12, 0.5, 2.6, 0x8d6e63, x + 0.35, 0, z + 1.6)); // headboard side
-  g.add(box(1.6, 0.35, 2.4, 0xa1887f, x + 1.25, 0, z + 1.6));
-  g.add(box(1.5, 0.12, 2.3, 0xeceff1, x + 1.25, 0.35, z + 1.6));
-  g.add(box(0.9, 0.12, 0.5, 0xffffff, x + 1.25, 0.47, z + 0.65));
-  g.add(box(1.2, 0.7, 0.6, 0xbcaaa4, x + w - 1.0, 0, z + 0.55)); // desk
-  const diary = box(0.36, 0.08, 0.28, 0xc0392b, x + w - 1.0, 0.7, z + 0.55);
-  diary.userData = { diary: r.owner };
-  clickable.push(diary);
-  g.add(diary);
-  g.add(cylinder(0.06, 0.9, 0x555555, x + w - 0.5, 0, z + 0.4));
-  g.add(cylinder(0.2, 0.18, 0xffe082, x + w - 0.5, 0.9, z + 0.4));
-  g.add(box(1.6, 0.02, 1.2, 0xd7ccc8, x + w / 2 + 0.6, 0, z + 3.4)); // rug
+const shade = (color, k) => new THREE.Color(color).multiplyScalar(k);
+
+const TEMPLATES = {
+  bed: (g, W, D, H, c) => {
+    g.add(box(W, 0.35, D, c, 0, 0, 0));
+    g.add(box(W, 0.55, 0.12, shade(c, 0.75), 0, 0, -D / 2 + 0.06));
+    g.add(box(W - 0.1, 0.12, D - 0.2, 0xeceff1, 0, 0.35, 0.05));
+    g.add(box(W * 0.6, 0.12, 0.45, 0xffffff, 0, 0.47, -D / 2 + 0.4));
+  },
+  "writing-desk": (g, W, D, H, c, piece, clickable) => {
+    g.add(box(W, H, D, c, 0, 0, 0));
+    const book = box(0.36, 0.08, 0.28, 0xc0392b, 0, H, 0);
+    if (piece.owner) { book.userData = { diary: piece.owner }; clickable.push(book); }
+    g.add(book);
+  },
+  "floor-lamp": (g, W, D, H, c) => {
+    g.add(cylinder(0.06, H - 0.2, 0x555555, 0, 0, 0));
+    g.add(cylinder(0.2, 0.18, c, 0, H - 0.2, 0));
+  },
+  rug: (g, W, D, H, c) => g.add(box(W, 0.02, D, c, 0, 0, 0)),
+  "computer-desk": (g, W, D, H, c) => {
+    g.add(box(W, H, 0.7, c, 0, 0, -D / 2 + 0.35));
+    g.add(box(0.8, 0.5, 0.06, 0x263238, 0, H + 0.06, -D / 2 + 0.2));
+    g.add(box(0.75, 0.42, 0.02, 0x4fc3f7, 0, H + 0.1, -D / 2 + 0.24));
+    g.add(box(0.5, 0.45, 0.5, 0x607d8b, 0, 0, D / 2 - 0.4));
+  },
+  bookshelf: (g, W, D, H, c) => {
+    g.add(box(W, H, D, c, 0, 0, 0));
+    for (let s = 0; s < 4; s++) g.add(box(W - 0.1, 0.04, D - 0.08, shade(c, 0.8), 0, 0.45 + s * 0.45, 0.04));
+    ["#e57373", "#64b5f6", "#81c784", "#ffd54f", "#ba68c8"].forEach((col, i) =>
+      g.add(box(0.14, 0.36, 0.3, new THREE.Color(col), -W / 2 + 0.35 + i * 0.4, 0.49 + (i % 3) * 0.45, D / 2 - 0.15)));
+  },
+  plant: (g, W, D, H, c) => {
+    const r = Math.min(W, D);
+    g.add(cylinder(r * 0.5, H * 0.45, 0x8d6e63, 0, 0, 0));
+    g.add(ball(r * 0.9, c, 0, H * 0.75, 0));
+  },
+  tv: (g, W, D, H, c, piece) => {
+    g.add(box(W * 0.87, 0.5, D, 0x5d4037, 0, 0, 0));
+    g.add(box(W * 0.8, 1.3, 0.1, c, 0, 0.55, -0.05));
+    g.add(box(W * 0.75, 1.15, 0.02, 0x7e57c2, 0, 0.62, 0.01));
+    if ((piece.functions || []).includes("game.play")) g.add(box(0.5, 0.12, 0.3, 0xeeeeee, W * 0.3, 0.5, 0.05));
+  },
+  sofa: (g, W, D, H, c) => {
+    g.add(box(W, 0.45, D, c, 0, 0, 0));
+    g.add(box(W, 0.6, 0.3, shade(c, 0.8), 0, 0.3, -D / 2 + 0.15));
+  },
+  beanbag: (g, W, D, H, c) => g.add(cylinder(Math.min(W, D) / 2, H, c, 0, 0, 0)),
+  table: (g, W, D, H, c) => g.add(box(W, H, D, c, 0, 0, 0)),
+  frame: (g, W, D, H, c) => {
+    g.add(box(W * 0.8, H, 0.05, 0xffffff, 0, 0.95, -D / 2 + 0.05));
+    g.add(box(W * 0.66, H - 0.14, 0.02, c, 0, 1.02, -D / 2 + 0.08));
+  },
+  fridge: (g, W, D, H, c) => {
+    g.add(box(W * 0.9, H, D * 0.8, c, 0, 0, 0));
+    g.add(box(0.02, H * 0.6, 0.02, 0x90a4ae, W * 0.3, H * 0.25, D * 0.4 + 0.01));
+  },
+  counter: (g, W, D, H, c) => g.add(box(W, H, D, c, 0, 0, 0)),
+  "dining-table": (g, W, D, H, c) => {
+    g.add(box(W * 0.8, H, D * 0.5, c, 0, 0, 0));
+    for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(box(0.42, 0.45, 0.42, 0x8d6e63, dx * W / 4, 0, dz * (D / 2 - 0.25)));
+  },
+  boxes: (g, W, D, H, c) => {
+    [[-0.4, -0.4, 0.6], [0.4, -0.4, 0.7], [-0.4, 0.4, 0.8]].forEach(([dx, dz, h]) => g.add(box(0.7, h, 0.7, c, dx, 0, dz)));
+    g.add(box(0.7, 0.5, 0.7, shade(c, 0.85), -0.4, 0.6, -0.4));
+  },
+};
+
+const turnedSize = (size, turn) => (turn === 90 || turn === 270 ? [size[1], size[0]] : [size[0], size[1]]);
+
+// Where a use puts a person, in house units, and the way she faces (degrees clockwise; 0 = +z).
+function useSpot(rect, piece, type, use) {
+  const [w, d] = type.size;
+  const cx = (use.at[0] - w / 2) * CELL, cz = (use.at[1] - d / 2) * CELL;
+  const a = (piece.turn * Math.PI) / 180;
+  const [tw, td] = turnedSize(type.size, piece.turn);
   return {
-    sleep: [{ x: x + 1.25, z: z + 1.9, y: 0.5, pose: "lie" }],
-    rest: [{ x: x + 2.4, z: z + 2.9, pose: "sit", face: FACE_FRONT, y: 0 }, { x: x + w - 1.0, z: z + 1.25, pose: "sit", face: FACE_BACK }],
-    any: [{ x: x + w / 2, z: z + 3.6, pose: "stand", face: FACE_FRONT }, { x: x + w / 2 + 1, z: z + 3.4, pose: "stand", face: FACE_FRONT }],
+    x: rect.x + (piece.at[0] + tw / 2) * CELL + cx * Math.cos(a) - cz * Math.sin(a),
+    z: rect.z + (piece.at[1] + td / 2) * CELL + cx * Math.sin(a) + cz * Math.cos(a),
+    face: (piece.turn + (use.face || 0)) % 360, pose: use.pose, y: use.y || 0,
   };
 }
 
-function furnishStudy(g, r) {
-  const { x, z, w, d } = r;
-  const seats = [];
-  const n = 3;
-  for (let i = 0; i < n; i++) {
-    const cx = x + 1.6 + i * ((w - 3.2) / (n - 1));
-    g.add(box(1.5, 0.72, 0.7, 0xd7ccc8, cx, 0, z + 0.7));
-    g.add(box(0.8, 0.5, 0.06, 0x263238, cx, 0.78, z + 0.55));
-    g.add(box(0.75, 0.42, 0.02, 0x4fc3f7, cx, 0.82, z + 0.59));
-    g.add(box(0.5, 0.45, 0.5, 0x607d8b, cx, 0, z + 1.6));
-    seats.push({ x: cx, z: z + 1.45, pose: "sit", face: FACE_BACK, y: 0.0 });
-  }
-  g.add(box(0.5, 2.0, 2.4, 0x8d6e63, x + w - 0.4, 0, z + d - 1.7)); // bookshelf
-  for (let s = 0; s < 4; s++) g.add(box(0.42, 0.04, 2.3, 0x6d4c41, x + w - 0.4, 0.45 + s * 0.45, z + d - 1.7));
-  ["#e57373", "#64b5f6", "#81c784", "#ffd54f", "#ba68c8"].forEach((c, i) =>
-    g.add(box(0.3, 0.36, 0.14, new THREE.Color(c), x + w - 0.45, 0.49 + (i % 3) * 0.45, z + d - 2.6 + i * 0.35)));
-  g.add(cylinder(0.25, 0.5, 0x8d6e63, x + 0.5, 0, z + d - 0.6)); // plant
-  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 12), new THREE.MeshLambertMaterial({ color: 0x66bb6a })))
-    .children.at(-1).position.set(x + 0.5, 0.85, z + d - 0.6);
-  return { read: seats, browse: seats, write: seats, any: [{ x: x + w / 2, z: z + d - 1.5, pose: "stand", face: FACE_FRONT }] };
+function drawPiece(parent, rect, piece, type, clickable) {
+  const g = new THREE.Group();
+  const [w, d] = type.size;
+  const draw = TEMPLATES[type.template] || TEMPLATES.table;
+  draw(g, w * CELL, d * CELL, type.height, piece.color || type.color, piece, clickable);
+  const [tw, td] = turnedSize(type.size, piece.turn);
+  g.rotation.y = (-piece.turn * Math.PI) / 180;
+  g.position.set(rect.x + (piece.at[0] + tw / 2) * CELL, 0, rect.z + (piece.at[1] + td / 2) * CELL);
+  parent.add(g);
 }
 
-function furnishFun(g, r) {
-  const { x, z, w, d } = r;
-  g.add(box(2.6, 0.5, 0.5, 0x5d4037, x + w / 2, 0, z + 0.45)); // TV stand
-  g.add(box(2.4, 1.3, 0.1, 0x212121, x + w / 2, 0.55, z + 0.4));
-  g.add(box(2.25, 1.15, 0.02, 0x7e57c2, x + w / 2, 0.62, z + 0.46));
-  g.add(box(0.5, 0.12, 0.3, 0xeeeeee, x + w / 2 + 0.9, 0.5, z + 0.5)); // console
-  g.add(box(3.2, 0.45, 1.0, 0x5c6bc0, x + w / 2, 0, z + 3.3)); // sofa
-  g.add(box(3.2, 0.6, 0.3, 0x3f51b5, x + w / 2, 0.3, z + 3.75));
-  g.add(cylinder(0.5, 0.4, 0xff8a65, x + 1.0, 0, z + d - 1.2)); // beanbag
-  g.add(box(2.6, 0.02, 2.0, 0xb39ddb, x + w / 2, 0, z + 2.2));
-  const sofa = [-1, 0, 1].map((k) => ({ x: x + w / 2 + k, z: z + 3.2, y: 0.05, pose: "sit", face: FACE_BACK }));
-  return { play: sofa, rest: [{ x: x + 1.0, z: z + d - 1.2, y: 0.05, pose: "sit", face: FACE_BACK }, ...sofa], any: sofa };
-}
-
-function furnishLiving(g, r) {
-  const { x, z, w, d } = r;
-  g.add(box(3.6, 0.45, 1.1, 0x8d6e63, x + w / 2, 0, z + 1.2)); // sofa against the back wall
-  g.add(box(3.6, 0.6, 0.3, 0x6d4c41, x + w / 2, 0.3, z + 0.75));
-  g.add(box(1.8, 0.4, 0.9, 0xbcaaa4, x + w / 2, 0, z + 2.7)); // coffee table
-  g.add(box(4.2, 0.02, 3.0, 0xffe0b2, x + w / 2, 0, z + 2.3));
-  [-1.2, 0, 1.2].forEach((k, i) => { // photo wall (filled in stage 2)
-    g.add(box(0.8, 0.6, 0.05, [0xffffff, 0xfafafa, 0xf5f5f5][i], x + w / 2 + k, 1.25, z + 0.18));
-    g.add(box(0.66, 0.46, 0.02, [0x90caf9, 0xa5d6a7, 0xffcc80][i], x + w / 2 + k, 1.32, z + 0.21));
-  });
-  g.add(box(1.2, 1.9, 0.12, 0x6d4c41, x + w / 2, 0, z + d)); // front door
-  g.add(cylinder(0.3, 0.6, 0x8d6e63, x + w - 0.6, 0, z + 0.6));
-  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 12), new THREE.MeshLambertMaterial({ color: 0x43a047 })))
-    .children.at(-1).position.set(x + w - 0.6, 1.0, z + 0.6);
-  const sofa = [-1.1, 0, 1.1].map((k) => ({ x: x + w / 2 + k, z: z + 1.3, y: 0.05, pose: "sit", face: FACE_FRONT }));
-  return { rest: sofa, share: [{ x: x + w / 2 - 1.6, z: z + 3.6, pose: "stand", face: FACE_FRONT }, { x: x + w / 2 + 1.6, z: z + 3.6, pose: "stand", face: FACE_FRONT }], any: sofa };
-}
-
-function furnishKitchen(g, r) {
-  const { x, z, w, d } = r;
-  g.add(box(0.9, 1.9, 0.8, 0xeceff1, x + 0.6, 0, z + 0.55)); // fridge
-  g.add(box(0.02, 1.2, 0.02, 0x90a4ae, x + 0.95, 0.5, z + 0.97));
-  g.add(box(w - 2.0, 0.9, 0.7, 0xb0bec5, x + 1.1 + (w - 2.0) / 2, 0, z + 0.45)); // counter
-  g.add(box(1.6, 0.72, 1.0, 0xd7ccc8, x + w / 2, 0, z + 3.3)); // table
-  const seats = [[-0.5, -0.8, FACE_FRONT], [0.5, -0.8, FACE_FRONT], [-0.5, 0.8, FACE_BACK], [0.5, 0.8, FACE_BACK]].map(([dx, dz, face]) => {
-    g.add(box(0.42, 0.45, 0.42, 0x8d6e63, x + w / 2 + dx, 0, z + 3.3 + dz));
-    return { x: x + w / 2 + dx, z: z + 3.3 + dz, y: 0, pose: "sit", face };
-  });
-  return { rest: seats, any: seats };
-}
-
-function furnishStorage(g, r) {
-  const { x, z, w } = r;
-  [[0.6, 0.6], [1.4, 0.6], [0.6, 1.4]].forEach(([dx, dz], i) => g.add(box(0.7, 0.6 + i * 0.1, 0.7, 0xbcaaa4, x + dx, 0, z + dz)));
-  g.add(box(0.7, 0.5, 0.7, 0xa1887f, x + 0.6, 0.6, z + 0.6));
-  return { any: [{ x: x + w / 2, z: z + 3.5, pose: "stand", face: FACE_FRONT }] };
-}
-
-const FURNISH = { bed: furnishBed, study: furnishStudy, fun: furnishFun, living: furnishLiving, kitchen: furnishKitchen, storage: furnishStorage };
 const FLOORS = { bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
-const WALL = 0xd9d4cc, WALL_H = 0.7, DOOR_W = 1.3;
+const WALL = 0xd9d4cc, WALL_H = 0.7, DOOR_W = 1.5;
 
-function walls(g, r, doors) {
+function walls(g, r) {
   // Low walls a hair inside the room, with door gaps; neighbours' walls never share a face (no flicker).
   const inset = 0.06, t = 0.12;
   const edges = [
-    [r.x + inset, r.z + inset, r.x + r.w - inset, r.z + inset],
-    [r.x + inset, r.z + r.d - inset, r.x + r.w - inset, r.z + r.d - inset],
-    [r.x + inset, r.z + inset, r.x + inset, r.z + r.d - inset],
-    [r.x + r.w - inset, r.z + inset, r.x + r.w - inset, r.z + r.d - inset],
+    ["back", r.x + inset, r.z + inset, r.x + r.w - inset, r.z + inset],
+    ["front", r.x + inset, r.z + r.d - inset, r.x + r.w - inset, r.z + r.d - inset],
+    ["left", r.x + inset, r.z + inset, r.x + inset, r.z + r.d - inset],
+    ["right", r.x + r.w - inset, r.z + inset, r.x + r.w - inset, r.z + r.d - inset],
   ];
-  for (const [x1, z1, x2, z2] of edges) {
+  for (const [wall, x1, z1, x2, z2] of edges) {
     const horizontal = z1 === z2;
-    const gaps = doors.filter((dp) => (horizontal ? Math.abs(dp.z - z1) < 0.2 : Math.abs(dp.x - x1) < 0.2))
-      .map((dp) => (horizontal ? dp.x : dp.z)).sort((a, b) => a - b);
+    const gaps = r.doors.filter((dp) => dp.wall === wall).map((dp) => (horizontal ? dp.x : dp.z)).sort((a, b) => a - b);
     let start = horizontal ? x1 : z1;
     const end = horizontal ? x2 : z2;
     for (const gc of [...gaps, null]) {
@@ -213,6 +236,7 @@ function walls(g, r, doors) {
       if (gc !== null) start = gc + DOOR_W / 2;
     }
   }
+  for (const door of r.doors.filter((dp) => dp.outside)) g.add(box(1.2, 1.9, 0.12, 0x6d4c41, door.x, 0, door.z));
 }
 
 // ---------- a blocky member ----------
@@ -436,12 +460,10 @@ class HomeApp {
     this.clickable = [];
     this.L = layout(data.rooms);
     const L = this.L;
-    this.spots = {};
     const corridor = new THREE.MeshLambertMaterial({ color: 0xe9e4dc });
     const strip = (w, d, x, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), corridor); m.position.set(x, -0.03, z); this.house.add(m); };
-    strip(L.W, HALL, L.W / 2, ROW_A + HALL / 2);
-    strip(L.W, HALL, L.W / 2, L.corridor.C);
-    strip(HALL, ROW_B, L.half, ROW_A + HALL + ROW_B / 2);
+    for (const c of L.corridors) strip(L.W, HALL, L.W / 2, c);
+    strip(HALL, L.spans.B[1], L.hallX, L.spans.B[0] + L.spans.B[1] / 2);
     const ground = new THREE.Mesh(new THREE.BoxGeometry(L.W + 6, 0.05, L.D + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
     ground.position.set(L.W / 2, -0.09, L.D / 2 + 1);
     this.house.add(ground);
@@ -449,14 +471,27 @@ class HomeApp {
     for (const room of data.rooms) {
       const r = L.rects[room.id];
       if (!r) continue;
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.08, r.d), new THREE.MeshLambertMaterial({ color: FLOORS[r.kind] }));
+      const kind = room.id.startsWith("bed-") ? "bed" : room.id;
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.08, r.d), new THREE.MeshLambertMaterial({ color: FLOORS[kind] ?? 0xeeeeee }));
       floor.position.set(r.x + r.w / 2, -0.04, r.z + r.d / 2);
       this.house.add(floor);
-      const doors = [r.door];
-      if (room.id === "living") doors.push(L.front);
-      walls(this.house, r, doors);
-      this.spots[room.id] = FURNISH[r.kind](this.house, r, this.clickable);
+      walls(this.house, r);
       this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, 0.2, r.z + r.d - 0.25) });
+    }
+    // Seats come from the furniture: each use of each placed piece is a spot someone can take.
+    this.seats = {};
+    this.screens = {};
+    for (const piece of data.pieces) {
+      const type = data.types[piece.type], r = L.rects[piece.room];
+      if (!type || !r) continue;
+      drawPiece(this.house, r, piece, type, this.clickable);
+      (type.uses || []).forEach((use, i) => {
+        (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...useSpot(r, piece, type, use) });
+      });
+      if (type.screen) {
+        const [tw, td] = turnedSize(type.size, piece.turn);
+        (this.screens[piece.room] ||= []).push({ x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL });
+      }
     }
     const span = Math.max(L.W, L.D);
     this.center = new THREE.Vector3(L.W / 2, 0, L.D / 2);
@@ -466,21 +501,44 @@ class HomeApp {
     this.resize();
   }
 
-  spotFor(person, index) {
-    const room = this.spots[person.room] || this.spots.living;
+  // A seat looking at a screen in the same room, not too far: where you watch TV from.
+  facesScreen(seat) {
+    const dir = { x: -Math.sin((seat.face * Math.PI) / 180), z: Math.cos((seat.face * Math.PI) / 180) };
+    return (this.screens[seat.piece.room] || []).some((sc) => {
+      const vx = sc.x - seat.x, vz = sc.z - seat.z, len = Math.hypot(vx, vz);
+      return len > 0.3 && len <= 4 && (dir.x * vx + dir.z * vz) / len > 0.7;
+    });
+  }
+
+  spotFor(person, taken) {
     if (person.verb === "visit" && this.figures.has(person.peer)) {
-      const f = this.figures.get(person.peer);
-      const p = f.root.position;
-      return { x: p.x + 0.8, z: p.z + 0.5, pose: "stand", face: -Math.PI / 2 };
+      const p = this.figures.get(person.peer).root.position;
+      return { x: p.x + 0.8, z: p.z + 0.5, pose: "stand", face: 90 };
     }
-    const group = person.verb === "sleep" ? room.sleep : room[person.verb] || room.rest || room.any;
-    const list = group && group.length ? group : room.any;
-    return list[index % list.length];
+    const seats = (this.seats[person.room] || []).filter((s) => !taken.has(s.key));
+    const sit = seats.filter((s) => s.pose === "sit");
+    const pick = {
+      sleep: () => seats.filter((s) => s.pose === "lie" && s.piece.owner === person.id).concat(seats.filter((s) => s.pose === "lie")),
+      read: () => sit.filter((s) => (s.piece.functions || []).includes("web.read")).concat(sit),
+      play: () => sit.filter((s) => this.facesScreen(s)).concat(sit),
+      rest: () => sit.filter((s) => !(s.piece.functions || []).includes("web.read")).concat(sit),
+    };
+    pick.browse = pick.write = pick.read;
+    const options = pick[person.verb] ? pick[person.verb]() : [];
+    if (options.length) {
+      taken.add(options[0].key);
+      return options[0];
+    }
+    // Nowhere to sit for this: stand in the room, spread out a little.
+    const r = this.L.rects[person.room] || this.L.rects.living;
+    const n = taken.size;
+    taken.add(`stand:${n}`);
+    return { x: r.x + r.w / 2 + ((n % 3) - 1) * 0.8, z: r.z + r.d * 0.6 + Math.floor(n / 3) * 0.6, pose: "stand", face: 0 };
   }
 
   apply(data) {
     this.data = data;
-    const key = JSON.stringify(data.rooms);
+    const key = JSON.stringify([data.rooms, data.pieces]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
       this.build(data);
@@ -492,7 +550,7 @@ class HomeApp {
   place(data) {
     const L = this.L;
     const seen = new Set();
-    const order = {}; // how many already sit in each room's spot group, for spreading out
+    const taken = new Set(); // seats already given to someone this time
     const people = [...data.people].sort((a, b) => (a.verb === "visit") - (b.verb === "visit") || a.id.localeCompare(b.id));
     for (const person of people) {
       seen.add(person.id);
@@ -502,10 +560,8 @@ class HomeApp {
         this.figures.delete(person.id);
         fig = null;
       }
-      const slot = `${person.room}:${person.verb}`;
-      const index = (order[slot] = (order[slot] ?? -1) + 1);
       const out = person.verb === "out";
-      const spot = out ? L.outside : this.spotFor(person, index);
+      const spot = out ? L.outside : this.spotFor(person, taken);
       if (!fig) {
         fig = new Figure(person);
         this.figures.set(person.id, fig);
@@ -526,7 +582,7 @@ class HomeApp {
       }
       fig.spotKey = `${spot.x},${spot.z}`;
       fig.pose = spot.pose || "stand";
-      fig.face = spot.face ?? 0;
+      fig.face = (-(spot.face ?? 0) * Math.PI) / 180;
       fig.y = spot.y || 0;
       fig.out = out;
       fig.phoning = person.verb === "phone" || person.verb === "share"

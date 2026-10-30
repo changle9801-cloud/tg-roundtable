@@ -1,7 +1,10 @@
 """The members' home: its rooms, where each member is and what she is doing, and diary reads.
 
-    <data_dir>/home.json  {"rooms": [...], "where": {member: Place}, "looks": {member: {...}},
-                           "diary_reads": [{member, day, ts, told_at}]}
+    <data_dir>/home.json  {"rooms": [...], "pieces": [...], "types": {...}, "where": {member: Place},
+                           "looks": {member: {...}}, "diary_reads": [{member, day, ts, told_at}]}
+
+Rooms have a size in grid cells and doors; pieces are the furniture placed in them
+(see furniture.py and docs/furniture.md). A house without pieces gets the default set.
 
 Where a member is follows what she really does. A daily-life activity takes her to its room
 and she stays there afterwards; asleep she lies in her bedroom, busy she is out of the house.
@@ -19,18 +22,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import owner
+from . import furniture, owner
+from .furniture import BEDROOM_DOORS, BEDROOM_SIZE, BUILTIN_TYPES, SHARED_ROOMS, PlacementError
 from .games.spire_bridge import atomic_json
 
 log = logging.getLogger(__name__)
 
-SHARED_ROOMS = (  # id, default name, icon
-    ("living", "客厅", "🛋️"),
-    ("kitchen", "厨房", "🍳"),
-    ("study", "书房", "📚"),
-    ("fun", "娱乐室", "🎮"),
-    ("storage", "储物间", "📦"),
-)
 ACCESSORIES = {
     "scarf": "围巾", "headphones": "头戴耳机", "sunglasses": "墨镜", "whale-clip": "小鲸鱼发卡",
     "hat": "帽子", "glasses": "眼镜", "bow": "蝴蝶结", "backpack": "小背包",
@@ -82,6 +79,8 @@ class Home:
         self.where: dict[str, Place] = {}
         self.looks: dict[str, dict] = {}
         self.diary_reads: list[dict] = []
+        self.pieces: list[dict] | None = None  # None until furnished
+        self.types: dict[str, dict] = {}  # the owner's own kinds of furniture (stage 2d)
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -89,33 +88,48 @@ class Home:
                 self.where = {m: Place(**p) for m, p in (raw.get("where") or {}).items()}
                 self.looks = dict(raw.get("looks") or {})
                 self.diary_reads = list(raw.get("diary_reads", []))
+                self.pieces = list(raw["pieces"]) if "pieces" in raw else None
+                self.types = dict(raw.get("types") or {})
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
                 self.rooms, self.where, self.looks, self.diary_reads = [], {}, {}, []
+                self.pieces, self.types = None, {}
                 log.warning("home.json 读不了，已改名保留：%s", error)
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.path, {"version": 1, "rooms": self.rooms,
-                                "where": {m: asdict(p) for m, p in self.where.items()},
+        atomic_json(self.path, {"version": 2, "rooms": self.rooms, "pieces": self.pieces or [],
+                                "types": self.types, "where": {m: asdict(p) for m, p in self.where.items()},
                                 "looks": self.looks, "diary_reads": self.diary_reads[-200:]})
 
     # ---- who lives here ----
 
     def ensure(self, members: dict[str, str]) -> None:
-        """Every enabled member has a bedroom, a look and a place; shared rooms always exist."""
+        """Every enabled member has a bedroom, a look and a place; shared rooms always exist.
+
+        A room made here gets its default furniture; a house from before furniture was data
+        gets the whole default set once.
+        """
         changed = False
+        new_rooms = []
         ids = {r["id"] for r in self.rooms}
-        for rid, name, icon in SHARED_ROOMS:
+        for rid, name, icon, size, doors in SHARED_ROOMS:
             if rid not in ids:
                 self.rooms.append({"id": rid, "name": name, "icon": icon, "shared": True})
+                new_rooms.append(rid)
+            room = next(r for r in self.rooms if r["id"] == rid)
+            if "size" not in room:
+                room.update(size=list(size), doors=[dict(d) for d in doors])
                 changed = True
         for member, name in members.items():
             room = next((r for r in self.rooms if r["id"] == bedroom(member)), None)
             if room is None:
-                self.rooms.append({"id": bedroom(member), "name": f"{name}的卧室", "icon": "🛏️",
-                                   "shared": False, "owner": member})
+                room = {"id": bedroom(member), "name": f"{name}的卧室", "icon": "🛏️", "shared": False, "owner": member}
+                self.rooms.append(room)
+                new_rooms.append(room["id"])
+            if "size" not in room:
+                room.update(size=list(BEDROOM_SIZE), doors=[dict(d) for d in BEDROOM_DOORS])
                 changed = True
             if member not in self.looks:
                 used = {look["color"] for look in self.looks.values()}
@@ -125,8 +139,54 @@ class Home:
             if member not in self.where:
                 self.where[member] = Place(bedroom(member), "rest", "", self.now())
                 changed = True
-        if changed:
+        furnish = [r for r in self.rooms if self.pieces is None or r["id"] in new_rooms]
+        if self.pieces is None:
+            self.pieces = []
+        for room in furnish:
+            self.pieces.extend(furniture.default_pieces(room, "bedroom" if room["id"].startswith("bed-") else room["id"]))
+        if changed or new_rooms or furnish:
             self.save()
+
+    # ---- furniture ----
+
+    def all_types(self) -> dict[str, dict]:
+        return {**BUILTIN_TYPES, **self.types}
+
+    def room(self, rid: str) -> dict:
+        found = next((r for r in self.rooms if r["id"] == rid), None)
+        if found is None:
+            raise PlacementError(f"没有这个房间：{rid}")
+        return found
+
+    def place(self, piece: dict) -> dict:
+        """Put a new piece in a room, if it fits. Fills in the defaults from its type."""
+        ftype = self.all_types().get(piece.get("type"))
+        if ftype is None:
+            raise PlacementError(f"没有这种家具：{piece.get('type')}")
+        piece = {"id": furniture.new_id(), "turn": 0, "color": None, "name": None,
+                 "functions": list(ftype["functions"]), "added_by": "owner", "owner": "", **piece}
+        furniture.check(piece, self.room(piece.get("room", "")), self.all_types(), self.pieces or [])
+        self.pieces.append(piece)
+        self.save()
+        return piece
+
+    def move(self, pid: str, *, room: str | None = None, at=None, turn: int | None = None) -> dict:
+        piece = next((p for p in self.pieces or [] if p["id"] == pid), None)
+        if piece is None:
+            raise PlacementError("没有这件家具")
+        moved = {**piece, "room": room or piece["room"], "at": list(at) if at is not None else piece["at"],
+                 "turn": piece["turn"] if turn is None else turn}
+        furniture.check(moved, self.room(moved["room"]), self.all_types(), self.pieces)
+        piece.update(moved)
+        self.save()
+        return piece
+
+    def remove(self, pid: str) -> None:
+        before = len(self.pieces or [])
+        self.pieces = [p for p in self.pieces or [] if p["id"] != pid]
+        if len(self.pieces) == before:
+            raise PlacementError("没有这件家具")
+        self.save()
 
     def residents(self, members) -> list[str]:
         return [m for m in members if m in self.where]
@@ -252,7 +312,8 @@ class Home:
                            "room_name": self.room_name(place.room), "look": self.looks.get(member, {}),
                            "phone_at": phone.get(member, 0.0)})
         reads = [r for r in self.diary_reads if r["member"] in members][-30:]
-        return {"rooms": self.rooms, "people": people, "accessories": ACCESSORIES, "verbs": VERBS,
+        return {"rooms": self.rooms, "pieces": self.pieces or [], "types": self.all_types(),
+                "people": people, "accessories": ACCESSORIES, "verbs": VERBS,
                 "diary_reads": reads, "now": self.now()}
 
     def guest_lines(self, members: dict[str, str]) -> str:
