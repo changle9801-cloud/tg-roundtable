@@ -110,3 +110,12 @@ async def test_the_page_can_hang_things(admin):  # noqa: F811
     assert ok.status == 200 and (await ok.json())["wall"] == "back"
     door = await admin.post("/api/home/pieces", json={"type": "base/clock", "room": "living", "wall": "back", "along": 2, "y": 1.0}, headers=h)
     assert door.status == 400 and "挡住门" in (await door.json())["error"]
+
+
+def test_a_hung_tv_is_still_the_one_to_watch(tmp_path):
+    home = house(tmp_path)
+    tv = next(p for p in home.pieces if p["type"] == "base/tv")
+    home.edit_piece(tv["id"], {"wall": "back", "along": 6, "y": 0.6})
+    home.where["grok"].room = "fun"
+    home.begin("grok", "watch")
+    assert home.where["grok"].piece == tv["id"]

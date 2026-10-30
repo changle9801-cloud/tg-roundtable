@@ -185,7 +185,8 @@ export function renderEditor(app) {
   }
   const out = [el("h2", "", "布置"), modes, view, ...(app.shelfInStage() ? [] : [app.shelf])];
   const help = el("p", "muted small",
-    "从家具栏拖家具进画面（手机上点卡片、再点位置）。拖家具：挪动；右键或 R：转 90°（加 Shift 反着转）；Esc：放下不动、取消选中。"
+    "从家具栏拖家具进画面（手机上点卡片、再点位置）。拖家具：挪动；挂在墙上的拖着在墙上走（上下左右，也能换到别的墙）；"
+    + "右键或 R：转 90°（加 Shift 反着转）；Esc：放下不动、取消选中。"
     + "拖空地：转镜头；Shift+拖：平移；滚轮：缩放。橙色箭头指着家具的正面。放不下、挡门、叠在一起的会退回原处。");
 
   // ---- the selected piece ----
@@ -201,9 +202,22 @@ export function renderEditor(app) {
     color.type = "color";
     color.value = piece.color || type.color || "#888888";
     color.onchange = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { color: color.value }));
-    const turn = piece.wall ? el("span", "muted small", `挂在${{ back: "后", front: "前", left: "左", right: "右" }[piece.wall]}墙上，离地 ${piece.y} 米`)
-      : el("button", "", "转 90°");
-    if (!piece.wall) turn.onclick = () => app.turnPiece(piece, 90);
+    let turn;
+    if (piece.wall) { // hung: which wall, and its height to type in
+      const height = el("input");
+      height.type = "number";
+      height.min = 0;
+      height.max = 2.6;
+      height.step = 0.1;
+      height.value = piece.y;
+      height.style.width = "5em";
+      height.onchange = () => app.setHeight(piece, Number(height.value));
+      turn = el("span", "muted small", `挂在${{ back: "后", front: "前", left: "左", right: "右" }[piece.wall]}墙上，离地 `);
+      turn.append(height, " 米");
+    } else {
+      turn = el("button", "", "转 90°");
+      turn.onclick = () => app.turnPiece(piece, 90);
+    }
     const remove = el("button", "danger", "删掉");
     remove.onclick = () => act(async () => { await send("DELETE", `/api/home/pieces/${piece.id}`); app.selectedPiece = ""; });
     const row = el("div", "home-look");

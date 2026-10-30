@@ -270,10 +270,11 @@ const TEMPLATES = {
     g.add(ball(r * 0.9, c, 0, H * 0.75, 0));
   },
   tv: (g, W, D, H, c, piece) => {
-    g.add(box(W * 0.87, 0.5, D, 0x5d4037, 0, 0, 0));
-    g.add(box(W * 0.8, 1.3, 0.1, c, 0, 0.55, -0.05));
-    g.add(box(W * 0.75, 1.15, 0.02, 0x7e57c2, 0, 0.62, 0.01));
-    if ((piece.functions || []).includes("game.play")) g.add(box(0.5, 0.12, 0.3, 0xeeeeee, W * 0.3, 0.5, 0.05));
+    const lift = piece.wall ? 0 : 0.55, z = piece.wall ? -D / 2 + 0.06 : -0.05; // on a wall: the screen alone, flat to it
+    if (!piece.wall) g.add(box(W * 0.87, 0.5, D, 0x5d4037, 0, 0, 0));
+    g.add(box(W * 0.8, 1.3, 0.1, c, 0, lift, z));
+    g.add(box(W * 0.75, 1.15, 0.02, 0x7e57c2, 0, lift + 0.07, z + 0.06));
+    if (!piece.wall && (piece.functions || []).includes("game.play")) g.add(box(0.5, 0.12, 0.3, 0xeeeeee, W * 0.3, 0.5, 0.05)); // the console on its stand
   },
   sofa: (g, W, D, H, c) => { // a dark backrest at the back, arms at the sides, cushions in front
     const arm = Math.min(0.18, W * 0.1), back = Math.min(0.28, D * 0.3), inner = W - 2 * arm;
@@ -440,6 +441,7 @@ function greyOut(g) {
 // A piece hung on a wall: its middle on the floor plan (against the wall's inner face) and the way it faces.
 const WALL_FACE = 0.12; // the walls' inner face, from the room's edge
 const WALL_TURN = { back: 0, right: 90, front: 180, left: 270 };
+const WALL_Y = { frame: 1.0, poster: 0.9, clock: 1.8, "wall-shelf": 1.4, tv: 0.9 }; // how high, unless said (as furniture.WALL_Y)
 function wallSpot(r, piece, type) {
   const along = (piece.along + type.size[0] / 2) * CELL, out = WALL_FACE + (type.size[1] * CELL) / 2;
   const [x, z] = { back: [r.x + along, r.z + out], front: [r.x + along, r.z + r.d - out],
@@ -697,6 +699,7 @@ class HomeApp {
       const drag = this.cardDrag?.moved ? this.cardDrag : this.drag;
       const selected = this.data?.pieces.find((p) => p.id === this.selectedPiece);
       if (drag && drag.last) {
+        if (drag.target || (drag === this.cardDrag && drag.piece?.wall)) return; // on a wall: it always faces the room
         drag.turn = (drag.turn + step + 360) % 360;
         if (drag === this.cardDrag) this.moveCard(drag.last); else this.moveDrag(drag.last);
       } else if (selected && !this.planMode) this.turnPiece(selected, step);
@@ -1261,21 +1264,17 @@ class HomeApp {
     const type = piece && this.data.types[piece.type];
     const g = type && this.furnitureLevels[this.view || 0].children.find((c) => c.userData.pieceId === piece.id);
     if (!g) return;
-    if (piece.wall) { // selected; dragging it along the walls is not there yet
-      this.selectedPiece = piece.id;
-      this.editorKey = "";
-      this.showHighlight();
-      this.renderPanel();
-      this.renderShelf();
-      return;
-    }
     const { point } = this.groundAt(e);
     this.controls.enabled = false;
     this.hover(null);
     this.renderer.domElement.style.cursor = "grabbing";
     // where on the piece it was taken hold of, so it does not jump to put its middle under the pointer
-    const offset = point ? { x: point.x - g.position.x, z: point.z - g.position.z } : { x: 0, z: 0 };
-    this.drag = { group: g, piece, type, room: piece.room, at: [...piece.at], turn: piece.turn, reason: "", offset, moved: false };
+    const offset = point && !piece.wall ? { x: point.x - g.position.x, z: point.z - g.position.z } : { x: 0, z: 0 };
+    const held = piece.wall && this.wallUnder(e, type.mount === "wall");
+    const grab = held && held.wall === piece.wall && held.y != null
+      ? { along: held.along - (piece.along + type.size[0] / 2) * CELL, y: held.y - piece.y } : { along: 0, y: type.height / 2 };
+    this.drag = { group: g, piece, type, room: piece.room, at: piece.at && [...piece.at], turn: piece.turn ?? 0, reason: "", offset, grab,
+                  moved: false, target: null };
     this.selectedPiece = piece.id;
     this.showHighlight();
     this.renderPanel();
@@ -1283,12 +1282,18 @@ class HomeApp {
   }
 
   // The piece follows the pointer smoothly; the plate under it shows the cells it would take, green or red.
+  // One that hangs goes along the walls (one that may hang: when the pointer is on a wall rather than the floor).
   moveDrag(e) {
-    const { point } = this.groundAt(e);
-    if (!point) return;
     const drag = this.drag;
     drag.last = e;
     drag.moved = true;
+    const hit = drag.type.mount !== "floor" && this.wallUnder(e, drag.type.mount === "wall");
+    if (hit) return this.dragOnWall(drag, hit);
+    if (drag.type.mount === "wall") return; // off the walls: it stays where it was last on one
+    drag.target = null;
+    if (this.wallPlate) this.wallPlate.visible = false;
+    const { point } = this.groundAt(e);
+    if (!point) return;
     const x = point.x - drag.offset.x, z = point.z - drag.offset.z;
     drag.group.position.set(x, 0, z);
     drag.group.rotation.y = (-drag.turn * Math.PI) / 180;
@@ -1305,6 +1310,103 @@ class HomeApp {
     drag.at = at;
     drag.reason = this.fitCheck({ ...drag.piece, room: r.room.id, at, turn: drag.turn }, drag.type);
     this.showGhost(drag.type, { ...drag.piece, room: r.room.id, at, turn: drag.turn }, !drag.reason, false);
+  }
+
+  // A hung piece being dragged, at the place on a wall under the pointer (to the cell along, 10 cm up).
+  dragOnWall(drag, hit) {
+    const t = this.wallTarget(hit, drag.type, drag.grab, drag.piece.y);
+    drag.target = t;
+    drag.reason = this.wallCheck({ ...drag.piece, ...t }, drag.type);
+    const spot = wallSpot(hit.r, t, drag.type);
+    drag.group.position.set(spot.x, t.y, spot.z);
+    drag.group.rotation.y = (-spot.turn * Math.PI) / 180;
+    if (this.highlight) { this.scene.remove(this.highlight); this.highlight = null; }
+    if (this.ghost) this.ghost.visible = false;
+    this.showWallPlate(hit.r, t, drag.type, !drag.reason);
+  }
+
+  // The inner face of a wall under the pointer, on the floor being viewed: the one the pointer's ray reaches first,
+  // seen from inside its room, and not behind the floor there. From above the walls are edge-on, so for something
+  // that only hangs (`near`), the wall of the room under the pointer that is nearest, within a unit, will do
+  // (then its height stays as it was). Returns the room, the wall, how far along it and how high, in units.
+  wallUnder(e, near) {
+    const { point } = this.groundAt(e);
+    const ray = this.ray.ray, base = (this.view || 0) * STOREY, floor = point ? point.distanceTo(ray.origin) : Infinity;
+    let best = null;
+    for (const r of Object.values(this.L.rects)) {
+      if (r.room.kind === "hall" && !r.room.walls) continue;
+      for (const [wall, axis, at, inward, a0, a1] of [
+        ["back", "z", r.z + WALL_FACE, 1, r.x, r.x + r.w], ["front", "z", r.z + r.d - WALL_FACE, -1, r.x, r.x + r.w],
+        ["left", "x", r.x + WALL_FACE, 1, r.z, r.z + r.d], ["right", "x", r.x + r.w - WALL_FACE, -1, r.z, r.z + r.d]]) {
+        const dir = ray.direction[axis];
+        if (dir * inward >= 0) continue; // seen from behind, or edge-on
+        const t = (at - ray.origin[axis]) / dir;
+        if (t <= 0 || t > floor + 1e-6 || (best && t >= best.t)) continue;
+        const p = ray.at(t, new THREE.Vector3()), along = (axis === "z" ? p.x : p.z) - a0, y = p.y - base;
+        if (along < 0 || along > a1 - a0 || y < 0 || y > WALL_TALL) continue;
+        best = { t, r, wall, along, y };
+      }
+    }
+    if (best || !near || !point) return best;
+    const r = Object.values(this.L.rects).find((q) => point.x >= q.x && point.x <= q.x + q.w && point.z >= q.z && point.z <= q.z + q.d);
+    if (!r || (r.room.kind === "hall" && !r.room.walls)) return null;
+    const gap = { back: point.z - r.z, front: r.z + r.d - point.z, left: point.x - r.x, right: r.x + r.w - point.x };
+    const wall = Object.keys(gap).reduce((a, b) => (gap[b] < gap[a] ? b : a));
+    if (gap[wall] > 1) return null;
+    return { r, wall, along: wall === "back" || wall === "front" ? point.x - r.x : point.z - r.z, y: null };
+  }
+
+  // Where a piece of this kind would hang, for a place on a wall: the cell along it and the height, kept on the wall.
+  wallTarget(hit, type, grab = { along: 0, y: type.height / 2 }, height = null) {
+    const [cols, rows] = hit.r.room.size, n = hit.wall === "back" || hit.wall === "front" ? cols : rows, w = type.size[0];
+    const along = Math.max(0, Math.min(n - w, Math.round((hit.along - grab.along) / CELL - w / 2)));
+    const y = hit.y == null ? height ?? WALL_Y[type.template] ?? 1.2
+      : Math.max(0, Math.min(Math.max(0, WALL_TALL - type.height), Math.round((hit.y - grab.y) * 10) / 10));
+    return { room: hit.r.room.id, wall: hit.wall, along, y: Math.round(y * 10) / 10 };
+  }
+
+  // The server's checks for a piece on a wall (furniture.check_wall), for green or red while it is dragged.
+  wallCheck(p, type) {
+    const r = this.rects[p.room];
+    if (!r) return "这里没有房间";
+    if (type.mount === "floor") return `${type.name}不能挂在墙上`;
+    if (r.room.kind === "hall" && !r.room.walls) return "走廊没有墙，挂不了东西";
+    const across = p.wall === "back" || p.wall === "front", n = across ? r.room.size[0] : r.room.size[1];
+    const w = type.size[0], h = type.height;
+    if (p.along < 0 || p.along + w > n) return `${type.name}挂不下：超出了这面墙`;
+    if (p.y < 0 || p.y + h > WALL_TALL + 1e-6) return `${type.name}挂不下：墙只有 ${WALL_TALL} 米高`;
+    if (p.y < LINTEL) {
+      for (const door of r.doors.filter((d) => d.wall === p.wall)) {
+        const centre = (across ? door.x - r.x : door.z - r.z) / CELL;
+        for (let i = p.along; i < p.along + w; i++) {
+          if (i < centre + DOOR_WIDTH / 2 && i + 1 > centre - DOOR_WIDTH / 2) return `${type.name}挡住门了`;
+        }
+      }
+    }
+    for (const o of this.data.pieces) {
+      const ot = this.data.types[o.type];
+      if (!ot || o.id === p.id || o.room !== p.room || o.wall !== p.wall) continue;
+      if (o.along < p.along + w && p.along < o.along + ot.size[0] && o.y < p.y + h && p.y < o.y + ot.height) {
+        return `${type.name}和${o.name || ot.name}叠在一起了`;
+      }
+    }
+    return "";
+  }
+
+  // A green or red outline on the wall where a piece would hang.
+  showWallPlate(r, t, type, ok) {
+    if (!this.wallPlate) {
+      this.wallPlate = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.02), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.45 }));
+      this.scene.add(this.wallPlate);
+    }
+    const spot = wallSpot(r, t, { ...type, size: [type.size[0], 0] });
+    this.wallPlate.scale.set(type.size[0] * CELL, type.height, 1);
+    this.wallPlate.position.set(spot.x, (this.view || 0) * STOREY + t.y + type.height / 2, spot.z);
+    this.wallPlate.rotation.y = (-spot.turn * Math.PI) / 180;
+    this.wallPlate.material.color.set(ok ? 0x43a047 : 0xe53935);
+    this.wallPlate.visible = true;
+    const front = wallSpot(r, t, type);
+    this.showArrow(front.x, front.z, (this.view || 0) * STOREY, front.turn, (type.size[1] * CELL) / 2);
   }
 
   // Esc: drop what is being dragged or held back where it was, else stop selecting.
@@ -1343,7 +1445,8 @@ class HomeApp {
 
   // A change to a placed piece shows at once; the server then saves it, or refuses it and the piece goes back.
   async movePiece(piece, change) {
-    const before = { room: piece.room, at: piece.at, turn: piece.turn };
+    const before = { ...piece };
+    for (const k of "wall" in change ? ["at", "turn"] : "at" in change ? ["wall", "along", "y"] : []) delete piece[k];
     Object.assign(piece, change);
     this.layoutKey = "";
     this.editorKey = "";
@@ -1351,12 +1454,21 @@ class HomeApp {
     try {
       await send("PUT", `/api/home/pieces/${piece.id}`, change);
     } catch (err) {
+      for (const k of Object.keys(piece)) delete piece[k];
       Object.assign(piece, before);
       say(err.message, true);
       this.layoutKey = "";
       this.editorKey = "";
       this.apply(this.data);
     }
+  }
+
+  // A hung piece's height, typed in the side panel (metres, to 10 cm).
+  async setHeight(piece, y) {
+    const type = this.data.types[piece.type], target = { room: piece.room, wall: piece.wall, along: piece.along, y: Math.round(y * 10) / 10 };
+    const reason = this.wallCheck({ ...piece, ...target }, type);
+    if (reason) { say(reason, true); this.editorKey = ""; this.renderPanel(); return; }
+    await this.movePiece(piece, target);
   }
 
   // An orange arrow on the floor in front of a piece: the way its front faces (where you sit, what a screen shows).
@@ -1460,6 +1572,7 @@ class HomeApp {
 
   hideGhost() {
     if (this.ghost) this.ghost.visible = false;
+    if (this.wallPlate) this.wallPlate.visible = false;
     this.showHighlight(); // the arrow goes back to the selected piece, if any
   }
 
@@ -1516,6 +1629,19 @@ class HomeApp {
   // On a phone: a card tapped is held ready, and the next tap on the house puts it there.
   async placeArmed(e) {
     const type = this.armed;
+    const hit = type.mount !== "floor" && this.wallUnder(e, false);
+    if (hit) {
+      const t = this.wallTarget(hit, type), reason = this.wallCheck({ id: "", ...t }, type);
+      this.showWallPlate(hit.r, t, type, !reason);
+      if (reason) { say(reason, true); setTimeout(() => this.cardDrag || this.hideGhost(), 1200); return; }
+      this.armed = null;
+      try { this.selectedPiece = (await send("POST", "/api/home/pieces", { type: type.id, ...t })).id; } catch (err) { say(err.message, true); }
+      this.hideGhost();
+      this.layoutKey = "";
+      this.editorKey = "";
+      await this.poll();
+      return;
+    }
     const { point } = this.groundAt(e);
     const spot = point && this.spotUnder(point, type, 0);
     if (!spot) return;
@@ -1570,7 +1696,8 @@ class HomeApp {
       if (ev.type === "pointercancel" || !drag.piece) return;
       if (drag.reason) { say(drag.reason, true); return; }
       try {
-        const piece = await send("POST", "/api/home/pieces", type.mount === "wall" ? { type: type.id, room: drag.piece.room }
+        const piece = await send("POST", "/api/home/pieces", drag.piece.wall ? { type: type.id, room: drag.piece.room, wall: drag.piece.wall,
+          along: drag.piece.along, y: drag.piece.y } : type.mount === "wall" ? { type: type.id, room: drag.piece.room }
           : { type: type.id, room: drag.piece.room, at: drag.piece.at, turn: drag.piece.turn });
         this.selectedPiece = piece.id;
       } catch (err) { say(err.message, true); }
@@ -1587,14 +1714,23 @@ class HomeApp {
     const drag = this.cardDrag;
     drag.last = ev;
     const over = document.elementFromPoint(ev.clientX, ev.clientY);
+    const hit = over === this.renderer.domElement && drag.type.mount !== "floor" && this.wallUnder(ev, drag.type.mount === "wall");
+    if (hit) { // on a wall (or, seen from above, near one): hung just there
+      const t = this.wallTarget(hit, drag.type);
+      drag.piece = { type: drag.type.id, ...t };
+      drag.reason = this.wallCheck({ id: "", ...drag.piece }, drag.type);
+      if (this.ghost) this.ghost.visible = false;
+      this.showWallPlate(hit.r, t, drag.type, !drag.reason);
+      return;
+    }
+    if (this.wallPlate) this.wallPlate.visible = false;
     const { point } = over === this.renderer.domElement ? this.groundAt(ev) : {};
     const spot = point && this.spotUnder(point, drag.type, drag.turn);
     if (!spot) { drag.piece = null; this.hideGhost(); return; }
-    if (drag.type.mount === "wall") { // it goes on the room's walls: no plate on the floor for it
+    if (drag.type.mount === "wall") { // over the floor of a room: it goes on the first free place on its walls
       drag.piece = { room: spot.r.room.id };
       drag.reason = "";
-      if (this.ghost) this.ghost.visible = false;
-      this.hover(null);
+      this.hideGhost();
       return;
     }
     drag.piece = { id: "", type: drag.type.id, room: spot.r.room.id, at: spot.at, turn: drag.turn };
@@ -1670,13 +1806,15 @@ class HomeApp {
   }
 
   async endDrag() {
-    const { piece, room, at, turn, reason, moved } = this.drag;
+    const { piece, room, at, turn, reason, moved, target } = this.drag;
     this.drag = null;
     this.controls.enabled = true;
     this.renderer.domElement.style.cursor = "";
     this.hideGhost();
     if (!moved) return; // just a click: it is selected
-    if (room === piece.room && at[0] === piece.at[0] && at[1] === piece.at[1] && turn === piece.turn) {
+    const same = target ? piece.wall && ["room", "wall", "along", "y"].every((k) => target[k] === piece[k])
+      : !piece.wall && !!at && room === piece.room && at[0] === piece.at[0] && at[1] === piece.at[1] && turn === piece.turn;
+    if (same || (!target && !at)) {
       this.layoutKey = ""; // back onto its own cells (it followed the pointer freely)
       this.apply(this.data);
       return;
@@ -1687,7 +1825,7 @@ class HomeApp {
       this.apply(this.data);
       return;
     }
-    await this.movePiece(piece, { room, at, turn });
+    await this.movePiece(piece, target || { room, at, turn });
   }
 
   showHighlight() {
