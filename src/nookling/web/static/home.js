@@ -2169,6 +2169,7 @@ class HomeApp {
     const d = this.data;
     if (!d) return;
     if (!this.arranging && this.panelPage === "talk") { this.renderTalk(); return; } // keeps what is being typed
+    if (!this.arranging && this.panelPage === "changes") { this.renderChanges(); return; }
     const focus = document.activeElement;
     if (focus && this.panel.contains(focus) && /INPUT|SELECT/.test(focus.tagName)) return; // editing a look
     if (this.arranging) {
@@ -2286,13 +2287,44 @@ class HomeApp {
     if (this.talkSeen === undefined) this.talkSeen = talk.messages.at(-1)?.ts || 0; // what was said before the page opened is not new
     const fresh = talk.messages.filter((m) => !m.owner && m.ts > this.talkSeen).length;
     const row = el("div", "home-tabs");
-    for (const [id, label] of [["home", "家里"], ["talk", fresh && this.panelPage !== "talk" ? `聊天（${fresh}）` : "聊天"]]) {
+    for (const [id, label] of [["home", "家里"], ["talk", fresh && this.panelPage !== "talk" ? `聊天（${fresh}）` : "聊天"],
+                               ["changes", "变化"]]) {
       const b = el("button", (this.panelPage || "home") === id ? "on" : "", label);
       b.type = "button";
       b.onclick = () => { this.panelPage = id; this.renderPanel(); if (id === "talk") this.talkUI?.input.focus(); };
       row.append(b);
     }
     return row;
+  }
+
+  // 家里的变化: what the family changed at home, newest first; the owner can undo one (docs/redecorate.md, 4b).
+  renderChanges() {
+    const d = this.data, people = Object.fromEntries(d.people.map((p) => [p.id, p]));
+    const key = JSON.stringify(d.changes || []);
+    if (key === this.changesKey && this.panel.querySelector(".home-changes")) return;
+    this.changesKey = key;
+    const list = el("div", "home-changes");
+    for (const c of d.changes || []) {
+      const row = el("div", "home-change" + (c.undone ? " undone" : ""));
+      const who = c.member === "__owner" ? "你" : people[c.member]?.name || c.member;
+      row.append(el("span", "home-when muted", new Date(c.ts * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })),
+        el("p", "", `${who}${c.text}`));
+      if (c.undone) row.append(el("span", "muted small", "已撤回"));
+      else if (!c.why_not) {
+        const undo = el("button", "", "撤回");
+        undo.onclick = async () => {
+          if (!confirm(`撤回这一处改动？\n${who}${c.text}`)) return;
+          try { await send("POST", `/api/home/changes/${c.id}/undo`, {}); say("撤回了，她会知道"); } catch (e) { say(e.message, true); }
+          this.layoutKey = "";
+          await this.poll();
+        };
+        row.append(undo);
+      } else if (c.member !== "__owner") row.append(el("span", "muted small", c.why_not));
+      list.append(row);
+    }
+    if (!(d.changes || []).length) list.append(el("p", "muted small", "家里还没人动过东西。她们在日常里会偶尔收拾自己的卧室、挪挪公共房间的家具。"));
+    this.panel.replaceChildren(this.panelTabs(), el("h2", "", "家里的变化"),
+      el("p", "muted small", "家人自己动过的东西。撤回会恢复成改之前的样子，改的人会知道。"), list);
   }
 
   // The talk at home: what was said, who is working on a reply, and a box to say something in the house.

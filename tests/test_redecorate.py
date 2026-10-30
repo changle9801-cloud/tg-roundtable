@@ -5,6 +5,7 @@ from nookling import redecorate
 from nookling.furniture import PlacementError
 from nookling.home import Home
 from nookling.life import LifeEngine, LifeStore
+from test_web import admin, login  # noqa: F401  (the admin fixture)
 
 MEMBERS = {"codex": "Codex", "grok": "Grok"}
 
@@ -42,7 +43,7 @@ def test_she_adds_things_said_in_words_and_the_others_hear_of_it_once(tmp_path):
     assert frame["wall"] == "right" and frame["y"] == 1.7
     assert "在自己卧室加了懒骨头" in home.news("grok", MEMBERS) and home.news("grok", MEMBERS) == ""
     assert home.news("codex", MEMBERS) == ""  # she knows what she did
-    assert len(home.changes) == 2 and home.changes[0]["undo"] == {"added": bag["id"]}
+    assert len(home.changes) == 2 and home.changes[0]["undo"]["added"] == bag["id"]
 
 
 def test_moving_turning_colouring_naming_and_throwing_out(tmp_path):
@@ -108,3 +109,65 @@ async def test_a_day_of_hers_can_be_spent_changing_her_room(tmp_path):
     assert "home：动动自己的卧室" in script.calls[0][1] and "[改改家里]" in script.calls[1][1]
     assert sum(1 for p in in_room(home) if p["type"] == "base/floor-lamp") == 2
     assert store.events[-1]["action"] == "home" and "落地灯" in store.events[-1]["note"]
+
+
+def test_in_a_shared_room_she_may_move_turn_and_rename_a_few_times_a_week(tmp_path):
+    home = house(tmp_path)
+    sofa = next(p for p in home.pieces if p["room"] == "fun" and p["type"] == "base/sofa-3")
+    table = next(p for p in home.pieces if p["room"] == "living" and p["type"] == "base/coffee-table")
+    result = redecorate.apply(home, "codex", {"changes": [
+        {"do": "move", "room": "fun", "piece": sofa["id"], "where": {"against": "front"}},
+        {"do": "room_name", "room": "fun", "name": "牌桌"},
+        {"do": "color", "room": "fun", "piece": sofa["id"], "color": "#000000"}]})
+    assert len(result["done"]) == 2 and "要许愿" in result["refused"][0]
+    assert home.room("fun")["name"] == "牌桌" and sofa["turn"] == 180  # against the front wall, facing into the room
+    assert sofa["at"][1] + 2 == home.room("fun")["size"][1]
+    assert "Codex把娱乐室改名叫「牌桌」" in home.news("grok", MEMBERS)
+    redecorate.apply(home, "grok", {"changes": [{"do": "turn", "room": "fun", "piece": sofa["id"], "face": "back"}]})
+    later = redecorate.apply(home, "grok", {"changes": [
+        {"do": "move", "room": "fun", "piece": sofa["id"], "where": {"against": "back"}},
+        {"do": "room_name", "room": "fun", "name": "影院"},
+        {"do": "move", "room": "living", "piece": table["id"], "where": {"against": "front"}}]})
+    assert "挪过 2 次" in later["refused"][0] and "改过名" in later["refused"][1] and len(later["done"]) == 1
+    with pytest.raises(PlacementError, match="别人的卧室"):
+        redecorate._one(home, "codex", {"do": "room_name", "room": "bed-grok", "name": "抢来的"})
+    assert "公共房间" in redecorate.menu(home, "codex") and "「牌桌」（ID fun）：这周还能挪 0 次、改名 0 次" in redecorate.menu(home, "codex")
+
+
+def test_the_owner_undoes_a_change_and_whoever_made_it_hears(tmp_path):
+    home = house(tmp_path)
+    desk = next(p for p in in_room(home) if p["type"] == "base/writing-desk")
+    where = (list(desk["at"]), desk["turn"])
+    redecorate.apply(home, "codex", {"changes": [
+        {"do": "move", "piece": desk["id"], "where": {"against": "right"}},
+        {"do": "add", "kind": "base/plant"},
+        {"do": "room_name", "name": "代码洞"}]})
+    redecorate.apply(home, "codex", {"changes": [{"do": "color", "piece": desk["id"], "color": "#101010"}]})
+    move, plant, rename, colour = home.changes
+    assert "后来又被改过" in redecorate.undoable(home, move)  # the colour came after: that first
+    redecorate.undo(home, colour["id"], MEMBERS)
+    redecorate.undo(home, move["id"], MEMBERS)
+    assert (desk["at"], desk["turn"], desk["color"]) == (where[0], where[1], None)
+    redecorate.undo(home, plant["id"], MEMBERS)
+    assert not any(p["type"] == "base/plant" for p in in_room(home))
+    redecorate.undo(home, rename["id"], MEMBERS)
+    assert home.room("bed-codex")["name"] == "Codex的卧室"
+    with pytest.raises(PlacementError, match="撤回过"):
+        redecorate.undo(home, rename["id"], MEMBERS)
+    news = home.news("codex", MEMBERS)
+    assert news.count("主人撤回了Codex的一处改动") == 4
+    assert [c["why_not"] for c in redecorate.view(home)][:1] == ["这条不能撤回"]  # an undo is not undone
+
+
+async def test_the_page_lists_changes_and_undoes_one(admin):  # noqa: F811
+    await login(admin)
+    runtime = admin.runtime
+    runtime.home.ensure({"codex": "Codex"})
+    redecorate.apply(runtime.home, "codex", {"changes": [{"do": "add", "kind": "base/plant"}]})
+    view = await (await admin.get("/api/home")).json()
+    entry = view["changes"][0]
+    assert "加了盆栽" in entry["text"] and entry["why_not"] == ""
+    undone = await admin.post(f"/api/home/changes/{entry['id']}/undo", headers={"Origin": admin.origin})
+    assert undone.status == 200 and (await undone.json())["changes"][1]["undone"]
+    again = await admin.post(f"/api/home/changes/{entry['id']}/undo", headers={"Origin": admin.origin})
+    assert again.status == 400

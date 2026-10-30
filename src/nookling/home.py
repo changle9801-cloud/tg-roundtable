@@ -69,6 +69,7 @@ MAX_FLOORS = 5
 MOVES_KEPT = 50  # per member: where she went, for 「家里现在」 (docs/house-talk.md, 3c)
 MOVES_TOLD = 8  # of today's, the latest she is told about
 CHANGES_KEPT = 200  # entries of 家里的变化
+OWNER = "__owner"  # who made a change that was the owner's (an undo)
 
 
 def _metres(value) -> float:
@@ -965,9 +966,9 @@ class Home:
 
     # ---- 家里的变化: what the family changed, told to the others once ----
 
-    def record_change(self, member: str, text: str, undo: dict) -> dict:
+    def record_change(self, member: str, text: str, undo: dict, *, kind: str = "", room: str = "") -> dict:
         entry = {"id": furniture.new_id().replace("p-", "c-"), "ts": self.now(), "member": member, "text": text,
-                 "undo": undo, "told": [member]}
+                 "undo": undo, "kind": kind, "room": room, "told": [] if member == OWNER else [member]}
         self.changes.append(entry)
         del self.changes[:-CHANGES_KEPT]
         self.save()
@@ -981,7 +982,8 @@ class Home:
         for c in fresh:
             c["told"].append(member)
         self.save()
-        return "[家里的变化] " + "；".join(f"{names.get(c['member'], c['member'])}{c['text']}" for c in fresh[-10:]) + "。"
+        who = lambda c: owner.name() if c["member"] == OWNER else names.get(c["member"], c["member"])  # noqa: E731
+        return "[家里的变化] " + "；".join(f"{who(c)}{c['text']}" for c in fresh[-10:]) + "。"
 
     def tell(self, member: str) -> str:
         """Diary reads she has not heard about yet, once: the line for her next prompt."""

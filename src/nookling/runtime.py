@@ -876,7 +876,12 @@ class Runtime:
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
         return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view(),
-                "said": self._recent_said(convo)}
+                "said": self._recent_said(convo), "changes": redecorate.view(self.home)}
+
+    def undo_change(self, cid: str) -> dict:
+        """The owner undoes a change the family made (docs/redecorate.md, 4b)."""
+        redecorate.undo(self.home, cid, self._residents())
+        return {"changes": redecorate.view(self.home)}
 
     def _recent_said(self, group: Conversation | None) -> list[dict]:
         """What was said lately, for the bubbles over people's heads (docs/house-talk.md, 3b): the talk at home,

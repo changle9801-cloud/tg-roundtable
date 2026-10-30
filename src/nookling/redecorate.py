@@ -12,7 +12,7 @@ import re
 
 from . import furniture
 from .furniture import PlacementError
-from .home import Home, bedroom
+from .home import OWNER, Home, bedroom
 
 WEEK = 7 * 86400
 PER_WEEK = 3  # times a week she may redecorate (wishes do not count)
@@ -23,12 +23,26 @@ NOT_HERS = {"base/stairs", "base/parcel"}  # kinds she cannot add
 HANG = {"high": 1.7, "middle": 1.2, "low": 0.6}  # metres, for "hang"
 WALL_WORDS = {"back": "后墙", "front": "前墙", "left": "左墙", "right": "右墙"}
 FACE_TURN = {"front": 0, "left": 90, "back": 180, "right": 270}  # facing that way, by the room
+SHARED_MOVES = 2  # a week, per shared room: moving or turning its furniture (anyone)
+SHARED_RENAMES = 1  # a week, per shared room
+SHARED_DOES = ("move", "turn", "room_name")  # all that may be done in a shared room without a wish
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def left_this_week(home: Home, member: str) -> int:
     now = home.now()
     return PER_WEEK - sum(1 for ts in home.redecorations.get(member, []) if now - ts < WEEK)
+
+
+def this_week(home: Home, rid: str, kinds: tuple[str, ...]) -> int:
+    """How many changes of these kinds were made to a room in the last seven days (not counting undos)."""
+    now = home.now()
+    return sum(1 for c in home.changes
+               if c.get("room") == rid and c.get("kind") in kinds and c["member"] != OWNER and now - c["ts"] < WEEK)
+
+
+def _shared(home: Home, rid: str) -> bool:
+    return not rid.startswith("bed-") and any(r["id"] == rid for r in home.rooms)
 
 
 def _label(piece: dict, ftype: dict) -> str:
@@ -69,21 +83,34 @@ def menu(home: Home, member: str) -> str:
         if p["room"] == rid and t:
             extra = "，带功能（可以挪，不能扔）" if p.get("functions") else ""
             lines.append(f"- {p['id']}：{_label(p, t)}（{t['name']}）{where_words(p, t, room)}{extra}")
-    lines.append("能加的东西（种类 ID：名字，占地格数，放法）：")
+    floors = {f["level"]: f["name"] for f in home.floors}
+    shared = [r for r in home.rooms if _shared(home, r["id"])]
+    if shared:
+        lines.append("公共房间（只能挪家具、转方向、给房间改名；每间房的次数大家一起算）：")
+        for r in shared:
+            moves = SHARED_MOVES - this_week(home, r["id"], ("move", "turn"))
+            names = SHARED_RENAMES - this_week(home, r["id"], ("room_name",))
+            where = f"，{floors.get(r.get('level', 0), '')}" if len(floors) > 1 else ""
+            lines.append(f"「{r['name']}」（ID {r['id']}{where}）：这周还能挪 {max(0, moves)} 次、改名 {max(0, names)} 次")
+            for p in home.pieces or []:
+                t = types.get(p["type"])
+                if p["room"] == r["id"] and t:
+                    lines.append(f"  - {p['id']}：{_label(p, t)}（{t['name']}）{where_words(p, t, r)}")
+    lines.append("能加到你卧室的东西（种类 ID：名字，占地格数，放法）：")
     mounts = {"floor": "放地上", "wall": "挂墙", "either": "放地上或挂墙"}
     for tid, t in types.items():
         if tid not in NOT_HERS:
             lines.append(f"- {tid}：{t['name']}，{t['size'][0]}×{t['size'][1]} 格，{mounts[furniture.mount_of(t)]}")
-    lines.append(f"""规矩：只能改你自己的卧室。你加的东西不带功能（想要能用的东西，以后许愿）。卧室最多 {BEDROOM_MAX} 件；名字最长 {NAME_MAX} 个字；床不能全扔掉。
+    lines.append(f"""规矩：你的卧室随你改。公共房间只能挪家具、转方向、改房间名（每间房一周挪 {SHARED_MOVES} 次、改名 {SHARED_RENAMES} 次，大家一起算，别人会知道是你），要在那间房里改时加 "room":"房间 ID"；在公共房间加东西、扔东西、换颜色，以后许愿。别人的卧室不能动。你加的东西不带功能（想要能用的东西，以后许愿）。卧室最多 {BEDROOM_MAX} 件；名字最长 {NAME_MAX} 个字；床不能全扔掉。
 放在哪用话说：where 里写 against（back 后墙 / front 前墙 / left 左墙 / right 右墙 / middle 房间中间）和 near（挨着哪件东西，写它的 ID，可空）；挂墙的东西另写 hang（high / middle / low）。靠墙放的会朝着房间里面；也可以写 face：朝哪件东西（ID），或 front / back / left / right。
 真想改的时候才改，不用每次都改满。只输出 JSON：{{"changes": [...], "why": "为什么这样改"}}，changes 里每一项是下面之一：
 {{"do":"add","kind":"种类 ID","name":"可空","color":"#rrggbb，可空","where":{{"against":"back","near":""}},"hang":"","face":""}}
-{{"do":"move","piece":"ID","where":{{"against":"left","near":""}},"hang":"","face":""}}
+{{"do":"move","piece":"ID","where":{{"against":"left","near":""}},"hang":"","face":""}}（公共房间的加 "room":"living" 这样的房间 ID）
 {{"do":"turn","piece":"ID","face":"朝哪件东西的 ID，或 front / back / left / right"}}
 {{"do":"color","piece":"ID","color":"#rrggbb"}}
 {{"do":"name","piece":"ID","name":"新名字"}}
 {{"do":"remove","piece":"ID"}}
-{{"do":"room_name","name":"卧室的新名字"}}
+{{"do":"room_name","name":"新名字"}}（不写 room 就是你的卧室）
 {{"do":"room_color","part":"floor 或 walls","color":"#rrggbb"}}
 改了主意就输出 {{"changes": [], "why": "..."}}。""")
     return "\n".join(lines)
@@ -197,7 +224,7 @@ def apply(home: Home, member: str, plan: dict) -> dict:
             refused.append(str(e))
             continue
         done.append(text)
-        home.record_change(member, text, undo)
+        home.record_change(member, text, undo, kind=str(change.get("do")), room=undo.get("room") or bedroom(member))
     if len(changes) > PER_TIME:
         refused.append(f"一次最多改 {PER_TIME} 件，后面的没做")
     if done:
@@ -208,16 +235,30 @@ def apply(home: Home, member: str, plan: dict) -> dict:
 
 
 def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
-    """One change in her bedroom: (what she did, in words, said of her; how to undo it)."""
-    rid = bedroom(member)
+    """One change, in her bedroom or (moving, turning, renaming) a shared room: (what she did, in words, said
+    of her; how to undo it: the old state, with the room and what it was done to)."""
+    rid = str(change.get("room") or bedroom(member))
+    do = str(change.get("do") or "")
+    if rid != bedroom(member):
+        if rid.startswith("bed-"):
+            raise PlacementError("别人的卧室不能动")
+        if not _shared(home, rid):
+            raise PlacementError(f"没有这个房间：{rid}")
+        if do not in SHARED_DOES:
+            raise PlacementError("公共房间里加东西、扔东西、换颜色、给家具起名，要许愿")
+        if do in ("move", "turn") and this_week(home, rid, ("move", "turn")) >= SHARED_MOVES:
+            raise PlacementError(f"{home.room_name(rid)}这周已经挪过 {SHARED_MOVES} 次了")
+        if do == "room_name" and this_week(home, rid, ("room_name",)) >= SHARED_RENAMES:
+            raise PlacementError(f"{home.room_name(rid)}这周已经改过名了")
     room = home.room(rid)
     types = home.all_types()
-    do = str(change.get("do") or "")
+    mine = rid == bedroom(member)
+    where_in = "卧室里" if mine else f"{room['name']}"
 
     def hers() -> dict:
         piece = next((p for p in home.pieces or [] if p["id"] == str(change.get("piece") or "")), None)
         if piece is None or piece["room"] != rid:
-            raise PlacementError(f"{change.get('piece')} 不在你的卧室里")
+            raise PlacementError(f"{change.get('piece')} 不在{'你的卧室' if mine else room['name']}里")
         return piece
 
     if do == "add":
@@ -231,14 +272,15 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
                  "name": _name(change.get("name")), "color": _color(change.get("color"))}
         piece.update(place_by_words(home, piece, ftype, change))
         placed = home.place(piece)
-        return f"在自己卧室加了{_label(placed, ftype)}（{where_words(placed, ftype, room)}）", {"added": placed["id"]}
+        return (f"在自己卧室加了{_label(placed, ftype)}（{where_words(placed, ftype, room)}）",
+                {"added": placed["id"], "room": rid, "target": placed["id"]})
     if do == "move":
         piece = hers()
         ftype = types[piece["type"]]
         before = dict(piece)
         spot = place_by_words(home, piece, ftype, change, moving=piece["id"])
         home.edit_piece(piece["id"], spot)
-        return f"把卧室里的{_label(piece, ftype)}挪到了{where_words(piece, ftype, room)}", {"piece": before}
+        return f"把{where_in}的{_label(piece, ftype)}挪到了{where_words(piece, ftype, room)}", {"piece": before, "room": rid, "target": piece["id"]}
     if do == "turn":
         piece = hers()
         ftype = types[piece["type"]]
@@ -251,7 +293,7 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
             raise PlacementError("要说朝哪：一件东西的 ID，或 front / back / left / right")
         before = dict(piece)
         home.edit_piece(piece["id"], {"turn": turn})
-        return f"把卧室里的{_label(piece, ftype)}转了个方向（{where_words(piece, ftype, room)}）", {"piece": before}
+        return f"把{where_in}的{_label(piece, ftype)}转了个方向（{where_words(piece, ftype, room)}）", {"piece": before, "room": rid, "target": piece["id"]}
     if do == "color":
         piece = hers()
         color = _color(change.get("color"))
@@ -259,7 +301,7 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
             raise PlacementError("要说换成什么颜色")
         before = dict(piece)
         home.edit_piece(piece["id"], {"color": color})
-        return f"给卧室里的{_label(piece, types[piece['type']])}换了个颜色（{color}）", {"piece": before}
+        return f"给卧室里的{_label(piece, types[piece['type']])}换了个颜色（{color}）", {"piece": before, "room": rid, "target": piece["id"]}
     if do == "name":
         piece = hers()
         name = _name(change.get("name"))
@@ -268,7 +310,7 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
         before = dict(piece)
         old = _label(piece, types[piece["type"]])
         home.edit_piece(piece["id"], {"name": name})
-        return f"给卧室里的{old}起名叫「{name}」", {"piece": before}
+        return f"给卧室里的{old}起名叫「{name}」", {"piece": before, "room": rid, "target": piece["id"]}
     if do == "remove":
         piece = hers()
         ftype = types[piece["type"]]
@@ -277,14 +319,14 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
             raise PlacementError("床不能扔：要睡觉")
         before = dict(piece)
         home.remove(piece["id"])
-        return f"把卧室里的{_label(piece, ftype)}扔掉了", {"piece": before, "removed": True}
+        return f"把卧室里的{_label(piece, ftype)}扔掉了", {"piece": before, "removed": True, "room": rid, "target": piece["id"]}
     if do == "room_name":
         name = _name(change.get("name"))
         if name is None:
             raise PlacementError("要说改成什么名字")
         old = room["name"]
         home.rename_room(rid, name)
-        return f"把自己的卧室改名叫「{name}」", {"room": rid, "name": old}
+        return (f"把自己的卧室改名叫「{name}」" if mine else f"把{old}改名叫「{name}」"), {"room": rid, "name": old, "target": rid}
     if do == "room_color":
         part = str(change.get("part") or "")
         color = _color(change.get("color"))
@@ -292,5 +334,77 @@ def _one(home: Home, member: str, change: dict) -> tuple[str, dict]:
             raise PlacementError("要说换地板还是墙（floor / walls），换成什么颜色")
         old = room.get(part)
         home.dress_room(rid, {part: {"color": color}})
-        return f"把卧室的{'地板' if part == 'floor' else '墙'}换成了 {color}", {"room": rid, "part": part, "look": old}
+        return f"把卧室的{'地板' if part == 'floor' else '墙'}换成了 {color}", {"room": rid, "part": part, "look": old, "target": f"{rid}:{part}"}
     raise PlacementError(f"不认识这种改法：{do}")
+
+
+# ---- the owner undoes a change (docs/redecorate.md, 4b) ----
+
+def undoable(home: Home, entry: dict) -> str:
+    """Why this change cannot be undone, or "" when it can: once, by the owner, the latest change to its thing first."""
+    undo = entry.get("undo") or {}
+    if entry["member"] == OWNER or not undo:
+        return "这条不能撤回"
+    if entry.get("undone"):
+        return "已经撤回过了"
+    later = [c for c in home.changes if c["ts"] > entry["ts"] and not c.get("undone") and c["member"] != OWNER
+             and (c.get("undo") or {}).get("target") == undo.get("target")]
+    return "这件后来又被改过，先撤回后面那条" if later else ""
+
+
+def _fits(home: Home, piece: dict) -> None:
+    types, others = home.all_types(), [p for p in home.pieces or [] if p["id"] != piece["id"]]
+    if "wall" in piece:
+        furniture.check_wall(piece, home.checked_room(piece["room"]), types, others)
+    else:
+        furniture.check(piece, home.checked_room(piece["room"]), types, others)
+        home._check_floors(piece, others)
+
+
+def undo(home: Home, cid: str, names: dict[str, str]) -> dict:
+    """Put back what a change changed, if it still can be; noted in 家里的变化 so the one who made it hears."""
+    entry = next((c for c in home.changes if c["id"] == cid), None)
+    if entry is None:
+        raise PlacementError("没有这条变化")
+    why = undoable(home, entry)
+    if why:
+        raise PlacementError(why)
+    u = entry["undo"]
+    if "added" in u:
+        piece = next((p for p in home.pieces or [] if p["id"] == u["added"]), None)
+        if piece is not None:
+            home.remove(piece["id"])  # refuses one that has since been given functions
+    elif "piece" in u:
+        before = dict(u["piece"])
+        current = next((p for p in home.pieces or [] if p["id"] == before["id"]), None)
+        if u.get("removed"):
+            if current is not None:
+                raise PlacementError("这件已经在了")
+            try:
+                _fits(home, before)
+            except PlacementError as e:
+                raise PlacementError(f"原来的地方现在放不下了（{e}）") from None
+            home.pieces.append(before)
+        else:
+            if current is None:
+                raise PlacementError("这件已经不在了")
+            try:
+                _fits(home, before)
+            except PlacementError as e:
+                raise PlacementError(f"原来的地方现在放不下了（{e}）") from None
+            current.clear()
+            current.update(before)
+    elif "name" in u:
+        home.rename_room(u["room"], u["name"])
+    elif "part" in u:
+        home.dress_room(u["room"], {u["part"]: u["look"]})
+    entry["undone"] = home.now()
+    home.record_change(OWNER, f"撤回了{names.get(entry['member'], entry['member'])}的一处改动（{entry['text']}）", {},
+                       kind="undo", room=entry.get("room", ""))
+    return entry
+
+
+def view(home: Home) -> list[dict]:
+    """家里的变化 for the page, newest first, with whether each can be undone."""
+    return [{"id": c["id"], "ts": c["ts"], "member": c["member"], "text": c["text"], "undone": c.get("undone", 0),
+             "why_not": undoable(home, c)} for c in reversed(home.changes[-60:])]

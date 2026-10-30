@@ -199,6 +199,9 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def get_home(request):
         return web.json_response(runtime.home_view())
 
+    async def undo_change(request):
+        return house(lambda: runtime.undo_change(request.match_info["cid"]))
+
     async def home_talk(request):
         body = await request.json()
         return web.json_response(runtime.say_at_home(str(body.get("text") or "")))
@@ -612,6 +615,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_get("/api/life", get_life)
     app.router.add_get("/api/home", get_home)
     app.router.add_post("/api/home/talk", home_talk)
+    app.router.add_post("/api/home/changes/{cid}/undo", undo_change)
     app.router.add_get("/api/home/diary/{pid}", home_diary)
     app.router.add_put("/api/home/looks/{pid}", home_look)
     app.router.add_post("/api/home/looks/{pid}/choose", home_choose_look)
