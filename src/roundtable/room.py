@@ -9,6 +9,7 @@ import logging
 import random
 import re
 import time
+from collections import deque
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,24 +26,23 @@ from .participants.base import ActivityHook
 from .prompts import build_system_prompt, build_turn_prompt, clean_reply, looks_like_code, render_role
 from .reactions import extract_reaction
 from .repetition import repeated_bits
-from .routine import ASLEEP, BUSY, BUSY_FACTOR, FRIEND_NAME_WAKE_CHANCE, FRIEND_WAKE_CHANCE, WAKE_CHANCE, Routines
+from .routine import ASLEEP, BUSY, Routines
 from .vision import MAX_IMAGES, can_see_images
 from .stickers import Sticker, StickerLibrary, strip_tags
 from .transcript import USER, Message, find_mentions, find_recheck_targets
 from .sources import source_key, source_list
+from . import urge
+from .urge import Urge
 
 log = logging.getLogger(__name__)
 
 MAX_HISTORY = 400  # messages kept in memory per chat
 MAX_UNSEEN = 30  # most recent messages handed to a model in one turn
-ANSWERING_SECONDS = 600  # the user speaks right after a member: likely talking to that member...
-ANSWERING_CHANCE = 0.75  # ...who then usually answers first,
-ANSWERING_STREAK = 2  # unless it already answered first this many times in a row
+ANSWERING_SECONDS = 600  # the user speaks right after a member: likely talking to that member,
+ANSWERING_STREAK = 2  # who usually answers first, unless it already did this many times in a row
 # "你们…", "大家…": the user talks to the whole group, so more members chime in.
 TO_ALL = re.compile(r"你们|大家|各位|所有人|都在")
-TO_ALL_CHANCE = 0.9  # chance the next member joins in after the first reply...
-TO_ALL_DECAY = 0.55  # ...shrinking by this much for each further one
-TALK_BACK_CHANCE = 0.6  # a member names a friend or answers right after her: chance she answers back
+DECISIONS_KEPT = 60  # recent dice rolls and their reasons, for the status page
 
 
 def _draws_everyone(message: Message) -> bool:
@@ -183,6 +183,7 @@ class ChatRoom:
         self._activities: dict[str, str] = {}  # member id -> what it is doing right now
         self._extra_turns: dict[str, int] = {}  # granted while a round runs, added at its next step
         self._background: set[asyncio.Task] = set()
+        self.decisions: deque[dict] = deque(maxlen=DECISIONS_KEPT)  # why someone did or didn't speak
 
     @property
     def busy(self) -> bool:
@@ -399,7 +400,17 @@ class ChatRoom:
                 self.cursors[turn.speaker.id] = min(turn.prev_cursor, len(self.messages))  # cut off: not answered
                 await self._end_activity(turn.speaker)
 
-    ACTIVITY_FACTOR = {"low": 0.5, "normal": 1.0, "high": 1.5}
+    def _roll(self, chance: Urge, what: str) -> bool:
+        """Roll the dice for one chance, and keep why (debug log, status page)."""
+        rng = getattr(self.moderator, "rng", random)
+        roll = rng.random()
+        hit = roll < chance.value
+        self.decisions.append({"ts": time.time(), "what": what, "why": chance.explain(), "roll": round(roll, 2), "hit": hit})
+        log.debug("[%s] %s：%s 掷 %.2f → %s", self.key, what, chance.explain(), roll, "是" if hit else "否")
+        return hit
+
+    def _busy(self, p: Participant) -> bool:
+        return self.routines is not None and self.routines.status(p) == BUSY
 
     def _awake(self, candidates: list[Participant], state: _RoundState, latest: Message) -> list[Participant]:
         """Drop sleeping members, unless the user @-ed them; if nobody is up, maybe one wakes."""
@@ -413,7 +424,7 @@ class ChatRoom:
             return awake
         state.wake_tried = True  # the user says something and everyone is asleep
         rng = getattr(self.moderator, "rng", random)
-        if rng.random() < WAKE_CHANCE:
+        if self._roll(urge.woken_by_user(), "吵醒"):
             sleeper = rng.choice(candidates)
             self.routines.wake(sleeper)
             log.info("[%s] %s 被吵醒了", self.key, sleeper.name)
@@ -423,12 +434,11 @@ class ChatRoom:
     def _woken_by(self, message: Message, sleepers: list[Participant], state: _RoundState) -> list[Participant]:
         """A member talks to a friend who is asleep (@ or by name): the phone may wake them."""
         named = set(find_mentions(message.text, sleepers, from_user=True))
-        rng = getattr(self.moderator, "rng", random)
         woken = []
         for p in sleepers:
             if p.id == message.speaker_id or p.id not in named:
                 continue
-            if rng.random() < (FRIEND_WAKE_CHANCE if p.id in message.mentions else FRIEND_NAME_WAKE_CHANCE):
+            if self._roll(urge.woken_by_friend(p, at=p.id in message.mentions), "吵醒"):
                 self.routines.wake(p)
                 state.granted.add(p.id)  # woken to answer it
                 woken.append(p)
@@ -443,16 +453,14 @@ class ChatRoom:
         i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
         before = self.messages[i - 1] if i > 0 else None
         named = find_mentions(latest.text, candidates, from_user=True)
+        called = set(named)
         if before is not None and not before.from_user:
             named.append(before.speaker_id)
         target = next((p for pid in named for p in candidates if p.id == pid and pid != latest.speaker_id), None)
         if target is None:
             return None
-        chance = TALK_BACK_CHANCE * self.ACTIVITY_FACTOR.get(getattr(target.cfg, "activity", "normal"), 1.0)
-        if self.routines is not None and self.routines.status(target) == BUSY:
-            chance *= BUSY_FACTOR
-        rng = getattr(self.moderator, "rng", random)
-        return target if rng.random() < min(chance, 1.0) else None
+        chance = urge.talk_back(target, named=target.id in called, busy=self._busy(target))
+        return target if self._roll(chance, "回嘴") else None
 
     def _answering(self, pool: list[Participant], latest: Message) -> Participant | None:
         """Who the user is most likely talking to without an @ or a reply: whoever spoke just
@@ -476,24 +484,15 @@ class ChatRoom:
                 k -= 1
         if streak >= ANSWERING_STREAK:
             return None
-        rng = getattr(self.moderator, "rng", random)
-        if rng.random() >= ANSWERING_CHANCE:
+        if not self._roll(urge.answering(self.messages[i].speaker_name), "先回阿明"):
             return None
         return next((p for p in pool if p.id == self.messages[i].speaker_id), None)
 
     def _joins_in(self, speaker: Participant, already: int, to_all: bool = False) -> bool:
         """Whether one more member chimes in after ``already`` replies to the same message."""
-        if already == 0:
-            return True  # someone always answers the user
-        if to_all:
-            chance = TO_ALL_CHANCE * TO_ALL_DECAY ** (already - 1)
-        else:
-            chance = self.follow_up_chance * self.follow_up_decay ** (already - 1)
-        chance *= self.ACTIVITY_FACTOR.get(getattr(speaker.cfg, "activity", "normal"), 1.0)
-        if self.routines is not None and self.routines.status(speaker) == BUSY:
-            chance *= BUSY_FACTOR
-        rng = getattr(self.moderator, "rng", random)
-        return rng.random() < min(chance, 1.0)
+        chance = urge.join_in(speaker, already, to_all=to_all, busy=self._busy(speaker),
+                              chance=self.follow_up_chance, decay=self.follow_up_decay)
+        return chance is None or self._roll(chance, "接话")  # the first reply always comes
 
     def _fresh_turns(self) -> dict[str, int]:
         """Turns per member for a new round: its own limit, or the group's."""
