@@ -481,6 +481,7 @@ class HomeApp {
     // Seats come from the furniture: each use of each placed piece is a spot someone can take.
     this.seats = {};
     this.screens = {};
+    this.pieceAt = {}; // piece id -> its centre and the way its front faces, for standing in front of it
     for (const piece of data.pieces) {
       const type = data.types[piece.type], r = L.rects[piece.room];
       if (!type || !r) continue;
@@ -488,10 +489,11 @@ class HomeApp {
       (type.uses || []).forEach((use, i) => {
         (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...useSpot(r, piece, type, use) });
       });
-      if (type.screen) {
-        const [tw, td] = turnedSize(type.size, piece.turn);
-        (this.screens[piece.room] ||= []).push({ x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL });
-      }
+      const [tw, td] = turnedSize(type.size, piece.turn);
+      const centre = { id: piece.id, room: piece.room, x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL,
+                       turn: piece.turn, reach: ((piece.turn % 180 ? tw : td) / 2) * CELL };
+      this.pieceAt[piece.id] = centre;
+      if (type.screen) (this.screens[piece.room] ||= []).push(centre);
     }
     const span = Math.max(L.W, L.D);
     this.center = new THREE.Vector3(L.W / 2, 0, L.D / 2);
@@ -502,9 +504,9 @@ class HomeApp {
   }
 
   // A seat looking at a screen in the same room, not too far: where you watch TV from.
-  facesScreen(seat) {
+  facesScreen(seat, only = null) {
     const dir = { x: -Math.sin((seat.face * Math.PI) / 180), z: Math.cos((seat.face * Math.PI) / 180) };
-    return (this.screens[seat.piece.room] || []).some((sc) => {
+    return (this.screens[seat.piece.room] || []).filter((sc) => !only || sc.id === only).some((sc) => {
       const vx = sc.x - seat.x, vz = sc.z - seat.z, len = Math.hypot(vx, vz);
       return len > 0.3 && len <= 4 && (dir.x * vx + dir.z * vz) / len > 0.7;
     });
@@ -517,10 +519,27 @@ class HomeApp {
     }
     const seats = (this.seats[person.room] || []).filter((s) => !taken.has(s.key));
     const sit = seats.filter((s) => s.pose === "sit");
+    const using = person.piece && this.pieceAt[person.piece];
+    if (using) {
+      // The piece she went to for this: its own seat, a seat facing it if it is a screen, else in front of it.
+      const own = seats.filter((s) => s.piece.id === using.id);
+      const facing = (this.screens[using.room] || []).some((sc) => sc.id === using.id) ? sit.filter((s) => this.facesScreen(s, using.id)) : [];
+      const choice = own[0] || facing[0];
+      if (choice) {
+        taken.add(choice.key);
+        return choice;
+      }
+      const a = (using.turn * Math.PI) / 180, n = taken.size;
+      taken.add(`front:${using.id}:${n}`);
+      const side = ((n % 2) - 0.5) * 0.6; // two people at one thing stand side by side
+      return { x: using.x - Math.sin(a) * (using.reach + 0.6) + side * Math.cos(a),
+               z: using.z + Math.cos(a) * (using.reach + 0.6) + side * Math.sin(a), pose: "stand", face: (using.turn + 180) % 360 };
+    }
     const pick = {
       sleep: () => seats.filter((s) => s.pose === "lie" && s.piece.owner === person.id).concat(seats.filter((s) => s.pose === "lie")),
       read: () => sit.filter((s) => (s.piece.functions || []).includes("web.read")).concat(sit),
       play: () => sit.filter((s) => this.facesScreen(s)).concat(sit),
+      watch: () => sit.filter((s) => this.facesScreen(s)).concat(sit),
       rest: () => sit.filter((s) => !(s.piece.functions || []).includes("web.read")).concat(sit),
     };
     pick.browse = pick.write = pick.read;

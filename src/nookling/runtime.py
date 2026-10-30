@@ -1230,6 +1230,7 @@ class Runtime:
                        if "watch_video" in s.allowed), None)
         if server is None:
             return {"status": "unavailable", "reason": "这位成员没有获准使用看视频工具，可以找有工具的朋友"}
+        self.home.begin(pid, "watch", url)  # she goes to whatever carries video.watch (the TV)
         try:
             result = await call_tool(server, "watch_video", {"url": url, "frames": 0})
         except ConfigError as error:

@@ -41,7 +41,7 @@ DEFAULT_LOOKS = {
 SPARE_COLORS = ("#8a5a9e", "#b7791f", "#2c7a7b", "#c05680", "#4a5568")
 # What a member is doing, in the fixed words guests may see. Details stay on the admin page.
 VERBS = {
-    "browse": "在看东西", "read": "在看东西", "write": "在写东西", "play": "在玩游戏",
+    "browse": "在看东西", "read": "在看东西", "write": "在写东西", "watch": "在看视频", "play": "在玩游戏",
     "phone": "在打电话", "visit": "在找朋友聊天", "share": "在看手机", "rest": "在歇着",
     "sleep": "在睡觉", "out": "出门了",
 }
@@ -52,6 +52,14 @@ REST_ROOMS = (
     ("kitchen", re.compile(r"厨房|吃|喝|饭|零食|咖啡|茶|饿")),
     ("fun", re.compile(r"游戏|电视|视频|番|剧|音乐")),
 )
+# What she does, the function name a piece of furniture must carry for it, and the room she
+# goes to when no piece in the house carries it (see docs/furniture.md, 功能名).
+ACTIVITIES = {
+    "browse": ("browse", "web.read", "study"), "explore": ("browse", "web.read", "study"),
+    "read": ("read", "web.read", "study"), "write": ("write", "web.read", "study"),
+    "watch": ("watch", "video.watch", "fun"), "play": ("play", "game.play", "fun"),
+    "share": ("share", "chat.telegram", "living"),
+}
 DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
 
@@ -69,6 +77,7 @@ class Place:
     active: bool = False  # in the middle of an activity right now
     peer: str = ""  # the friend she went to see, or is calling
     back: str = ""  # where she came from on a visit, to return afterwards
+    piece: str = ""  # the piece of furniture she is using, if any
 
 
 class Home:
@@ -201,14 +210,10 @@ class Home:
         """A daily-life activity starts: she goes where it happens."""
         here = self.where.get(member) or Place(bedroom(member), "rest")
         now = self.now()
-        if action in ("browse", "explore", "read"):
-            place = Place("study", "read" if action == "read" else "browse", detail, now, True)
-        elif action == "write":
-            place = Place("study", "write", detail, now, True)
-        elif action == "play":
-            place = Place("fun", "play", detail, now, True)
-        elif action == "share":
-            place = Place("living", "share", detail, now, True)
+        if action in ACTIVITIES:
+            verb, function, fallback = ACTIVITIES[action]
+            piece = self.carrier(member, function, here.room)
+            place = Place(piece["room"] if piece else fallback, verb, detail, now, True, piece=piece["id"] if piece else "")
         elif action == "private" and peer:
             if peer_home and peer in self.where:
                 place = Place(self.where[peer].room, "visit", detail, now, True, peer, here.room)
@@ -219,6 +224,14 @@ class Home:
             place = Place(bedroom(member) if room == "bed" else room, "rest", detail, now, False)
         self._move(member, place)
 
+    def carrier(self, member: str, function: str, here: str) -> dict | None:
+        """The piece she goes to for a function: in her room if there is one, else a shared room,
+        else her own bedroom. Never a piece in someone else's bedroom."""
+        mine = bedroom(member)
+        pieces = [p for p in self.pieces or [] if function in (p.get("functions") or [])
+                  and (not p["room"].startswith("bed-") or p["room"] == mine)]
+        return min(pieces, key=lambda p: (p["room"] != here, p["room"] == mine), default=None)
+
     def end(self, member: str) -> None:
         """The activity is over: she stays where she is, or goes back home from a visit."""
         place = self.where.get(member)
@@ -227,7 +240,7 @@ class Home:
         if place.verb == "visit" and place.back:
             self._move(member, Place(place.back, "rest", place.detail, self.now()))
         else:
-            self._move(member, Place(place.room, place.verb, place.detail, place.since, False, place.peer))
+            self._move(member, Place(place.room, place.verb, place.detail, place.since, False, place.peer, piece=place.piece))
 
     def settle(self, member: str, routine: str) -> None:
         """Follow her routine: "asleep", "busy" or "online". Safe to call on every tick."""
@@ -324,7 +337,7 @@ class Home:
             if place is None:
                 continue
             words = VERBS.get(place.verb, "在歇着")
-            if not place.active and place.verb in ("browse", "read", "write", "play", "phone", "visit", "share"):
+            if not place.active and place.verb in ("browse", "read", "write", "watch", "play", "phone", "visit", "share"):
                 words = "在歇着"
             lines.append(f"{name} · 出门了" if place.verb == "out" else f"{name} · {self.room_name(place.room)} · {words}")
         return "\n".join(lines) or "家里现在没人。"

@@ -90,3 +90,59 @@ def test_a_turned_piece_turns_its_seats_with_it():
     assert (round(x, 2), round(z, 2), face) == (5.5, 3.55, 180)  # mirrored, looking at the back wall
     shelf = BUILTIN_TYPES["base/bookshelf"]
     assert furniture.turned_size(shelf["size"], 90) == (1, 5)
+
+
+# ---- she goes to the piece that carries what she does (2b) ----
+
+def piece_of(home, ptype, room=None):
+    return next(p for p in home.pieces if p["type"] == ptype and (room is None or p["room"] == room))
+
+
+def test_she_watches_wherever_the_tv_is_but_not_in_someone_elses_bedroom(tmp_path):
+    home = house(tmp_path)
+    tv = piece_of(home, "base/tv")
+    home.begin("codex", "watch", "https://example.com/v")
+    assert (home.where["codex"].room, home.where["codex"].piece, home.where["codex"].verb) == ("fun", tv["id"], "watch")
+    home.move(tv["id"], room=bedroom("codex"), at=[2, 7])
+    home.begin("codex", "watch")
+    assert (home.where["codex"].room, home.where["codex"].piece) == (bedroom("codex"), tv["id"])
+    home.begin("xiaolin", "play")  # the only TV is in Codex's bedroom: not hers to walk into
+    assert (home.where["xiaolin"].room, home.where["xiaolin"].piece) == ("fun", "")
+    assert "小林 · 娱乐室 · 在玩游戏" in home.guest_lines(MEMBERS)
+
+
+def test_reading_takes_a_computer_and_prefers_the_room_she_is_in(tmp_path):
+    home = house(tmp_path)
+    home.begin("codex", "read", "磁吸手柄")
+    desk = next(p for p in home.pieces if p["id"] == home.where["codex"].piece)
+    assert desk["type"] == "base/computer-desk" and home.where["codex"].room == "study"
+    second = piece_of(home, "base/tv")
+    second["functions"] = ["web.read"]  # a TV that also browses, in the room she is already in
+    home.where["codex"].room = "fun"
+    home.begin("codex", "browse")
+    assert home.where["codex"].piece == second["id"]
+    for p in [p for p in home.pieces if "web.read" in p["functions"]]:
+        home.remove(p["id"])
+    home.begin("codex", "write")  # nothing to read or write at: the study, as before furniture
+    assert (home.where["codex"].room, home.where["codex"].piece) == ("study", "")
+
+
+async def test_watching_a_video_takes_her_to_the_tv(tmp_path, monkeypatch):
+    from nookling import tools
+    from nookling.runtime import Runtime
+    from nookling.settings import SettingsStore
+    store = SettingsStore(tmp_path)
+    store.save({"participants": [{"id": "claude", "name": "Claude", "kind": "claude_cli", "command": ["python"]}],
+                "tools": [{"id": "video", "name": "看视频", "transport": "stdio", "command": "python",
+                           "allowed": ["watch_video"], "members": ["claude"]}]})
+    r = Runtime(store)
+    seen = []
+
+    async def fake_call(server, name, args):
+        seen.append(r.home.where["claude"].room)
+        raise tools.ConfigError("没连上")
+
+    monkeypatch.setattr(tools, "call_tool", fake_call)
+    result = await r._life_video("claude", "https://example.com/v")
+    assert result["status"] == "unavailable"
+    assert seen == ["fun"] and r.home.where["claude"].verb == "watch"
