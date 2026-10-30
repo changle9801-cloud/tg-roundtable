@@ -94,6 +94,7 @@ class Home:
         self.diary_reads: list[dict] = []
         self.pieces: list[dict] | None = None  # None until furnished
         self.types: dict[str, dict] = {}  # the owner's own kinds of furniture (stage 2d)
+        self.extras: list[str] = []  # built-in pieces added to houses made before them, once each
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -103,6 +104,7 @@ class Home:
                 self.diary_reads = list(raw.get("diary_reads", []))
                 self.pieces = list(raw["pieces"]) if "pieces" in raw else None
                 self.types = dict(raw.get("types") or {})
+                self.extras = list(raw.get("extras") or [])
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -113,7 +115,8 @@ class Home:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json(self.path, {"version": 2, "rooms": self.rooms, "pieces": self.pieces or [],
-                                "types": self.types, "where": {m: asdict(p) for m, p in self.where.items()},
+                                "types": self.types, "extras": self.extras,
+                                "where": {m: asdict(p) for m, p in self.where.items()},
                                 "looks": self.looks, "diary_reads": self.diary_reads[-200:]})
 
     # ---- who lives here ----
@@ -157,8 +160,27 @@ class Home:
             self.pieces = []
         for room in furnish:
             self.pieces.extend(furniture.default_pieces(room, "bedroom" if room["id"].startswith("bed-") else room["id"]))
+        if "computer" not in self.extras:  # chat apps moved onto a computer in the living room
+            if not any(p["type"] == "base/computer" for p in self.pieces):
+                self._add_computer()
+            self.extras.append("computer")
+            changed = True
         if changed or new_rooms or furnish:
             self.save()
+
+    def _add_computer(self) -> None:
+        rid, at, turn = furniture.COMPUTER
+        piece = {"id": furniture.new_id(), "type": "base/computer", "room": rid, "at": list(at), "turn": turn,
+                 "color": None, "name": None, "functions": ["chat.telegram"], "added_by": "owner", "owner": ""}
+        try:
+            furniture.check(piece, self.room(rid), self.all_types(), self.pieces)
+        except PlacementError:  # the owner put something there: wherever it fits
+            spot = self.free_spot("base/computer", [rid] + [r["id"] for r in self.rooms if r.get("shared")])
+            if spot is None:
+                log.warning("家里没地方放电脑了")
+                return
+            piece.update(room=spot[0], at=list(spot[1]), turn=0)
+        self.pieces.append(piece)
 
     # ---- furniture ----
 

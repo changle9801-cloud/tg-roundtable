@@ -532,7 +532,7 @@ class Runtime:
                 item.chat = new_key
         self.followups.save()
         settings = json.loads(json.dumps(self.settings))
-        tg = settings["telegram"]
+        tg = settings["apps"]["telegram"]
         tg["allowed_chat_ids"] = [new if c == old else c for c in tg.get("allowed_chat_ids", [])]
         if int(settings.get("proactive", {}).get("chat_id") or 0) == old:
             settings["proactive"]["chat_id"] = new

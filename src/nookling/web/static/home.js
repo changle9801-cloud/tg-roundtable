@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { GLTFLoader } from "/static/vendor/GLTFLoader.js";
 import { RoomEnvironment } from "/static/vendor/RoomEnvironment.js";
-import { renderEditor, say, send } from "/static/home-edit.js";
+import { openTelegram, renderEditor, say, send } from "/static/home-edit.js";
 
 const POLL_MS = 5000;
 const STALE_SECONDS = 3 * 3600; // awake but nothing happened for this long: she is dimmed, not faked busy
@@ -185,10 +185,13 @@ const TEMPLATES = {
     g.add(cylinder(0.2, 0.18, c, 0, H - 0.2, 0));
   },
   rug: (g, W, D, H, c, piece) => g.add(picture(box(W, 0.02, D, c, 0, 0, 0), piece)),
-  "computer-desk": (g, W, D, H, c) => {
+  "computer-desk": (g, W, D, H, c, piece, clickable) => {
     g.add(box(W, H, 0.7, c, 0, 0, -D / 2 + 0.35));
-    g.add(box(0.8, 0.5, 0.06, 0x263238, 0, H + 0.06, -D / 2 + 0.2));
-    g.add(box(0.75, 0.42, 0.02, 0x4fc3f7, 0, H + 0.1, -D / 2 + 0.24));
+    const monitor = box(0.8, 0.5, 0.06, 0x263238, 0, H + 0.06, -D / 2 + 0.2);
+    const apps = (piece.functions || []).some((f) => f.startsWith("chat."));
+    if (apps) { monitor.userData = { computer: piece.id }; clickable.push(monitor); }
+    g.add(monitor);
+    g.add(box(0.75, 0.42, 0.02, apps ? 0x81c784 : 0x4fc3f7, 0, H + 0.1, -D / 2 + 0.24));
     g.add(box(0.5, 0.45, 0.5, 0x607d8b, 0, 0, D / 2 - 0.4));
   },
   bookshelf: (g, W, D, H, c) => {
@@ -1022,8 +1025,10 @@ class HomeApp {
     const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     this.ray.setFromCamera(mouse, this.camera);
     const hits = this.ray.intersectObjects([...this.clickable, ...this.people.children], true);
-    const hit = hits.find((h) => h.object.userData.diary || h.object.userData.person || h.object.userData.parcel);
+    const hit = hits.find((h) => h.object.userData.diary || h.object.userData.person || h.object.userData.parcel
+      || h.object.userData.computer);
     if (!hit) return;
+    if (hit.object.userData.computer) { openTelegram(this); return; }
     if (hit.object.userData.parcel) { this.selectedPiece = hit.object.userData.parcel; this.selected = ""; this.renderPanel(); return; }
     if (hit.object.userData.diary) this.openDiary(hit.object.userData.diary);
     else { this.selected = hit.object.userData.person; this.renderPanel(); }

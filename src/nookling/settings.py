@@ -114,7 +114,8 @@ def resolve_data_dir(explicit: Path | None) -> Path:
 
 def default_settings() -> dict:
     return {
-        "telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""},
+        # Chat apps on the house computer; before that (tg-roundtable) this was a top-level "telegram".
+        "apps": {"telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""}},
         "round": asdict(RoundConfig()),
         "prompts": {"system_template": "", "scene": "", "no_coding": True, "owner_name": owner.DEFAULT},
         "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True, "reactions": True},
@@ -231,7 +232,8 @@ def normalize_participant(raw: dict) -> dict:
 
 def normalize_settings(raw: dict) -> dict:
     base = default_settings()
-    tg = {**base["telegram"], **(raw.get("telegram") or {})}
+    legacy = raw.get("telegram") if not (raw.get("apps") or {}).get("telegram") else None
+    tg = {**base["apps"]["telegram"], **((raw.get("apps") or {}).get("telegram") or legacy or {})}
     tg["allowed_user_ids"] = _int_list(tg.get("allowed_user_ids"), "允许的用户")
     tg["allowed_chat_ids"] = _int_list(tg.get("allowed_chat_ids"), "允许的群")
     tg["controller_participant"] = str(tg.get("controller_participant") or "")
@@ -354,7 +356,7 @@ def normalize_settings(raw: dict) -> dict:
         p["tool_notes"] = {k: v for k, v in p["tool_notes"].items() if k in tool_ids}
 
     return {
-        "telegram": tg,
+        "apps": {"telegram": tg},
         "round": rnd,
         "prompts": prompts,
         "stickers": stickers,
@@ -412,7 +414,14 @@ class SettingsStore:
         return self.settings_path.exists()
 
     def load(self) -> tuple[dict, dict]:
-        settings = normalize_settings(_read_json(self.settings_path))
+        raw = _read_json(self.settings_path)
+        settings = normalize_settings(raw)
+        if "telegram" in raw and "apps" not in raw:
+            # From before chat apps lived on the house computer: keep the old file, write the new shape.
+            backup = self.settings_path.with_name("settings.before-apps.json")
+            if not backup.exists():
+                shutil.copy2(self.settings_path, backup)
+            _write_json(self.settings_path, settings)
         secrets = {**default_secrets(), **_read_json(self.secrets_path)}
         return settings, secrets
 
@@ -494,7 +503,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         ParticipantConfig(**p, bot_token=bots.get(p["id"], ""), api_key=keys.get(p["id"], ""))
         for p in settings["participants"]
     ]
-    tg = settings["telegram"]
+    tg = settings["apps"]["telegram"]
     controller = tg.get("controller_participant", "")
     token = bots.get(controller, "") if controller else secrets.get("controller_token", "")
     return Config(
@@ -528,8 +537,8 @@ def import_legacy_toml(path: Path) -> tuple[dict, dict]:
     cfg = load_legacy_toml(path)
     settings = default_settings()
     secrets = default_secrets()
-    settings["telegram"]["allowed_user_ids"] = cfg.telegram.allowed_user_ids
-    settings["telegram"]["allowed_chat_ids"] = cfg.telegram.allowed_chat_ids
+    settings["apps"]["telegram"]["allowed_user_ids"] = cfg.telegram.allowed_user_ids
+    settings["apps"]["telegram"]["allowed_chat_ids"] = cfg.telegram.allowed_chat_ids
     settings["round"] = asdict(cfg.round)
     for p in cfg.participants:
         data = asdict(p)
@@ -540,7 +549,7 @@ def import_legacy_toml(path: Path) -> tuple[dict, dict]:
         settings["participants"].append({k: v for k, v in data.items() if k not in SECRET_FIELDS})
     shared = next((p.id for p in cfg.participants if p.bot_token and p.bot_token == cfg.telegram.controller_token), "")
     if shared:
-        settings["telegram"]["controller_participant"] = shared
+        settings["apps"]["telegram"]["controller_participant"] = shared
     else:
         secrets["controller_token"] = cfg.telegram.controller_token
     return normalize_settings(settings), secrets

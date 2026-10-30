@@ -57,7 +57,11 @@ BUILTIN_TYPES = {t["id"]: t for t in (
     _type("dining-table", "餐桌和四把椅子", "dining-table", (4, 4), 0.72, "#d7ccc8",
           uses=[_sit(1, 0.4, 0), _sit(3, 0.4, 0), _sit(1, 3.6, 180), _sit(3, 3.6, 180)], tags=["厨房"]),
     _type("boxes", "一堆纸箱", "boxes", (3, 3), 1.2, "#bcaaa4", tags=["储物间"]),
+    # The house computer: chat apps (Telegram first) live on it; posting to the group happens here.
+    _type("computer", "家里的电脑", "computer-desk", (3, 3), 0.72, "#90a4ae",
+          uses=[_sit(1.5, 2.2, 180)], functions=["chat.telegram"], tags=["客厅"]),
 )}
+COMPUTER = ("living", (0, 6), 270)  # where the house computer goes: against the living room's left wall
 
 # Rooms as first drawn: id, name, icon, size in cells, doors (wall, optional centre cell).
 SHARED_ROOMS = (
@@ -81,7 +85,7 @@ DEFAULT_LAYOUT = {
     "living": [("sofa-3", (6, 1), 0, {"color": "#8d6e63"}), ("rug-large", (5, 3), 0, {"color": "#ffe0b2"}),
                ("coffee-table", (7, 5), 0, {}), ("frame", (5, 0), 0, {"color": "#90caf9"}),
                ("frame", (8, 0), 0, {"color": "#a5d6a7"}), ("frame", (11, 0), 0, {"color": "#ffcc80"}),
-               ("big-plant", (16, 0), 0, {})],
+               ("big-plant", (16, 0), 0, {}), ("computer", (0, 6), 270, {})],
     "kitchen": [("fridge", (0, 0), 0, {}), ("counter", (0, 3), 270, {}), ("dining-table", (6, 5), 0, {})],
     "storage": [("boxes", (0, 0), 0, {})],
 }

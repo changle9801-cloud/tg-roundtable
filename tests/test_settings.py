@@ -45,8 +45,8 @@ def test_import_legacy_splits_secrets_out(tmp_path):
     path.write_text(LEGACY, encoding="utf-8")
     settings, secrets = import_legacy_toml(path)
 
-    assert settings["telegram"]["controller_participant"] == "claude"
-    assert settings["telegram"]["allowed_user_ids"] == [42]
+    assert settings["apps"]["telegram"]["controller_participant"] == "claude"
+    assert settings["apps"]["telegram"]["allowed_user_ids"] == [42]
     assert settings["round"]["max_turns_per_model"] == 2
     assert secrets["bots"] == {"claude": "111:claude-token-aaaa", "ds": "222:ds-token-bbbb"}
     assert secrets["api_keys"] == {"ds": "sk-secret-1234"}
@@ -90,15 +90,15 @@ def test_normalize_parses_text_inputs():
         "telegram": {"allowed_user_ids": "1, 2，3", "allowed_chat_ids": "-100"},
         "participants": [{"id": "a", "name": "A", "kind": "api", "aliases": "x，y", "params": '{"temperature": 1}'}],
     })
-    assert s["telegram"]["allowed_user_ids"] == [1, 2, 3]
-    assert s["telegram"]["allowed_chat_ids"] == [-100]
+    assert s["apps"]["telegram"]["allowed_user_ids"] == [1, 2, 3]
+    assert s["apps"]["telegram"]["allowed_chat_ids"] == [-100]
     assert s["participants"][0]["aliases"] == ["x", "y"]
     assert s["participants"][0]["params"] == {"temperature": 1}
 
 
 def test_controller_pointing_at_missing_member_is_dropped():
     s = normalize_settings({"telegram": {"controller_participant": "ghost"}})
-    assert s["telegram"]["controller_participant"] == ""
+    assert s["apps"]["telegram"]["controller_participant"] == ""
 
 
 def test_secret_changes_set_clear_and_reject_unknown():

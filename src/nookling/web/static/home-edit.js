@@ -99,7 +99,12 @@ export function renderEditor(app) {
       ? el("p", "muted small", "纸箱的功能跟着它的工具走：到「工具」页面给工具选一个功能，纸箱就拆开了。")
       : checkboxes(functionNames(d), piece.functions || [],
         (next) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { functions: next })));
-    out.push(section(`选中：${piece.name || type.name}`, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
+    let apps = null; // the computer: its chat apps' settings
+    if ((piece.functions || []).includes("chat.telegram")) {
+      apps = el("button", "", "Telegram 设置");
+      apps.onclick = () => openTelegram(app);
+    }
+    out.push(section(`选中：${piece.name || type.name}`, apps, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
       name, row, pic, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
   }
 
@@ -182,6 +187,75 @@ export function renderEditor(app) {
   roomRow.append(roomName, size, addRoom);
   out.push(section("房间", roomList, roomRow, el("p", "muted small", "只能删空的、不是卧室的房间；客厅有大门，不能删。")));
   return out;
+}
+
+// ---- the computer's Telegram: who may talk, which bots, the controller ----
+// Tokens are never shown: a field left empty keeps what is saved, typing replaces it.
+
+export async function openTelegram(app) {
+  let st;
+  try { st = await send("GET", "/api/state"); } catch (e) { say(e.message, true); return; }
+  const tg = JSON.parse(JSON.stringify(st.settings.apps.telegram));
+  const members = st.settings.participants;
+  const status = st.status.telegram;
+  const secrets = { bots: {} };
+  const body = el("div", "home-kind-editor");
+  const field = (label, input, hint) => {
+    const f = el("label", "home-field");
+    f.append(el("span", "muted small", label), input);
+    if (hint) f.append(el("span", "muted small", hint));
+    return f;
+  };
+  const tokenInput = (saved, set) => {
+    const i = el("input");
+    i.type = "password";
+    i.autocomplete = "off";
+    i.placeholder = saved ? `已设置（${saved}），留空不改` : "没设置";
+    i.oninput = () => set(i.value.trim());
+    return i;
+  };
+  const controller = el("select");
+  for (const m of members) { const o = el("option", "", `兼任：用「${m.name || m.id}」的 bot`); o.value = m.id; o.selected = tg.controller_participant === m.id; controller.append(o); }
+  const own = el("option", "", "单独的总控 bot");
+  own.value = "";
+  own.selected = !tg.controller_participant;
+  controller.append(own);
+  const controllerToken = field("总控 bot 的 token", tokenInput(st.secrets.controller_token, (v) => (secrets.controller_token = v)));
+  controllerToken.hidden = !!tg.controller_participant;
+  controller.onchange = () => { tg.controller_participant = controller.value; controllerToken.hidden = !!controller.value; };
+  const ids = (value) => value.split(/[\s,，]+/).filter(Boolean).map(Number);
+  const users = el("input");
+  users.value = tg.allowed_user_ids.join(", ");
+  const chats = el("input");
+  chats.value = tg.allowed_chat_ids.join(", ");
+  const bots = el("div", "home-edit-section");
+  bots.append(el("h3", "", "每个成员自己的 bot"));
+  for (const m of members) bots.append(field(m.name || m.id, tokenInput(st.secrets.bots[m.id], (v) => { if (v) secrets.bots[m.id] = v; else delete secrets.bots[m.id]; })));
+  const save = el("button", "primary", "保存");
+  save.onclick = async () => {
+    try {
+      const nextUsers = ids(users.value), nextChats = ids(chats.value);
+      if ([...nextUsers, ...nextChats].some((n) => !Number.isInteger(n))) throw new Error("ID 要写成数字，用逗号隔开");
+      const next = { ...tg, allowed_user_ids: nextUsers, allowed_chat_ids: nextChats };
+      if (JSON.stringify(next) !== JSON.stringify(st.settings.apps.telegram)) {
+        await send("PUT", "/api/settings", { ...st.settings, apps: { ...st.settings.apps, telegram: next } });
+      }
+      const changes = {};
+      if (secrets.controller_token) changes.controller_token = secrets.controller_token;
+      if (Object.keys(secrets.bots).length) changes.bots = secrets.bots;
+      if (Object.keys(changes).length) await send("PUT", "/api/secrets", changes);
+      app.modal.hidden = true;
+      say("Telegram 设置已保存");
+    } catch (e) { say(e.message, true); }
+  };
+  const warn = [status.privacy_warning ? "总控 bot 开着 privacy mode，收不到群里的普通消息。" : "",
+                status.reaction_warning ? "总控 bot 不是群管理员，收不到点赞和踩。" : ""].filter(Boolean).join(" ");
+  body.append(el("h2", "", "家里的电脑 · Telegram"),
+    el("p", "muted small", `状态：${status.state}${status.controller ? `（@${status.controller}）` : ""}${warn ? "。" + warn : ""}`),
+    field("谁来收消息", controller, "总控 bot 负责收群里的消息；成员各自的 bot 负责发。"), controllerToken,
+    field("允许的用户 ID", users, "第一个是主人，后面的是群友；逗号隔开"), field("允许的群 ID", chats),
+    bots, el("p", "muted small", "token 存在 secrets.json 里，不进 git。这些设置在「群聊规则」和「成员」里也能改。"), save);
+  app.showModal(body);
 }
 
 // A file picker that uploads a picture (PNG, JPG, WebP) and hands back its saved name.

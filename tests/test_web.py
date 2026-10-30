@@ -220,7 +220,7 @@ async def test_followups_and_chronicle(admin):
 
 async def test_group_upgrade_moves_everything(admin):
     rt = admin.runtime
-    settings = {**rt.settings, "telegram": {**rt.settings["telegram"], "allowed_chat_ids": [-5]}, "proactive": {"chat_id": -5}}
+    settings = {**rt.settings, "apps": {"telegram": {**rt.settings["apps"]["telegram"], "allowed_chat_ids": [-5]}}, "proactive": {"chat_id": -5}}
     await rt.apply(settings)
     room = rt.conversation("-5")
     room._append(Message("user", "主人", "升级前说的", (), 1.0))

@@ -634,7 +634,7 @@ function renameMember(m, next) {
   for (const g of ["bots", "api_keys"]) {
     if (old in pending[g]) { pending[g][next] = pending[g][old]; delete pending[g][old]; }
   }
-  if (draft.telegram.controller_participant === old) draft.telegram.controller_participant = next;
+  if (draft.apps.telegram.controller_participant === old) draft.apps.telegram.controller_participant = next;
   changed();
 }
 
@@ -644,7 +644,7 @@ function deleteMember(m) {
   delete pending.bots[m.id];
   delete pending.api_keys[m.id];
   newIds.delete(m.id);
-  if (draft.telegram.controller_participant === m.id) draft.telegram.controller_participant = "";
+  if (draft.apps.telegram.controller_participant === m.id) draft.apps.telegram.controller_participant = "";
   changed();
   renderAll();
 }
@@ -716,7 +716,7 @@ function parseIds(text, key, inputEl) {
 }
 
 function renderRules() {
-  const tg = draft.telegram;
+  const tg = draft.apps.telegram;
   const select = $("#controller-select");
   select.replaceChildren(
     ...draft.participants.map((p) => h("option", { value: p.id, selected: tg.controller_participant === p.id }, `兼任：使用「${p.name || p.id}」的 bot`)),
