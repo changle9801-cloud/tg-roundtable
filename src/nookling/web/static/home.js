@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { GLTFLoader } from "/static/vendor/GLTFLoader.js";
 import { RoomEnvironment } from "/static/vendor/RoomEnvironment.js";
-import { openTelegram, renderEditor, say, send } from "/static/home-edit.js";
+import { openTelegram, renderEditor, renderShelf, say, send } from "/static/home-edit.js";
 
 const POLL_MS = 5000;
 const STALE_SECONDS = 3 * 3600; // awake but nothing happened for this long: she is dimmed, not faked busy
@@ -331,6 +331,30 @@ const TEMPLATES = {
 
 const turnedSize = (size, turn) => (turn === 90 || turn === 270 ? [size[1], size[0]] : [size[0], size[1]]);
 
+// A piece's cells, counted from its room's corner.
+function pieceCells(piece, type) {
+  const [w, d] = turnedSize(type.size, piece.turn), out = [];
+  for (let i = 0; i < w; i++) for (let j = 0; j < d; j++) out.push([piece.at[0] + i, piece.at[1] + j]);
+  return out;
+}
+
+// The cells in front of a room's doors that furniture in the way must keep free (as furniture.door_cells).
+const DOOR_WIDTH = 3, DOOR_CLEAR = 2;
+function doorCells(r) {
+  const [w, d] = r.room.size, out = new Set();
+  for (const door of r.doors) {
+    const along = ["front", "back"].includes(door.wall) ? w : d;
+    const centre = ["front", "back"].includes(door.wall) ? (door.x - r.x) / CELL : (door.z - r.z) / CELL;
+    for (let i = 0; i < along; i++) {
+      if (!(i < centre + DOOR_WIDTH / 2 && i + 1 > centre - DOOR_WIDTH / 2)) continue;
+      for (let k = 0; k < DOOR_CLEAR; k++) {
+        out.add(cellKey(...{ front: [i, d - 1 - k], back: [i, k], left: [k, i], right: [w - 1 - k, i] }[door.wall]));
+      }
+    }
+  }
+  return out;
+}
+
 // Where a use puts a person, in house units, and the way she faces (degrees clockwise; 0 = +z).
 function useSpot(rect, piece, type, use) {
   const [w, d] = type.size;
@@ -592,7 +616,22 @@ class HomeApp {
     this.arranging = false;
     this.selectedPiece = "";
     this.view = 0; // the floor being looked at
-    this.stage.append(this.labelLayer, this.banner, this.arrangeBtn);
+    this.shelf = el("div", "home-shelf"); // the kinds of furniture, to drag into the house while arranging
+    this.shelf.hidden = true;
+    this.shelfTab = el("button", "home-shelf-tab", "家具 ›");
+    this.shelfTab.type = "button";
+    this.shelfTab.hidden = true;
+    this.shelfTab.onclick = () => this.toggleShelf(true);
+    this.shelfOpen = true;
+    this.stage.append(this.labelLayer, this.banner, this.arrangeBtn, this.shelf, this.shelfTab);
+    window.addEventListener("keydown", (e) => {
+      if ((e.key !== "r" && e.key !== "R") || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+      const drag = this.cardDrag?.moved ? this.cardDrag : this.drag;
+      if (!drag || !drag.last) return;
+      drag.turn = (drag.turn + 90) % 360;
+      if (drag === this.cardDrag) this.moveCard(drag.last); else this.moveDrag(drag.last);
+      e.preventDefault();
+    });
     const wrap = el("div", "home-wrap");
     wrap.append(this.stage, this.panel);
     root.append(wrap, this.modal);
@@ -800,6 +839,7 @@ class HomeApp {
         });
       }
     }
+    this.wells = wells;
     for (const lv of this.levels) if (this.Ls[lv]) this.walks[lv] = walkGrid(this.Ls[lv], data, wells[lv] || []);
     if (this.L) for (const d of this.L.doors) { // a mark on every door of the floor being viewed, for the floor-plan mode
       const along = d.line === "z";
@@ -907,6 +947,7 @@ class HomeApp {
     this.aimCamera();
     this.showHighlight();
     this.renderPanel();
+    this.renderShelf();
   }
 
   // ---- the floor-plan mode: move rooms, drag their edges, doors, draw new rooms ----
@@ -920,6 +961,7 @@ class HomeApp {
     this.showHighlight();
     this.editorKey = "";
     this.renderPanel();
+    this.renderShelf();
   }
 
   // What is under the pointer: a door mark, a room's edge (to resize), inside a room (to move), or empty ground.
@@ -1055,7 +1097,7 @@ class HomeApp {
     const type = piece && this.data.types[piece.type];
     if (!type) return;
     this.controls.enabled = false;
-    this.drag = { group: g, piece, type, room: piece.room, at: [...piece.at] };
+    this.drag = { group: g, piece, type, room: piece.room, at: [...piece.at], turn: piece.turn, reason: "" };
     this.selectedPiece = piece.id;
     this.showHighlight();
     this.renderPanel();
@@ -1064,26 +1106,247 @@ class HomeApp {
   moveDrag(e) {
     const { point } = this.groundAt(e);
     if (!point) return;
-    const r = Object.values(this.L.rects).find((q) => point.x >= q.x && point.x <= q.x + q.w && point.z >= q.z && point.z <= q.z + q.d);
-    if (!r) return;
-    const [tw, td] = turnedSize(this.drag.type.size, this.drag.piece.turn);
-    const cols = r.room.size[0], rows = r.room.size[1];
-    const at = [
-      Math.max(0, Math.min(cols - tw, Math.round((point.x - r.x) / CELL - tw / 2))),
-      Math.max(0, Math.min(rows - td, Math.round((point.z - r.z) / CELL - td / 2))),
-    ];
+    this.drag.last = e;
+    const spot = this.spotUnder(point, this.drag.type, this.drag.turn);
+    if (!spot) return;
+    const { r, at } = spot, [tw, td] = turnedSize(this.drag.type.size, this.drag.turn);
     this.drag.room = r.room.id;
     this.drag.at = at;
+    this.drag.reason = this.fitCheck({ ...this.drag.piece, room: r.room.id, at, turn: this.drag.turn }, this.drag.type);
     this.drag.group.position.set(r.x + (at[0] + tw / 2) * CELL, 0, r.z + (at[1] + td / 2) * CELL);
+    this.drag.group.rotation.y = (-this.drag.turn * Math.PI) / 180;
+    this.showGhost(this.drag.type, { ...this.drag.piece, room: r.room.id, at, turn: this.drag.turn }, !this.drag.reason, false);
     this.showHighlight();
   }
 
+  // The room under a point on the floor being viewed, and the cell a piece of this size would start at there.
+  spotUnder(point, type, turn) {
+    const r = Object.values(this.L.rects).find((q) => point.x >= q.x && point.x <= q.x + q.w && point.z >= q.z && point.z <= q.z + q.d);
+    if (!r) return null;
+    const [tw, td] = turnedSize(type.size, turn);
+    const [cols, rows] = r.room.size;
+    return { r, at: [Math.max(0, Math.min(cols - tw, Math.round((point.x - r.x) / CELL - tw / 2))),
+                     Math.max(0, Math.min(rows - td, Math.round((point.z - r.z) / CELL - td / 2)))] };
+  }
+
+  // The checks the server makes (furniture.check and the stairwell checks), so a piece being dragged
+  // can show green or red before it is let go. The server still checks again when it is saved.
+  fitCheck(piece, type) {
+    const r = this.rects[piece.room];
+    if (!r) return "这里没有房间";
+    const [tw, td] = turnedSize(type.size, piece.turn), [cols, rows] = r.room.size;
+    if (piece.at[0] < 0 || piece.at[1] < 0 || piece.at[0] + tw > cols || piece.at[1] + td > rows) return `${type.name}放不下：超出了${r.room.name}`;
+    const lv = this.levelOf[piece.room] ?? 0, [ax, az] = r.room.at;
+    const house = (p, t) => pieceCells(p, t).map(([x, z]) => [ax + x, az + z]);
+    const mine = house(piece, type);
+    if (type.blocks) {
+      const doors = doorCells(r);
+      if (pieceCells(piece, type).some(([x, z]) => doors.has(cellKey(x, z)))) return `${type.name}挡住门了`;
+      const taken = new Set(mine.map(([x, z]) => cellKey(x, z)));
+      for (const o of this.data.pieces) {
+        const ot = this.data.types[o.type];
+        if (o.id === piece.id || o.room !== piece.room || !ot?.blocks) continue;
+        if (house(o, ot).some(([x, z]) => taken.has(cellKey(x, z)))) return `${type.name}和${o.name || ot.name}叠在一起了`;
+      }
+      const wells = new Set(lv > 0 ? this.wells?.[lv] || [] : []);
+      if (mine.some(([x, z]) => wells.has(cellKey(x, z)))) return "这里是楼梯口，不能摆东西";
+    }
+    if (piece.type === "base/stairs") {
+      if (!this.levels.includes(lv + 1)) return "楼上还没有这一层，先加一层";
+      const above = Object.values(this.Ls[lv + 1]?.rects || {});
+      const inside = ([x, z]) => above.some((q) => q.room.at[0] <= x && x < q.room.at[0] + q.room.size[0] && q.room.at[1] <= z && z < q.room.at[1] + q.room.size[1]);
+      if (!mine.every(inside)) return "楼梯上面要有房间或走廊接着";
+      const well = new Set(mine.map(([x, z]) => cellKey(x, z)));
+      for (const o of this.data.pieces) {
+        const ot = this.data.types[o.type], q = this.Ls[lv + 1]?.rects[o.room];
+        if (!q || !ot?.blocks || o.id === piece.id) continue;
+        if (pieceCells(o, ot).some(([x, z]) => well.has(cellKey(q.room.at[0] + x, q.room.at[1] + z)))) return "楼上楼梯口的位置摆着东西，先挪开";
+      }
+    }
+    return "";
+  }
+
+  // What is being dragged, see-through, with a green or red plate under it: green fits, red does not.
+  showGhost(type, piece, ok, body) {
+    if (!this.ghost) {
+      this.ghost = new THREE.Group();
+      this.scene.add(this.ghost);
+    }
+    const r = this.rects[piece.room];
+    const key = body ? `${type.id}:${piece.turn}:${type.color}:${JSON.stringify(type.size)}` : `plate:${JSON.stringify(type.size)}:${piece.turn}`;
+    if (this.ghost.userData.key !== key) {
+      this.ghost.clear();
+      this.ghost.userData.key = key;
+      const [tw, td] = turnedSize(type.size, piece.turn);
+      if (body) {
+        const g = drawPiece(this.ghost, { x: 0, z: 0 }, { id: "ghost", at: [0, 0], turn: piece.turn, color: null, functions: [] }, type, [], new Set());
+        g.traverse((o) => {
+          if (!o.material) return;
+          const seeThrough = (m) => Object.assign(m.clone(), { transparent: true, opacity: 0.6 });
+          o.material = Array.isArray(o.material) ? o.material.map(seeThrough) : seeThrough(o.material);
+        });
+      }
+      this.ghostPlate = box(tw * CELL, 0.03, td * CELL, 0x43a047, (tw * CELL) / 2, 0.02, (td * CELL) / 2);
+      this.ghostPlate.material.transparent = true;
+      this.ghostPlate.material.opacity = 0.55;
+      this.ghost.add(this.ghostPlate);
+    }
+    this.ghostPlate.material.color.set(ok ? 0x43a047 : 0xe53935);
+    this.ghost.position.set(r.x + piece.at[0] * CELL, (this.levelOf[piece.room] ?? 0) * STOREY, r.z + piece.at[1] * CELL);
+    this.ghost.visible = true;
+  }
+
+  hideGhost() {
+    if (this.ghost) this.ghost.visible = false;
+  }
+
+  // ---- the shelf: the kinds of furniture on the left, dragged into the house ----
+
+  toggleShelf(open) {
+    this.shelfOpen = open;
+    this.renderShelf();
+  }
+
+  renderShelf() {
+    const on = this.arranging && !this.planMode && this.data;
+    this.shelf.hidden = !on || !this.shelfOpen;
+    this.shelfTab.hidden = !on || this.shelfOpen;
+    if (this.stage.classList.contains("shelf-open") !== !this.shelf.hidden) {
+      this.stage.classList.toggle("shelf-open", !this.shelf.hidden);
+      this.resize();
+    }
+    if (!on) return;
+    const key = JSON.stringify(this.data.types);
+    if (key !== this.shelfKey || !this.shelf.childElementCount) {
+      this.shelfKey = key;
+      this.shelf.replaceChildren(...renderShelf(this));
+    }
+  }
+
+  // A card pressed: dragged out it becomes a piece where it is let go; just clicked, it goes into a room's first free spot.
+  cardDown(e, type) {
+    if (e.button) return;
+    const card = e.currentTarget, start = [e.clientX, e.clientY];
+    try { card.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
+    this.cardDrag = { type, turn: 0, piece: null, reason: "", moved: false, last: null };
+    const move = (ev) => {
+      const drag = this.cardDrag;
+      if (!drag) return;
+      if (!drag.moved && Math.hypot(ev.clientX - start[0], ev.clientY - start[1]) < 6) return;
+      drag.moved = true;
+      this.moveCard(ev);
+    };
+    const up = async (ev) => {
+      card.removeEventListener("pointermove", move);
+      card.removeEventListener("pointerup", up);
+      card.removeEventListener("pointercancel", up);
+      const drag = this.cardDrag;
+      this.cardDrag = null;
+      this.hideGhost();
+      if (!drag) return;
+      if (!drag.moved) return this.putKind(type);
+      if (ev.type === "pointercancel" || !drag.piece) return;
+      if (drag.reason) { say(drag.reason, true); return; }
+      try {
+        const piece = await send("POST", "/api/home/pieces", { type: type.id, room: drag.piece.room, at: drag.piece.at, turn: drag.piece.turn });
+        this.selectedPiece = piece.id;
+      } catch (err) { say(err.message, true); }
+      this.layoutKey = "";
+      this.editorKey = "";
+      await this.poll();
+    };
+    card.addEventListener("pointermove", move);
+    card.addEventListener("pointerup", up);
+    card.addEventListener("pointercancel", up);
+  }
+
+  moveCard(ev) {
+    const drag = this.cardDrag;
+    drag.last = ev;
+    const over = document.elementFromPoint(ev.clientX, ev.clientY);
+    const { point } = over === this.renderer.domElement ? this.groundAt(ev) : {};
+    const spot = point && this.spotUnder(point, drag.type, drag.turn);
+    if (!spot) { drag.piece = null; this.hideGhost(); return; }
+    drag.piece = { id: "", type: drag.type.id, room: spot.r.room.id, at: spot.at, turn: drag.turn };
+    drag.reason = this.fitCheck(drag.piece, drag.type);
+    this.showGhost(drag.type, drag.piece, !drag.reason, true);
+  }
+
+  // Just clicked: into the selected piece's room, or the living room, or the first room of the floor being viewed.
+  async putKind(type) {
+    const d = this.data, lv = this.view || 0;
+    const sel = d.pieces.find((p) => p.id === this.selectedPiece);
+    const onFloor = d.rooms.filter((r) => (r.level ?? 0) === lv);
+    const room = (sel && (this.levelOf[sel.room] ?? 0) === lv && sel.room)
+      || (lv === 0 && onFloor.some((r) => r.id === "living") && "living")
+      || (onFloor.find((r) => r.kind !== "hall") || onFloor[0])?.id;
+    if (!room) { say("这一层还没有房间", true); return; }
+    try { this.selectedPiece = (await send("POST", "/api/home/pieces", { type: type.id, room })).id; } catch (err) { say(err.message, true); }
+    this.layoutKey = "";
+    this.editorKey = "";
+    await this.poll();
+  }
+
+  // A small still picture of a kind of furniture, for the shelf; kept in the browser until the kind's look changes.
+  thumb(type) {
+    const key = "nookling-thumb:" + JSON.stringify([type.template, type.size, type.height, type.color, type.model]);
+    this.thumbs ||= new Map();
+    if (!this.thumbs.has(key)) {
+      let saved = null;
+      try { saved = localStorage.getItem(key); } catch { /* no storage here: draw it every time */ }
+      this.thumbs.set(key, saved ? Promise.resolve(saved) : (this.thumbQueue = (this.thumbQueue || Promise.resolve()).then(() => this.drawThumb(type)).then((url) => {
+        try { localStorage.setItem(key, url); } catch { /* full or blocked: fine */ }
+        return url;
+      })));
+    }
+    return this.thumbs.get(key);
+  }
+
+  async drawThumb(type) {
+    if (!this.thumbScene) {
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+      renderer.setPixelRatio(2);
+      renderer.setSize(120, 90, false);
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a99f, 1.6));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+      sun.position.set(-4, 8, 6);
+      scene.add(sun);
+      const holder = new THREE.Group();
+      scene.add(holder);
+      this.thumbScene = { renderer, scene, holder, camera: new THREE.OrthographicCamera(-1, 1, 1, -1, -50, 50) };
+    }
+    const { renderer, scene, holder, camera } = this.thumbScene;
+    holder.clear();
+    const t = { ...type, model: null };
+    const W = type.size[0] * CELL, D = type.size[1] * CELL, H = Math.max(0.05, type.height || 0.5);
+    if (type.model) {
+      try {
+        const g = new THREE.Group();
+        g.add(fitModel(await loadModel(type.model.file), W, D, H, type.model));
+        holder.add(g);
+      } catch { drawPiece(holder, { x: 0, z: 0 }, { id: "thumb", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set()); }
+    } else {
+      drawPiece(holder, { x: 0, z: 0 }, { id: "thumb", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set());
+    }
+    holder.children[0].position.set(0, 0, 0);
+    const reach = Math.max(W, D, H) * 0.62 + 0.15;
+    camera.left = -reach * 4 / 3; camera.right = reach * 4 / 3; camera.top = reach; camera.bottom = -reach;
+    camera.position.set(4, 3.4 + H / 2, 4);
+    camera.lookAt(0, H / 2, 0);
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+    return renderer.domElement.toDataURL("image/webp", 0.85);
+  }
+
   async endDrag() {
-    const { piece, room, at } = this.drag;
+    const { piece, room, at, turn, reason } = this.drag;
     this.drag = null;
     this.controls.enabled = true;
-    if (room !== piece.room || at[0] !== piece.at[0] || at[1] !== piece.at[1]) {
-      try { await send("PUT", `/api/home/pieces/${piece.id}`, { room, at }); } catch (err) { say(err.message, true); }
+    this.hideGhost();
+    if (room !== piece.room || at[0] !== piece.at[0] || at[1] !== piece.at[1] || turn !== piece.turn) {
+      if (reason) say(reason, true);
+      else try { await send("PUT", `/api/home/pieces/${piece.id}`, { room, at, turn }); } catch (err) { say(err.message, true); }
       this.layoutKey = ""; // redraw from what was saved, which puts a refused piece back
     }
     await this.poll();
@@ -1099,7 +1362,7 @@ class HomeApp {
       this.scene.add(outline);
       return;
     }
-    const g = this.arranging && this.furniture.children.find((c) => c.userData.pieceId === this.selectedPiece);
+    const g = this.arranging && this.furnitureLevels?.[this.view || 0]?.children.find((c) => c.userData.pieceId === this.selectedPiece);
     if (!g) return;
     this.highlight = new THREE.BoxHelper(g, 0xf0a020);
     this.scene.add(this.highlight);
@@ -1211,6 +1474,7 @@ class HomeApp {
     }
     if (this.renderer) this.place(data);
     this.renderPanel();
+    this.renderShelf();
   }
 
   place(data) {
@@ -1272,6 +1536,8 @@ class HomeApp {
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     const aspect = w / h;
+    // The shelf covers the left of the picture while arranging: fit the house into what is left beside it.
+    const covered = this.shelf && !this.shelf.hidden ? Math.min(this.shelf.offsetWidth + 12, w * 0.6) : 0;
     let view = 14;
     if (this.bounds) {
       // Fit the whole house: the corners of the ground, seen from the camera, decide the frame.
@@ -1285,9 +1551,10 @@ class HomeApp {
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));
       }
-      view = Math.max(halfY, halfX / aspect) * 1.04;
+      view = Math.max(halfY, (halfX * h) / (w - covered)) * 1.04;
     }
-    this.camera.left = -view * aspect; this.camera.right = view * aspect;
+    const shift = (covered / h) * view; // half the covered width, in units
+    this.camera.left = -view * aspect - shift; this.camera.right = view * aspect - shift;
     this.camera.top = view; this.camera.bottom = -view;
     this.camera.updateProjectionMatrix();
   }

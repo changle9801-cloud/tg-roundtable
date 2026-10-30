@@ -56,6 +56,57 @@ function section(title, ...children) {
   return s;
 }
 
+// The shelf on the left while arranging: every kind of furniture as a card, by group, with a search box.
+const SHELF_GROUPS = ["我做的", "客厅", "卧室", "书房", "厨房", "娱乐", "装饰", "储物间", "楼梯", "其他"];
+
+export function renderShelf(app) {
+  const search = el("input");
+  search.type = "search";
+  search.placeholder = "找家具";
+  search.value = app.shelfQuery || "";
+  const close = el("button", "", "‹");
+  close.type = "button";
+  close.title = "收起";
+  close.onclick = () => app.toggleShelf(false);
+  const head = el("div", "home-shelf-head");
+  head.append(search, close);
+  const list = el("div", "home-shelf-list");
+  const kinds = Object.values(app.data.types).filter((t) => t.id !== "base/parcel");
+  const fill = () => {
+    const q = search.value.trim().toLowerCase();
+    const groups = new Map(SHELF_GROUPS.map((g) => [g, []]));
+    for (const t of kinds) {
+      if (q && !`${t.name} ${(t.tags || []).join(" ")}`.toLowerCase().includes(q)) continue;
+      const g = t.id.startsWith("mine/") ? "我做的" : (t.tags || []).find((x) => groups.has(x)) || "其他";
+      groups.get(g).push(t);
+    }
+    const out = [];
+    for (const [name, ts] of groups) {
+      if (!ts.length) continue;
+      const cards = el("div", "home-cards");
+      for (const t of ts) {
+        const card = el("button", "home-card");
+        card.type = "button";
+        card.title = `${t.name}：拖到房间里，或点一下放进去`;
+        const img = el("img");
+        img.alt = "";
+        img.draggable = false;
+        app.thumb(t).then((url) => { img.src = url; }).catch(() => {});
+        card.append(img, el("span", "", t.name + ((t.functions || []).length ? " ⚡" : "")),
+          el("span", "muted", `${t.size[0]}×${t.size[1]} 格`));
+        card.onpointerdown = (e) => app.cardDown(e, t);
+        cards.append(card);
+      }
+      out.push(el("h4", "", name), cards);
+    }
+    if (!out.length) out.push(el("p", "muted small", "没有找到。"));
+    list.replaceChildren(...out);
+  };
+  search.oninput = () => { app.shelfQuery = search.value; fill(); };
+  fill();
+  return [head, list, el("p", "home-shelf-hint muted small", "拖到房间里放下，绿的放得下、红的放不下；拖的时候按 R 转向。点一下：放进选中家具所在的房间。")];
+}
+
 export function renderEditor(app) {
   const d = app.data;
   const rooms = Object.fromEntries(d.rooms.map((r) => [r.id, r]));
@@ -71,7 +122,7 @@ export function renderEditor(app) {
     await app.poll();
   };
   if (app.planMode) return [el("h2", "", "布置"), modes, ...planPanel(app, d, act)];
-  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "拖动家具换位置，点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
+  const out = [el("h2", "", "布置"), modes, el("p", "muted small", "从左边的家具栏拖家具进来。拖动摆着的家具换位置（按 R 转向），点一下选中它。放不下、挡门、叠在一起的会被退回原处。")];
 
   // ---- the selected piece ----
   const piece = d.pieces.find((p) => p.id === app.selectedPiece);
@@ -115,29 +166,6 @@ export function renderEditor(app) {
     out.push(section(`选中：${piece.name || type.name}`, apps, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
       name, row, pic, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
   }
-
-  // ---- adding a piece ----
-  const kind = el("select");
-  const groups = { 内置: [], 我做的: [] };
-  for (const t of Object.values(d.types)) if (t.id !== "base/parcel") groups[t.id.startsWith("mine/") ? "我做的" : "内置"].push(t);
-  for (const [label, list] of Object.entries(groups)) {
-    if (!list.length) continue;
-    const g = el("optgroup");
-    g.label = label;
-    for (const t of list) { const o = el("option", "", t.name); o.value = t.id; g.append(o); }
-    kind.append(g);
-  }
-  if (app.addKind) kind.value = app.addKind;
-  kind.onchange = () => (app.addKind = kind.value);
-  const into = el("select");
-  for (const r of d.rooms) { const o = el("option", "", r.name); o.value = r.id; into.append(o); }
-  if (app.addRoom) into.value = app.addRoom;
-  into.onchange = () => (app.addRoom = into.value);
-  const add = el("button", "", "放进去");
-  add.onclick = () => act(async () => { app.selectedPiece = (await send("POST", "/api/home/pieces", { type: kind.value, room: into.value })).id; });
-  const addRow = el("div", "home-look");
-  addRow.append(kind, into, add);
-  out.push(section("添加家具", addRow));
 
   // ---- the owner's own kinds ----
   const mine = Object.values(d.types).filter((t) => t.id.startsWith("mine/"));

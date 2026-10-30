@@ -770,9 +770,10 @@ class Home:
             w, d = room["size"]
             for z in range(d):
                 for x in range(w):
+                    piece = {"id": "", "type": type_id, "room": rid, "at": [x, z], "turn": 0}
                     try:
-                        furniture.check({"id": "", "type": type_id, "room": rid, "at": [x, z], "turn": 0},
-                                        self.checked_room(rid), self.all_types(), self.pieces or [])
+                        furniture.check(piece, self.checked_room(rid), self.all_types(), self.pieces or [])
+                        self._check_floors(piece, self.pieces or [])
                     except PlacementError:
                         continue
                     return rid, (x, z)

@@ -98,3 +98,13 @@ async def test_the_page_can_add_floors_and_draw_upstairs(admin):  # noqa: F811
     assert [f["level"] for f in view["floors"]] == [0, 1]
     refused = await admin.delete("/api/home/floors/1", headers=h)
     assert refused.status == 400  # it has a room
+
+
+def test_a_new_piece_never_lands_on_a_stairwell(tmp_path):
+    home = house(tmp_path)
+    home.add_floor()
+    landing = home.add_room("楼梯间", [3, 6], at=[6, 17], level=1)  # exactly over the stairs, all stairwell
+    home.place(dict(STUDY_STAIRS))
+    with pytest.raises(PlacementError, match="放不下了"):
+        home.put("base/beanbag", landing["id"])
+    assert home.put("base/rug-small", landing["id"])["at"] == [0, 0]  # a rug does not block: it may lie there

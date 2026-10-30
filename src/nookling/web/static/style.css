@@ -438,6 +438,33 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px;
 }
 .home-floors button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.home-shelf {
+  position: absolute; left: 12px; top: 12px; bottom: 12px; width: min(220px, 46%); z-index: 3;
+  display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+}
+.home-shelf[hidden], .home-shelf-tab[hidden] { display: none; }
+.home-shelf-head { display: flex; gap: 6px; padding: 8px; }
+.home-shelf-head input { flex: 1; min-width: 0; }
+.home-shelf-list { flex: 1; overflow: auto; padding: 0 8px; }
+.home-shelf-list h4 { font-size: 12px; color: var(--muted); margin: 8px 0 4px; font-weight: 600; }
+.home-shelf-hint { padding: 6px 8px 8px; margin: 0; border-top: 1px solid var(--border); }
+.home-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.home-card {
+  display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text);
+  font: inherit; font-size: 12px; cursor: grab; touch-action: none; user-select: none;
+}
+.home-card:hover { border-color: var(--accent); }
+.home-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; }
+.home-card span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-card .muted { font-size: 11px; }
+.home-shelf-tab {
+  position: absolute; left: 12px; top: 12px; z-index: 3; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit;
+}
+.home-stage.shelf-open .home-floors { left: calc(min(220px, 46%) + 24px); }
+.home-stage:has(.home-shelf-tab:not([hidden])) .home-floors { top: 52px; }
 .home-arrange.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .home-edit-section { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
 .home-edit-section h3 { font-size: 14px; margin: 0 0 6px; }

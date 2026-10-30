@@ -61,10 +61,10 @@ BUILTIN_TYPES = {t["id"]: t for t in (
     _type("computer", "家里的电脑", "computer-desk", (3, 3), 0.72, "#90a4ae",
           uses=[_sit(1.5, 2.2, 180)], functions=["chat.telegram"], tags=["客厅"]),
 )}
-COMPUTER = ("living", (0, 6), 270)
+COMPUTER = ("living", (0, 6), 270)  # where the house computer goes: against the living room's left wall
 STOREY = 3.0  # units between one floor and the next
 # Stairs: you get on at the front (local +z, the bottom step) and off at the back, one floor up.
-BUILTIN_TYPES["base/stairs"] = _type("stairs", "楼梯", "stairs", (3, 6), STOREY, "#a1887f", tags=["楼梯"])  # where the house computer goes: against the living room's left wall
+BUILTIN_TYPES["base/stairs"] = _type("stairs", "楼梯", "stairs", (3, 6), STOREY, "#a1887f", tags=["楼梯"])
 
 # Rooms as first drawn: id, name, icon, size in cells, doors (wall, optional centre cell).
 SHARED_ROOMS = (
