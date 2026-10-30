@@ -7,8 +7,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from roundtable.prompts import DEFAULT_SYSTEM_PROMPT
-from roundtable.settings import resolve_data_dir
+from nookling.prompts import DEFAULT_SYSTEM_PROMPT
+from nookling.settings import resolve_data_dir
 
 
 def apply(data_dir: Path) -> Path | None:

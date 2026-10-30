@@ -9,17 +9,17 @@ import textwrap
 import pytest
 from test_web import admin, login  # noqa: F401  (fixture)
 
-from roundtable.config import ConfigError, ParticipantConfig
-from roundtable.participants import SessionStore
-from roundtable.participants.claude_cli import ClaudeCLI
-from roundtable.participants.codex_cli import CodexCLI
-from roundtable.participants.grok_cli import GrokCLI
-from roundtable.prompts import build_browse_prompt
-from roundtable.runtime import Runtime
-from roundtable.settings import (
+from nookling.config import ConfigError, ParticipantConfig
+from nookling.participants import SessionStore
+from nookling.participants.claude_cli import ClaudeCLI
+from nookling.participants.codex_cli import CodexCLI
+from nookling.participants.grok_cli import GrokCLI
+from nookling.prompts import build_browse_prompt
+from nookling.runtime import Runtime
+from nookling.settings import (
     SettingsStore, apply_secret_changes, build_config, masked_secrets, normalize_settings, prune_secrets,
 )
-from roundtable.tools import (
+from nookling.tools import (
     ToolServer, claude_allowed, claude_config, codex_overrides, grok_config, grok_rules, list_tools,
     normalize_tool, tools_for,
 )

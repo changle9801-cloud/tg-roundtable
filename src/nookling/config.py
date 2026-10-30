@@ -117,6 +117,7 @@ class Config:
     system_template: str = ""  # empty: use the built-in group chat prompt
     scene: str = ""  # shared setting for the whole group, e.g. "you are housemates"
     no_coding: bool = True  # everyday chat only: decline programming help
+    owner_name: str = "主人"  # what the members call the owner
     proactive_chat_id: int = 0  # group for proactive posts; 0 = the most recently active one
     # Pictures: "help" (members who can see get them, the others ask a friend), "auto" or a member id
     # (that member describes every picture for everyone first), or "off".

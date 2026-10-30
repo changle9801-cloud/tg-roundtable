@@ -785,7 +785,7 @@ function renderRules() {
 function renderAffinity(r) {
   r.affinity ||= {};
   const members = draft.participants.filter((p) => p.enabled);
-  const columns = [{ id: "user", name: "阿明" }, ...members];
+  const columns = [{ id: "user", name: draft.prompts.owner_name || "主人" }, ...members];
   const cell = (row, col) => {
     if (row.id === col.id) return h("td", { class: "muted" }, "—");
     const key = `aff-${row.id}-${col.id}`;
@@ -816,6 +816,9 @@ function renderAffinity(r) {
 // ---------- prompts ----------
 
 function renderPrompts() {
+  const ownerName = $("#prompt-owner-name");
+  ownerName.value = draft.prompts.owner_name || "";
+  ownerName.oninput = (e) => { draft.prompts.owner_name = e.target.value; changed(); schedulePreview(); };
   const scene = $("#prompt-scene");
   scene.value = draft.prompts.scene || "";
   scene.oninput = (e) => { draft.prompts.scene = e.target.value; changed(); schedulePreview(); };
@@ -2069,7 +2072,7 @@ function renderStatus(s) {
       m.routine ? h("span", { class: "muted small" }, m.routine) : null,
       h("span", { class: "msg" }, m.state === "disabled" ? "已停用" : m.message))) : [h("div", { class: "muted" }, "还没有成员")]));
 
-  const rooms = s.rooms || [];
+  const rooms = s.conversations || [];
   $("#status-rooms").replaceChildren(...(rooms.length ? rooms.map((r) =>
     h("div", { class: "room" },
       h("div", { class: "row-between" },
@@ -2141,7 +2144,7 @@ function urgesPanel(r) {
 async function roomAction(key, action) {
   if (action === "reset" && !confirm("清空这个群里所有模型的记忆？")) return;
   try {
-    renderStatus(await api("POST", `/api/rooms/${encodeURIComponent(key)}/${action}`));
+    renderStatus(await api("POST", `/api/conversations/${encodeURIComponent(key)}/${action}`));
   } catch (e) {
     toast(e.message, true);
   }

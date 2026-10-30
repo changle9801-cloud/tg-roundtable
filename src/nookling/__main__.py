@@ -21,7 +21,7 @@ LEGACY_CONFIG = Path("config.toml")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="roundtable", description="Telegram 多模型群聊")
+    parser = argparse.ArgumentParser(prog="nookling", description="Nookling（小窝）：住在你电脑里的 AI 之家")
     parser.add_argument(
         "--data-dir", type=Path,
         help=f"配置和数据的存放目录（默认读取环境变量 {DATA_DIR_ENV}，未设置时为 {default_data_dir()}）",
@@ -113,7 +113,7 @@ async def serve(store: SettingsStore, port: int | None, open_browser: bool, log_
         webbrowser.open(url)
     try:
         await runtime.start()
-        await asyncio.gather(runtime.telegram_loop(), runtime.proactive_loop())
+        await asyncio.gather(runtime.telegram.run(), runtime.proactive_loop())
     finally:
         await runtime.shutdown()
         await runner.cleanup()

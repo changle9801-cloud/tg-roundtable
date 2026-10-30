@@ -1,4 +1,4 @@
-from roundtable.home import Home, bedroom
+from nookling.home import Home, bedroom
 
 MEMBERS = {"codex": "Codex", "grok": "Grok", "xiaolin": "小林"}
 
@@ -77,7 +77,7 @@ def test_she_hears_once_which_days_of_her_diary_were_read(tmp_path):
     assert len(home.diary_reads) == 1
     assert home.tell("grok") == ""
     line = home.tell("codex")
-    assert "10 月 29 日" in line and "阿明" in line
+    assert "10 月 29 日" in line and "主人" in line
     assert home.tell("codex") == ""  # only once
     clock.t += 3600
     home.read_diary("codex", "2026-10-29")  # a later read is a new one
@@ -152,16 +152,16 @@ def test_opening_a_day_of_her_diary_is_reading_it_and_she_hears_once(tmp_path):
     opened = r.diary_book("claude", day)
     assert opened["entries"] and opened["entries"][0]["member"] == "claude"
     prompt = "[群聊新消息]\nOrion: 今天干嘛了\n[/群聊新消息]"
-    assert "阿明翻了你" not in r._chat_context(r._member("codex").cfg, prompt)
-    assert "阿明翻了你" in r._chat_context(r._member("claude").cfg, prompt)
-    assert "阿明翻了你" not in r._chat_context(r._member("claude").cfg, prompt)
+    assert "主人翻了你" not in r._chat_context(r._member("codex").cfg, prompt)
+    assert "主人翻了你" in r._chat_context(r._member("claude").cfg, prompt)
+    assert "主人翻了你" not in r._chat_context(r._member("claude").cfg, prompt)
     assert "翻了哪天的，你都会知道" in r.system_prompt_for(r._member("claude").cfg)
 
 
 async def test_she_picks_her_own_look_from_the_list(tmp_path):
     from test_life import runtime
     import pytest
-    from roundtable.config import ConfigError
+    from nookling.config import ConfigError
     r = runtime(tmp_path)
     replies = ['{"color":"#123456","accessory":"bow","why":"想可爱一点"}', '{"color":"#123456","accessory":"crown"}']
 

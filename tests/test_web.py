@@ -6,10 +6,10 @@ import socket
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
-from roundtable.transcript import Message
-from roundtable.web.server import COOKIE, make_app
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
+from nookling.transcript import Message
+from nookling.web.server import COOKIE, make_app
 
 
 def free_port() -> int:
@@ -144,10 +144,10 @@ async def test_sticker_upload_rejects_other_files(admin):
 async def test_memory_crud(admin):
     await login(admin)
     headers = {"Origin": admin.origin}
-    resp = await admin.post("/api/memory", json={"text": "阿明在杭州", "scope": "all"}, headers=headers)
+    resp = await admin.post("/api/memory", json={"text": "主人在杭州", "scope": "all"}, headers=headers)
     assert resp.status == 200
     fact = (await resp.json())["memory"][0]
-    assert (await admin.post("/api/memory", json={"text": "阿明在杭州"}, headers=headers)).status == 400
+    assert (await admin.post("/api/memory", json={"text": "主人在杭州"}, headers=headers)).status == 400
 
     resp = await admin.put(f"/api/memory/{fact['id']}", json={"enabled": False}, headers=headers)
     assert (await resp.json())["memory"][0]["enabled"] is False
@@ -157,7 +157,7 @@ async def test_memory_crud(admin):
 
 async def test_chat_listing_and_reset(admin):
     await login(admin)
-    room = admin.runtime.room("-100")
+    room = admin.runtime.conversation("-100")
     room.messages.clear()
     room._append(Message("user", "me", "hi", (), 1.0))
     chats = (await (await admin.get("/api/chats")).json())["chats"]
@@ -195,7 +195,7 @@ async def test_member_without_key_shows_error_in_status(admin):
 async def test_followups_and_chronicle(admin):
     await login(admin)
     headers = {"Origin": admin.origin}
-    body = {"text": "阿明面试，问问结果", "due": "2026-10-27 18:00"}
+    body = {"text": "主人面试，问问结果", "due": "2026-10-27 18:00"}
     assert (await admin.post("/api/followups", json=body, headers=headers)).status == 400  # no group yet
     admin.runtime.proactive_chat = lambda: "-100"
     assert (await admin.post("/api/followups", json={**body, "due": "2020-01-01"}, headers=headers)).status == 400
@@ -206,8 +206,8 @@ async def test_followups_and_chronicle(admin):
     item = (await resp.json())["followups"][0]
     assert item["chat"] == "-100" and item["status"] == "pending"
     assert (await admin.post("/api/followups", json=body, headers=headers)).status == 400  # already noted
-    resp = await admin.put(f"/api/followups/{item['id']}", json={"text": "阿明面试结果"}, headers=headers)
-    assert (await resp.json())["followups"][0]["text"] == "阿明面试结果"
+    resp = await admin.put(f"/api/followups/{item['id']}", json={"text": "主人面试结果"}, headers=headers)
+    assert (await resp.json())["followups"][0]["text"] == "主人面试结果"
     resp = await admin.delete(f"/api/followups/{item['id']}", headers=headers)
     assert (await resp.json())["followups"] == []
 
@@ -222,8 +222,8 @@ async def test_group_upgrade_moves_everything(admin):
     rt = admin.runtime
     settings = {**rt.settings, "telegram": {**rt.settings["telegram"], "allowed_chat_ids": [-5]}, "proactive": {"chat_id": -5}}
     await rt.apply(settings)
-    room = rt.room("-5")
-    room._append(Message("user", "阿明", "升级前说的", (), 1.0))
+    room = rt.conversation("-5")
+    room._append(Message("user", "主人", "升级前说的", (), 1.0))
     rt.sessions.set("-5", "grok", "abc")
     history = admin.data_dir / "work" / "ds" / "history"
     history.mkdir(parents=True)
@@ -235,6 +235,6 @@ async def test_group_upgrade_moves_everything(admin):
     assert await rt.migrate_chat(-5, -1009)
     assert not await rt.migrate_chat(-5, -1009)  # Telegram tells both groups; once is enough
     assert rt.config.telegram.allowed_chat_ids == [-1009] and rt.config.proactive_chat_id == -1009
-    assert [m.text for m in rt.room("-1009").messages] == ["升级前说的"]
+    assert [m.text for m in rt.conversation("-1009").messages] == ["升级前说的"]
     assert rt.sessions.get("-1009", "grok") == "abc" and rt.sessions.get("-5", "grok") is None
     assert (history / "-1009.json").exists() and item.chat == "-1009"

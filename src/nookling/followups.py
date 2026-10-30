@@ -44,7 +44,7 @@ INSTRUCTIONS = (
 @dataclass
 class FollowUp:
     id: str
-    text: str  # what to ask about, e.g. "阿明今天面试，问问结果"
+    text: str  # what to ask about, e.g. "主人今天面试，问问结果"
     due: float  # when to ask (unix time)
     chat: str  # the chat it came from
     noted_by: str  # member id

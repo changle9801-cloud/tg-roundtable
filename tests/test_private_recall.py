@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from roundtable.config import ParticipantConfig
-from roundtable.life import LifeStore
-from roundtable.participants.api import OpenAICompatAPI
-from roundtable.participants.base import SessionStore
-from roundtable.participants.claude_cli import ClaudeCLI
-from roundtable.participants.codex_cli import CodexCLI
-from roundtable.participants.grok_cli import GrokCLI
+from nookling.config import ParticipantConfig
+from nookling.life import LifeStore
+from nookling.participants.api import OpenAICompatAPI
+from nookling.participants.base import SessionStore
+from nookling.participants.claude_cli import ClaudeCLI
+from nookling.participants.codex_cli import CodexCLI
+from nookling.participants.grok_cli import GrokCLI
 from test_life import runtime
 
 
@@ -46,11 +46,11 @@ def test_older_relevant_private_talk_survives_more_than_four_new_threads(tmp_pat
 
 
 @pytest.mark.parametrize('kind,cls,module,output', [
-    ('claude_cli', ClaudeCLI, 'roundtable.participants.claude_cli',
+    ('claude_cli', ClaudeCLI, 'nookling.participants.claude_cli',
      {'type': 'result', 'session_id': 'old-session', 'result': '记得'}),
-    ('codex_cli', CodexCLI, 'roundtable.participants.codex_cli',
+    ('codex_cli', CodexCLI, 'nookling.participants.codex_cli',
      {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': '记得'}}),
-    ('grok_cli', GrokCLI, 'roundtable.participants.grok_cli',
+    ('grok_cli', GrokCLI, 'nookling.participants.grok_cli',
      {'type': 'text', 'data': '记得'}),
 ])
 async def test_resumed_cli_receives_updated_private_memory_in_actual_input(tmp_path, monkeypatch, kind, cls, module, output):
@@ -109,5 +109,5 @@ def test_running_member_reads_new_private_record_without_rebuilding_or_resetting
 
 
 def runtime_again(r):
-    from roundtable.runtime import Runtime
+    from nookling.runtime import Runtime
     return Runtime(r.store)._member('claude')

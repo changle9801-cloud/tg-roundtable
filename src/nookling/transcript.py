@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Sequence
+from . import owner
 from .sources import source_list
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ class Message:
         return self.speaker_id == USER and not self.guest
 
 
-GUEST_NOTE = "（标着「群友」的是阿明拉进群的朋友，不是阿明本人；她们说的事别算到阿明头上。）"
+GUEST_NOTE = "（标着「群友」的是{owner}拉进群的朋友，不是{owner}本人；她们说的事别算到{owner}头上。）"
 
 
 def label(m: Message, me: str = "") -> str:
@@ -80,12 +81,12 @@ def label(m: Message, me: str = "") -> str:
 
 def guest_note(messages: Sequence[Message]) -> str:
     """A reminder who the guests are, when any of them is in what a member is shown."""
-    return GUEST_NOTE if any(m.guest for m in messages) else ""
+    return GUEST_NOTE.format(owner=owner.name()) if any(m.guest for m in messages) else ""
 
 
 def labelled(messages: Sequence[Message]) -> list[str]:
     """"name（用户）: text" lines, and the guest reminder when a guest is among them."""
-    return [f"{label(m)}: {m.text}" for m in messages] + ([GUEST_NOTE] if guest_note(messages) else [])
+    return [f"{label(m)}: {m.text}" for m in messages] + ([note] if (note := guest_note(messages)) else [])
 
 
 def find_mentions(text: str, participants: Sequence[Participant], *, from_user: bool) -> list[str]:

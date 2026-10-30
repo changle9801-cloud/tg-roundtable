@@ -13,15 +13,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request, build_opener, ProxyHandler
 
-from roundtable.life import LifeStore
-from roundtable.memes import MemeLibrary
-from roundtable.chronicle import Chronicle
-from roundtable.participants import SessionStore, participant_class
-from roundtable.prompts import build_personal_share_prompt, build_turn_prompt
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import build_config
-from roundtable.transcript import Message
+from nookling.life import LifeStore
+from nookling.memes import MemeLibrary
+from nookling.chronicle import Chronicle
+from nookling.participants import SessionStore, participant_class
+from nookling.prompts import build_personal_share_prompt, build_turn_prompt
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import build_config
+from nookling.transcript import Message
 
 
 class CaptureSink:
@@ -65,7 +65,7 @@ async def main(root, match):
     output.mkdir()
     base = "http://127.0.0.1:" + str(settings["web"]["port"])
     opener = build_opener(ProxyHandler({}))
-    headers = {"Cookie": "roundtable_admin=" + secrets["web_token"], "Origin": base, "Content-Type": "application/json"}
+    headers = {"Cookie": "nookling_admin=" + secrets["web_token"], "Origin": base, "Content-Type": "application/json"}
     def preview(pid):
         body = json.dumps({"settings": settings, "member": pid}).encode()
         with opener.open(Request(base + "/api/preview", headers=headers, data=body), timeout=15) as response:
@@ -83,7 +83,7 @@ async def main(root, match):
     sessions = SessionStore(output / "legacy" / "sessions.json")
     author = actor(opening.speaker_id, sessions, output / "legacy")
     sink = CaptureSink()
-    room = ChatRoom("isolated-legacy", [author], sink, replace(cfg.round, max_parallel=1), sessions)
+    room = Conversation("isolated-legacy", [author], sink, replace(cfg.round, max_parallel=1), sessions)
     room.messages = [replace(opening, external_to_session=True), peer_reply]
     legacy = await room._ask(author, build_turn_prompt([peer_reply], 1, me=author.id), 1)
     print(json.dumps({"case": "legacy_followup", "reply": legacy}, ensure_ascii=False), flush=True)
@@ -93,7 +93,7 @@ async def main(root, match):
     author = actor(opening.speaker_id, sessions, output / "composed")
     peer = actor(peer_reply.speaker_id, sessions, output / "composed")
     sink = CaptureSink()
-    room = ChatRoom("isolated-composed", [author, peer], sink, replace(cfg.round, max_parallel=1), sessions)
+    room = Conversation("isolated-composed", [author, peer], sink, replace(cfg.round, max_parallel=1), sessions)
     room.messages = messages[max(0, index - 5):index]
     future = room.start_proactive(author, lambda unseen: build_personal_share_prompt(
         unseen, opening.text, opening.sources, me=author.id), 1, sources=opening.sources, discussion=True)

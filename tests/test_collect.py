@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 from aiogram.types import Animation, Chat, Message, PhotoSize, Sticker as TgSticker
 
-from roundtable.config import ConfigError
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
-from roundtable.stickers import StickerLibrary
-from roundtable.telegram_bot import describe, media_of, parse_collect_args
+from nookling.config import ConfigError
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
+from nookling.stickers import StickerLibrary
+from nookling.apps.telegram import describe, media_of, parse_collect_args
 
 WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"0" * 16
 

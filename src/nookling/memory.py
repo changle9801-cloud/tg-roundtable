@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from . import owner
 from .config import ConfigError
 from .recall import topic_score
 
@@ -45,7 +46,7 @@ TAG_RE = re.compile(r"\[\s*(?:记住|remember)\s*[:：]\s*([^\]\n]{1,%d}?)\s*\]"
 
 LEARN_INSTRUCTIONS = (
     "- 如果用户透露了值得长期记住的信息（身份、偏好、重要的人和事、约定），"
-    "可以在回复末尾写 [记住:一句话描述]，例如 [记住:阿明不吃香菜]。"
+    "可以在回复末尾写 [记住:一句话描述]，例如 [记住:小林不吃香菜]。"
     "不要记琐碎或一次性的事，也不要重复已经在长期记忆里的内容。这个标记不会显示在群里。"
 )
 
@@ -59,7 +60,7 @@ class Fact:
     status: str = "active"  # "active" or "pending" (suggested by a model, waiting for approval)
     source: str = "manual"  # "manual", the id of the member that suggested it, or CONSOLIDATED
     created: float = 0.0
-    about: str = ""  # who it is about, e.g. "阿明"
+    about: str = ""  # who it is about, e.g. "小林"
     said_at: float = 0.0  # when it was said (consolidated facts)
     quote: str = ""  # the user's own words it rests on
     replaces: str = ""  # id of the older fact it updates; that one is switched off once this is kept
@@ -284,7 +285,7 @@ def consolidation_prompt(day: str, lines: Sequence[str], known: Sequence[Fact], 
         "规则：\n"
         "- 只记用户亲口说的、关于他自己（或他身边的人）的事。成员们说的、玩笑、反话、假设、问句都不算。\n"
         "- 每条一句话，第三人称，带主语，用大家平时叫他的名字（看聊天和已有记忆里怎么叫）。要具体："
-        "写「阿明月薪一万五左右」，不写「阿明有工作」。\n"
+        f"写「{owner.name()}月薪一万五左右」，不写「{owner.name()}有工作」。\n"
         f"- quote 抄一段用户的原话（至少 {MIN_QUOTE} 个字，一字不改），证明他确实这么说过。\n"
         "- 一次性的小事（今天吃了什么、几点睡）不记，除非能看出是习惯。\n"
         "- 已有的长期记忆在下面（标着待确认的是之前整理出来、还没确认的）。意思一样或被它包含的不要再写；"
@@ -292,7 +293,7 @@ def consolidation_prompt(day: str, lines: Sequence[str], known: Sequence[Fact], 
         "- 没有值得记的就返回空列表。\n"
         f"已有的长期记忆：{json.dumps(facts, ensure_ascii=False)}\n"
         "聊天记录：\n" + "\n".join(lines) + "\n"
-        '只输出 JSON：[{"about":"阿明","text":"…","quote":"…","replaces":""}]'
+        '只输出 JSON：[{"about":"' + owner.name() + '","text":"…","quote":"…","replaces":""}]'
     )
 
 

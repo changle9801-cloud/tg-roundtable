@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from roundtable.settings import normalize_settings, resolve_data_dir
+from nookling.settings import normalize_settings, resolve_data_dir
 
 
 def updated(settings: dict) -> dict:

@@ -9,11 +9,11 @@ from aiohttp import FormData
 from conftest import FakeSink
 from test_web import admin, login  # noqa: F401  (fixture)
 
-from roundtable.config import ConfigError
-from roundtable.kaomoji import STARTER, KaomojiLibrary, parse_lines
-from roundtable.prompts import FRIEND_RULES
-from roundtable.room import ChatRoom
-from roundtable.stickers import StickerLibrary
+from nookling.config import ConfigError
+from nookling.kaomoji import STARTER, KaomojiLibrary, parse_lines
+from nookling.prompts import FRIEND_RULES
+from nookling.conversation import Conversation
+from nookling.stickers import StickerLibrary
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 GIF = b"GIF89a" + b"0" * 8
@@ -62,7 +62,7 @@ def test_replace_file_keeps_everything_else(tmp_path, lib):
 async def test_room_drops_stickers_a_member_was_not_given(make, store, round_cfg, lib):
     grok = make("grok", ["哈 [表情:委屈]"])
     sink = FakeSink()
-    room = ChatRoom("chat", [grok], sink, round_cfg, store, stickers=lib, sticker_limit=1)
+    room = Conversation("chat", [grok], sink, round_cfg, store, stickers=lib, sticker_limit=1)
     room.add_user_message("me", "hi")
     await room.wait_idle()
     assert sink.posts == [("grok", "哈")] and sink.stickers == []

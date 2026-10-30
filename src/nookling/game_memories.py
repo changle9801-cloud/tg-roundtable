@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
+from . import owner
 from .config import ConfigError
 from .games.spire_bridge import atomic_json
 from .recall import topic_score
@@ -346,7 +347,7 @@ class GameMemoryStore:
         said = "；".join([*lines, best] if best else lines)
         out = f"你以前玩过 {op['climbs']} 局：{said}。这些是你自己的偏好，可以照着来，也可以这次偏要试试别的。\n"
         if self.resting(member):  # the owner started it anyway
-            out += self.intention_line(member) + "这次是阿明让你开的，玩得开不开心照实说，不想玩可以 pause。\n"
+            out += self.intention_line(member) + f"这次是{owner.name()}让你开的，玩得开不开心照实说，不想玩可以 pause。\n"
         return out
 
     def nominations(self, member: str, name: str) -> list[str]:
@@ -389,7 +390,7 @@ def decision_prompt(name: str, persona: str, sig: dict, mood: str, opinions: Seq
         f"choice 只能是：{'；'.join(f'{k}={v}' for k, v in CHOICES.items())}。\n"
         "days：rest 或 other 时想放几天（1 到 7），其他可不填。\n"
         "why：一句话，不超过 30 个字，你自己的理由。\n"
-        "say：想发群里的一句话，可以空。help 时写你想问大家的具体问题；other 时可以说想玩什么、问阿明能不能装。"
+        f"say：想发群里的一句话，可以空。help 时写你想问大家的具体问题；other 时可以说想玩什么、问{owner.name()}能不能装。"
         "只能提记录里有的牌名、敌人名和数字；平时大多数时候不用发。\n"
         '只输出 JSON：{"choice":"…","days":null,"why":"…","say":""}'
     )

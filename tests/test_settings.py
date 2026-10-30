@@ -1,8 +1,9 @@
 import pytest
 
-from roundtable.config import ConfigError
-from roundtable.settings import (
+from nookling.config import ConfigError
+from nookling.settings import (
     DATA_DIR_ENV,
+    LEGACY_DATA_DIR_ENV,
     SettingsStore,
     apply_secret_changes,
     build_config,
@@ -112,6 +113,7 @@ def test_secret_changes_set_clear_and_reject_unknown():
 
 def test_resolve_data_dir(tmp_path, monkeypatch):
     monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    monkeypatch.delenv(LEGACY_DATA_DIR_ENV, raising=False)
     assert resolve_data_dir(None) == default_data_dir()
     assert resolve_data_dir(tmp_path) == tmp_path
     monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path))
@@ -122,6 +124,19 @@ def test_resolve_data_dir(tmp_path, monkeypatch):
         resolve_data_dir(None)
     with pytest.raises(ConfigError, match="--data-dir"):
         resolve_data_dir(tmp_path / "missing")
+
+
+def test_old_data_locations_still_work(tmp_path, monkeypatch):
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    monkeypatch.setenv(LEGACY_DATA_DIR_ENV, str(tmp_path))  # set before the rename
+    assert resolve_data_dir(None) == tmp_path
+    monkeypatch.delenv(LEGACY_DATA_DIR_ENV)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".tg-roundtable").mkdir()
+    assert default_data_dir() == tmp_path / ".tg-roundtable"  # the old folder, while there is no new one
+    (tmp_path / ".nookling").mkdir()
+    assert default_data_dir() == tmp_path / ".nookling"
 
 
 def test_copy_data_dir(tmp_path):

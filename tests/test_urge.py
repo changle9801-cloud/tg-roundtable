@@ -6,9 +6,9 @@ import random
 
 from conftest import FakeSink
 
-from roundtable.moderator import RuleModerator
-from roundtable.room import ChatRoom
-from roundtable.urge import Urge, pick_weight, wants_to_speak
+from nookling.moderator import RuleModerator
+from nookling.conversation import Conversation
+from nookling.urge import Urge, pick_weight, wants_to_speak
 
 
 class Member:
@@ -48,22 +48,22 @@ def test_what_makes_her_want_to_speak():
 
 
 async def test_the_room_keeps_why_it_rolled(make, store):
-    from roundtable.config import RoundConfig
+    from nookling.config import RoundConfig
 
     a, b, c = make("a", ["嗯"]), make("b", ["好"]), make("c", [])
     cfg = RoundConfig(max_turns_per_model=2, call_timeout=5, follow_up_chance=0.5, follow_up_decay=0.4)
-    room = ChatRoom("chat", [a, b, c], FakeSink(), cfg, store, RuleModerator(random.Random(1)))
+    room = Conversation("chat", [a, b, c], FakeSink(), cfg, store, RuleModerator(random.Random(1)))
     room.moderator.rng.random = lambda: 0.99  # nobody wants to: the most eager answers anyway
-    room.add_user_message("阿明", "@C 你在吗")
+    room.add_user_message("主人", "@C 你在吗")
     await room.wait_idle()
-    room.add_user_message("阿明", "今天好冷")
+    room.add_user_message("主人", "今天好冷")
     await room.wait_idle()
     report = room.decision_report()
     assert [g["ts"] for g in report] == sorted((g["ts"] for g in report), reverse=True)  # newest first
     by_message = {g["for"]: g for g in report}
-    newest, older = by_message["阿明：今天好冷"], by_message["阿明：@C 你在吗"]
+    newest, older = by_message["主人：今天好冷"], by_message["主人：@C 你在吗"]
     owed = [(s["what"], s["who"], s["why"]) for s in older["steps"]]
-    assert owed[:2] == [("欠的回答", "C", "阿明点了她"), ("没说", "C", "看了，觉得不用回（PASS）")]
+    assert owed[:2] == [("欠的回答", "C", "主人点了她"), ("没说", "C", "看了，觉得不用回（PASS）")]
     steps = newest["steps"]
     rolled = [s for s in steps if s["what"] == "想说话"]
     assert len(rolled) == 3 and not any(s["hit"] for s in rolled) and "还没回这条 0.2" in rolled[0]["why"]
@@ -73,17 +73,17 @@ async def test_the_room_keeps_why_it_rolled(make, store):
 def test_who_likes_answering_whom():
     grok = Member("Grok", "high")
     fond = wants(grok, follows=True, fondness=0.2, of="Codex")
-    cool = wants(grok, pending=True, fondness=-0.2, of="阿明")
+    cool = wants(grok, pending=True, fondness=-0.2, of="主人")
     assert "爱接Codex的话 1.2" in fond.explain() and round(fond.value, 3) == round(0.45 * 1.3 * 1.2, 3)
-    assert "懒得接阿明的话" in cool.explain() and round(cool.value, 3) == round(0.25 * 1.3 * 0.8, 3)
+    assert "懒得接主人的话" in cool.explain() and round(cool.value, 3) == round(0.25 * 1.3 * 0.8, 3)
     assert wants(grok, fondness=0.3).value < 0.1  # no reason to speak stays no reason: it only strengthens one
 
 
 def test_the_table_in_settings():
     import pytest
 
-    from roundtable.config import ConfigError
-    from roundtable.settings import default_settings, normalize_settings
+    from nookling.config import ConfigError
+    from nookling.settings import default_settings, normalize_settings
 
     s = default_settings()
     s["participants"] = [{"id": i, "name": i.upper(), "kind": "api", "provider": "deepseek", "model": "m"} for i in "ab"]
@@ -95,14 +95,14 @@ def test_the_table_in_settings():
 
 
 async def test_a_friend_she_likes_answering(make, store):
-    from roundtable.config import RoundConfig
+    from nookling.config import RoundConfig
 
     grok, codex = make("grok", ["少写是我故意的"]), make("codex", ["嗯，照整套补齐 [画:Grok新版卡|金发双马尾的 Grok]"])
     grok.cfg.activity = "high"
     cfg = RoundConfig(max_turns_per_model=2, call_timeout=5, affinity={"grok": {"codex": 0.2}})
-    room = ChatRoom("chat", [grok, codex], FakeSink(), cfg, store, RuleModerator(random.Random(0)))
+    room = Conversation("chat", [grok, codex], FakeSink(), cfg, store, RuleModerator(random.Random(0)))
     room.moderator.rng.random = lambda: 0.99
-    room.add_user_message("阿明", "@Grok 你看看，@Codex 给她重做一张")
+    room.add_user_message("主人", "@Grok 你看看，@Codex 给她重做一张")
     await room.wait_idle()
     back = next(d for d in reversed(room.decisions) if d["who"] == "Grok")
     assert "爱接Codex的话 1.2" in back["why"] and back["chance"] >= 0.85  # the doc's worked example: about 0.9

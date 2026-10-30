@@ -7,9 +7,9 @@ import random
 
 from conftest import FakeSink
 
-from roundtable.config import RoundConfig
-from roundtable.moderator import RuleModerator
-from roundtable.room import ChatRoom
+from nookling.config import RoundConfig
+from nookling.moderator import RuleModerator
+from nookling.conversation import Conversation
 
 
 class FirstMentioned(RuleModerator):
@@ -22,7 +22,7 @@ class FirstMentioned(RuleModerator):
 def room_for(members, store, sink=None, **round_kw):
     cfg = RoundConfig(max_turns_per_model=1, call_timeout=5, follow_up_chance=1.0, follow_up_decay=1.0, **round_kw)
     sink = sink or FakeSink()
-    return ChatRoom("chat", members, sink, cfg, store, FirstMentioned(random.Random(0))), sink
+    return Conversation("chat", members, sink, cfg, store, FirstMentioned(random.Random(0))), sink
 
 
 async def test_fast_member_speaks_while_slow_one_searches(make, store):

@@ -7,18 +7,18 @@ from statistics import mean
 
 from conftest import FakeSink
 
-from roundtable.config import RoundConfig
-from roundtable.moderator import RuleModerator
-from roundtable.prompts import DEFAULT_SYSTEM_PROMPT, FRIEND_RULES, build_turn_prompt
-from roundtable.room import ChatRoom
-from roundtable.telegram_bot import bubbles, typing_pause
-from roundtable.transcript import Message
+from nookling.config import RoundConfig
+from nookling.moderator import RuleModerator
+from nookling.prompts import DEFAULT_SYSTEM_PROMPT, FRIEND_RULES, build_turn_prompt
+from nookling.conversation import Conversation
+from nookling.apps.telegram import bubbles, typing_pause
+from nookling.transcript import Message
 
 
 def room_for(members, store, chance, decay, seed=0):
     sink = FakeSink()
     cfg = RoundConfig(max_turns_per_model=3, call_timeout=5, follow_up_chance=chance, follow_up_decay=decay)
-    return ChatRoom("chat", members, sink, cfg, store, RuleModerator(random.Random(seed))), sink
+    return Conversation("chat", members, sink, cfg, store, RuleModerator(random.Random(seed))), sink
 
 
 def four(make):
@@ -105,7 +105,7 @@ async def test_a_new_user_message_starts_a_fresh_chain(make, store):
 
 
 def test_turn_prompt_has_no_assignment_or_quota():
-    prompt = build_turn_prompt([Message("user", "阿明", "hi")], 3)
+    prompt = build_turn_prompt([Message("user", "主人", "hi")], 3)
     assert "轮到你" not in prompt and "还可以发言" not in prompt
     assert "[PASS]" in prompt
 
@@ -113,12 +113,12 @@ def test_turn_prompt_has_no_assignment_or_quota():
 def test_every_turn_says_what_time_it_is():
     from datetime import datetime
 
-    from roundtable.prompts import build_proactive_prompt, now_line
+    from nookling.prompts import build_proactive_prompt, now_line
 
     assert now_line(datetime(2026, 10, 25, 21, 5)) == "（现在是 2026年10月25日 星期日 晚上 21:05）"
     assert "星期一 凌晨 3:00" in now_line(datetime(2026, 10, 26, 3, 0))
     assert "中午 12:30" in now_line(datetime(2026, 10, 26, 12, 30))
-    prompt = build_turn_prompt([Message("user", "阿明", "hi")], 3, now=datetime(2026, 10, 25, 9, 0))
+    prompt = build_turn_prompt([Message("user", "主人", "hi")], 3, now=datetime(2026, 10, 25, 9, 0))
     assert prompt.startswith("（现在是 2026年10月25日 星期日 上午 9:00）\n[群聊新消息]")
     assert build_proactive_prompt([], "", False, False, []).startswith("（现在是 ")
 
@@ -180,7 +180,7 @@ async def test_discussion_respects_a_members_single_turn_limit(make, store):
 
 async def test_discussion_does_not_wake_a_sleeping_friend(make, store):
     from datetime import datetime
-    from roundtable.routine import Routines
+    from nookling.routine import Routines
 
     a, b = make("a", []), make("b", ["不该被叫醒"])
     b.cfg.sleep = "00:00-12:00"

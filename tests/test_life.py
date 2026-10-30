@@ -9,12 +9,12 @@ import pytest
 from conftest import FakeSink
 from test_web import admin, login  # noqa: F401
 
-from roundtable.config import ConfigError
-from roundtable.life import LifeEngine, LifeStore, MAX_PRIVATE_MESSAGES
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore, normalize_settings
-from roundtable.transcript import Message
+from nookling.config import ConfigError
+from nookling.life import LifeEngine, LifeStore, MAX_PRIVATE_MESSAGES
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore, normalize_settings
+from nookling.transcript import Message
 
 NAMES = {"claude": "Claude", "codex": "Codex", "grok": "Grok"}
 MEMBERS = [{"id": "claude", "name": "Claude", "kind": "claude_cli", "command": ["python"]},
@@ -202,7 +202,7 @@ async def test_no_friend_free_means_no_private_chat(tmp_path):
 
 
 async def test_looking_around_stays_light(tmp_path):
-    from roundtable.prompts import LIGHT_READING, build_browse_prompt
+    from nookling.prompts import LIGHT_READING, build_browse_prompt
 
     script = Script({"action": "explore", "interest": IDEA}, observation())
     await script.engine(LifeStore(tmp_path)).step("codex", ["claude"], True)
@@ -277,7 +277,7 @@ async def test_selected_members_skip_old_browse_and_forced_proactive_paths(tmp_p
     r.life_schedule.due = lambda pc: False
     r.browsing.due = lambda pc: True
     r.proactive.due = lambda pc: True
-    r.controller = object()
+    r.telegram.controller = object()
     async def unexpected(*args): pytest.fail("selected member entered legacy workflow")
     r._browse = unexpected
     r._proactive_attempt = unexpected
@@ -287,8 +287,8 @@ async def test_selected_members_skip_old_browse_and_forced_proactive_paths(tmp_p
 
 async def test_share_gate_and_actor_authored_message_reaches_existing_group_sink(tmp_path):
     r = runtime(tmp_path)
-    r.controller = object()
-    room = r.room(-100)
+    r.telegram.controller = object()
+    room = r.conversation(-100)
     async def no_extra_replies(*args, **kwargs): pass
     room._round_loop = no_extra_replies
     r.config.life.quiet_minutes = 30
@@ -314,7 +314,7 @@ async def test_share_gate_and_actor_authored_message_reaches_existing_group_sink
 async def test_prepared_public_message_does_not_generate_an_extra_report(make, store, round_cfg):
     member = make("a", ["不应被调用"])
     sink = FakeSink()
-    room = ChatRoom("x", [member], sink, round_cfg, store)
+    room = Conversation("x", [member], sink, round_cfg, store)
     future = room.start_proactive(member, lambda unseen: "", 0, prepared_text="顺手发个有意思的")
     assert await future == "顺手发个有意思的"
     await room.wait_idle()
@@ -373,7 +373,7 @@ async def test_private_state_is_scoped_in_actual_system_prompts(tmp_path):
     r.life.add_message(thread, "claude", "只有我们知道的进展")
     r.refresh_prompts()
     assert "只有我们知道的进展" in r._member("codex").with_turn_context("刚才私下聊了什么")
-    from roundtable.config import ParticipantConfig
+    from nookling.config import ParticipantConfig
     third = ParticipantConfig(id="grok", name="Grok", kind="grok_cli")
     assert "只有我们知道的进展" not in r.system_prompt_for(third)
     assert "只有我们知道的进展" not in r._chat_context(third, "刚才私下聊了什么")
@@ -381,7 +381,7 @@ async def test_private_state_is_scoped_in_actual_system_prompts(tmp_path):
 
 async def test_background_actor_keeps_assigned_tools_and_separate_sessions(tmp_path, monkeypatch):
     r = runtime(tmp_path)
-    from roundtable.tools import ToolServer
+    from nookling.tools import ToolServer
     tool = ToolServer("video", "看视频", command="python", allowed=["watch_video"], members=["codex"])
     r.config.tools = [tool]
     seen = {}
@@ -392,7 +392,7 @@ async def test_background_actor_keeps_assigned_tools_and_separate_sessions(tmp_p
         async def reply(self, key, prompt):
             seen.update(key=key, tools=self.tools); return "{}"
         def reset(self, key): seen["reset"] = key
-    monkeypatch.setattr("roundtable.runtime.participant_class", lambda cfg: Actor)
+    monkeypatch.setattr("nookling.runtime.participant_class", lambda cfg: Actor)
     await r._life_ask("codex", "决定下一步")
     assert seen["tools"] == [tool] and seen["sessions"] is not r.sessions
     assert seen["work"] == tmp_path / "work" / "life" / "codex"

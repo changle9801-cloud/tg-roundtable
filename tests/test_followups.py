@@ -7,11 +7,11 @@ from datetime import datetime, timedelta
 
 from conftest import FakeSink
 
-from roundtable.followups import FollowUpStore, build_followup_prompt, extract_followups, parse_when
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
-from roundtable.transcript import Message
+from nookling.followups import FollowUpStore, build_followup_prompt, extract_followups, parse_when
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
+from nookling.transcript import Message
 
 NOW = datetime(2026, 10, 26, 14, 0)
 
@@ -26,8 +26,8 @@ def test_parse_when():
 
 
 def test_tags_are_hidden_and_collected():
-    text, found = extract_followups("加油！[跟进:2026-10-27 18:00|阿明今天面试，问问结果]", NOW)
-    assert text == "加油！" and found == [(datetime(2026, 10, 27, 18, 0), "阿明今天面试，问问结果")]
+    text, found = extract_followups("加油！[跟进:2026-10-27 18:00|主人今天面试，问问结果]", NOW)
+    assert text == "加油！" and found == [(datetime(2026, 10, 27, 18, 0), "主人今天面试，问问结果")]
     text, found = extract_followups("[跟进：昨天|不对]好", NOW)
     assert text == "好" and found == []
 
@@ -35,9 +35,9 @@ def test_tags_are_hidden_and_collected():
 def test_store_dedupes_moves_to_daytime_and_caps(tmp_path):
     clock = [NOW]
     store = FollowUpStore(tmp_path, lambda: clock[0])
-    a = store.add("阿明面试，问问结果", datetime(2026, 10, 27, 3, 0), "-1", "grok")
+    a = store.add("主人面试，问问结果", datetime(2026, 10, 27, 3, 0), "-1", "grok")
     assert datetime.fromtimestamp(a.due) == datetime(2026, 10, 27, 9, 0)  # not at 3am
-    assert store.add("阿明面试问问结果", datetime(2026, 10, 27, 18, 0), "-1", "claude") is None
+    assert store.add("主人面试问问结果", datetime(2026, 10, 27, 18, 0), "-1", "claude") is None
     late = store.add("看病结果", datetime(2026, 10, 26, 23, 30), "-1")
     assert datetime.fromtimestamp(late.due) == datetime(2026, 10, 27, 9, 0)
     for i in range(3):
@@ -52,25 +52,25 @@ def test_store_dedupes_moves_to_daytime_and_caps(tmp_path):
     clock[0] = datetime(2026, 10, 27, 23, 30)
     assert store.due() == []
     assert "已经记下、到时候要问的事" in store.prompt_section() and "看病结果" in store.prompt_section()
-    assert FollowUpStore(tmp_path).pending()[0].text == "阿明面试，问问结果"  # saved
+    assert FollowUpStore(tmp_path).pending()[0].text == "主人面试，问问结果"  # saved
 
 
 def test_asking_prompt():
-    store_item = type("F", (), {"text": "阿明今天面试，问问结果"})()
-    prompt = build_followup_prompt(store_item, [Message("user", "阿明", "我回来了")], "（现在是……）")
-    assert "阿明今天面试" in prompt and "我回来了" in prompt and "[PASS]" in prompt and "提醒一下" in prompt
+    store_item = type("F", (), {"text": "主人今天面试，问问结果"})()
+    prompt = build_followup_prompt(store_item, [Message("user", "主人", "我回来了")], "（现在是……）")
+    assert "主人今天面试" in prompt and "我回来了" in prompt and "[PASS]" in prompt and "提醒一下" in prompt
 
 
 async def test_room_collects_tags_and_nudges(make, store, round_cfg):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")  # a real date still ahead
-    a = make("a", [f"加油 [跟进:{tomorrow} 18:00|阿明面试，问问结果]"])
+    a = make("a", [f"加油 [跟进:{tomorrow} 18:00|主人面试，问问结果]"])
     noted = []
     sink = FakeSink()
-    room = ChatRoom("-1", [a], sink, round_cfg, store, on_followup=lambda chat, p, items: noted.append((chat, p.id, items)))
-    room.add_user_message("阿明", "明天要去面试了")
+    room = Conversation("-1", [a], sink, round_cfg, store, on_followup=lambda chat, p, items: noted.append((chat, p.id, items)))
+    room.add_user_message("主人", "明天要去面试了")
     await room.wait_idle()
     assert sink.posts == [("a", "加油")]
-    assert noted[0][0] == "-1" and noted[0][1] == "a" and noted[0][2][0][1] == "阿明面试，问问结果"
+    assert noted[0][0] == "-1" and noted[0][1] == "a" and noted[0][2][0][1] == "主人面试，问问结果"
     assert "刚才有人提到了以后的安排" in a.prompts[0]
 
 
@@ -91,21 +91,21 @@ async def test_runtime_asks_when_due(tmp_path):
     rt.participants = [asker]
     rt.refresh_prompts = lambda: None
     room = FakeRoom()
-    rt.room = lambda chat: room
+    rt.conversation = lambda chat: room
     rt.followups.now = lambda: datetime(2026, 10, 26, 16, 0)
-    item = rt.followups.add("阿明面试，问问结果", datetime(2026, 10, 26, 15, 0), "-1", "grok")
+    item = rt.followups.add("主人面试，问问结果", datetime(2026, 10, 26, 15, 0), "-1", "grok")
     await rt._followup_tick()
-    assert room.prompts[0][0] == "grok" and "阿明面试" in room.prompts[0][1]
+    assert room.prompts[0][0] == "grok" and "主人面试" in room.prompts[0][1]
     assert item.status == "done" and item.asked_at
 
     busy = FakeRoom(busy=True)
-    rt.room = lambda chat: busy
+    rt.conversation = lambda chat: busy
     later = rt.followups.add("出差回来没", datetime(2026, 10, 26, 15, 0), "-1", "nobody")
     await rt._followup_tick()
     assert later.status == "pending" and busy.prompts == []  # waits a bit
 
     passed = FakeRoom(reply=None)
-    rt.room = lambda chat: passed
+    rt.conversation = lambda chat: passed
     later.due = 0
     await rt._followup_tick()
     assert later.status == "skipped"  # it had nothing to ask after all

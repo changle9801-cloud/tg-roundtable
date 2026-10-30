@@ -8,12 +8,12 @@ from collections import Counter
 import pytest
 from conftest import FakeSink
 
-from roundtable.config import ConfigError, ParticipantConfig
-from roundtable.moderator import RuleModerator
-from roundtable.prompts import NO_CODING_POLICY, build_system_prompt, looks_like_code, render_role
-from roundtable.room import ChatRoom
-from roundtable.settings import normalize_participant
-from roundtable.transcript import Message
+from nookling.config import ConfigError, ParticipantConfig
+from nookling.moderator import RuleModerator
+from nookling.prompts import NO_CODING_POLICY, build_system_prompt, looks_like_code, render_role
+from nookling.conversation import Conversation
+from nookling.settings import normalize_participant
+from nookling.transcript import Message
 
 
 def role(**kw):
@@ -57,7 +57,7 @@ def test_everyday_talk_is_not_code(text):
 async def test_room_drops_replies_with_code(make, round_cfg, store):
     a = make("a", ["好的，代码如下：\n```\nprint(1)\n```"])
     sink = FakeSink()
-    room = ChatRoom("chat", [a], sink, round_cfg, store, block_code=True)
+    room = Conversation("chat", [a], sink, round_cfg, store, block_code=True)
 
     room.add_user_message("me", "帮我写个脚本")
     await room.wait_idle()
@@ -69,7 +69,7 @@ async def test_room_drops_replies_with_code(make, round_cfg, store):
 async def test_room_allows_code_when_policy_is_off(make, round_cfg, store):
     a = make("a", ["```\nprint(1)\n```"])
     sink = FakeSink()
-    room = ChatRoom("chat", [a], sink, round_cfg, store, block_code=False)
+    room = Conversation("chat", [a], sink, round_cfg, store, block_code=False)
     room.add_user_message("me", "hi")
     await room.wait_idle()
     assert len(sink.posts) == 1
@@ -92,7 +92,7 @@ async def test_member_turn_limit_overrides_group_default(make, round_cfg, store)
     b = make("b", [f"b{i}" for i in range(10)])
     c = make("c", [f"c{i}" for i in range(10)])
     sink = FakeSink()
-    room = ChatRoom("chat", [a, b, c], sink, round_cfg, store)
+    room = Conversation("chat", [a, b, c], sink, round_cfg, store)
     room.add_user_message("me", "hi")
     await room.wait_idle()
     counts = Counter(pid for pid, _ in sink.posts)

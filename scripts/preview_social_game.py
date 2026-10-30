@@ -8,13 +8,13 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from roundtable.games.social import GameConversation
-from roundtable.games.spire import GameService, make_game_actor
-from roundtable.life import LifeStore
-from roundtable.participants import SessionStore, participant_class
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
+from nookling.games.social import GameConversation
+from nookling.games.spire import GameService, make_game_actor
+from nookling.life import LifeStore
+from nookling.participants import SessionStore, participant_class
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
 
 
 class PreviewSink:
@@ -53,7 +53,7 @@ async def main(root, player, peer, decisions):
         actor.set_system_prompt(runtime.system_prompt_for(pc))
         actor.turn_context = lambda prompt, pc=pc: runtime._chat_context(pc, prompt)
         public.append(actor)
-    room = ChatRoom('__social_preview', public, sink,
+    room = Conversation('__social_preview', public, sink,
         replace(runtime.config.round, max_turns_per_model=2, max_parallel=1, follow_up_chance=1, follow_up_decay=0),
         SessionStore(snapshot / 'room-sessions.json'))
     charged, buddies = [], {}

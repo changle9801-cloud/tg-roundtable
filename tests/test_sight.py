@@ -6,14 +6,14 @@ import random
 
 from conftest import FakeSink
 
-from roundtable.config import ParticipantConfig
-from roundtable.moderator import RuleModerator
-from roundtable.participants import SessionStore
-from roundtable.participants.codex_cli import CodexCLI
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore, build_config, normalize_settings
-from roundtable.transcript import Message
+from nookling.config import ParticipantConfig
+from nookling.moderator import RuleModerator
+from nookling.participants import SessionStore
+from nookling.participants.codex_cli import CodexCLI
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore, build_config, normalize_settings
+from nookling.transcript import Message
 
 MEMBERS = [
     {"id": "claude", "name": "Claude", "kind": "claude_cli", "appearance": "橘色长发的学姐"},
@@ -60,8 +60,8 @@ async def test_pictures_reach_only_those_who_can_see(make, store, round_cfg, tmp
     ds = make("ds", ["哈哈，Claude 被洗掉色了", "就是 DeepSeek 冒充 Claude 啦"])
     ds.cfg.kind, ds.cfg.vision = "api", True
     blind = make("blind", ["看不了图 @Ds 帮我说说？"])
-    room = ChatRoom("chat", [ds, blind], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
-    room.add_user_message("阿明", "[发送了一张图片] 看到个有意思的图", images=[str(image)])
+    room = Conversation("chat", [ds, blind], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
+    room.add_user_message("主人", "[发送了一张图片] 看到个有意思的图", images=[str(image)])
     await room.wait_idle()
     assert ds.images[0] == [str(image)] and "附在这条消息里" in ds.prompts[0]
     assert blind.images and not any(blind.images)  # never handed a picture
@@ -75,9 +75,9 @@ async def test_waking_up_shows_the_pictures_missed_in_sleep(make, store, round_c
         f.write_bytes(b"jpg")
     ds = make("ds", ["哈哈，学姐的身份证"])
     ds.cfg.kind, ds.cfg.vision = "api", True
-    room = ChatRoom("chat", [ds], FakeSink(), round_cfg, store)
-    room._append(Message("user", "阿明", "[发送了一张图片] 昨晚的", (), 100.0, (str(old),)))
-    room._append(Message("user", "阿明", "[发送了一张图片] claude 看你的身份卡", (), 200.0, (str(new),)))
+    room = Conversation("chat", [ds], FakeSink(), round_cfg, store)
+    room._append(Message("user", "主人", "[发送了一张图片] 昨晚的", (), 100.0, (str(old),)))
+    room._append(Message("user", "主人", "[发送了一张图片] claude 看你的身份卡", (), 200.0, (str(new),)))
     await room.start_proactive(ds, lambda unseen: "早", 1, show_images_since=150.0)
     await room.wait_idle()
     assert ds.images[0] == [str(new)] and "你睡着时群里发的图片" in ds.prompts[0]
@@ -85,18 +85,18 @@ async def test_waking_up_shows_the_pictures_missed_in_sleep(make, store, round_c
 
 async def test_a_picture_brings_more_friends_over(make, store, round_cfg, tmp_path):
     a, b = make("a", ["是我"]), make("b", ["哈哈"])
-    room = ChatRoom("chat", [a, b], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
+    room = Conversation("chat", [a, b], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
     room.follow_up_chance, room.follow_up_decay = 0.5, 0.4
     room.moderator.rng.random = lambda: 0.4  # between a plain second reply (0.25) and one to a picture (0.55)
-    room.add_user_message("阿明", "@A 你看", images=[str(tmp_path / "card.jpg")])
+    room.add_user_message("主人", "@A 你看", images=[str(tmp_path / "card.jpg")])
     await room.wait_idle()
     assert [pid for pid, _ in room.sink.posts] == ["a", "b"]
 
     c, d = make("c", ["嗯"]), make("d", ["不该接"])
-    plain = ChatRoom("chat2", [c, d], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
+    plain = Conversation("chat2", [c, d], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
     plain.follow_up_chance, plain.follow_up_decay = 0.5, 0.4
     plain.moderator.rng.random = lambda: 0.4
-    plain.add_user_message("阿明", "@C 你看")
+    plain.add_user_message("主人", "@C 你看")
     await plain.wait_idle()
     assert [pid for pid, _ in plain.sink.posts] == ["c"]
 
@@ -104,8 +104,8 @@ async def test_a_picture_brings_more_friends_over(make, store, round_cfg, tmp_pa
 async def test_missing_files_are_not_handed_over(make, store, round_cfg, tmp_path):
     ds = make("ds", ["嗯"])
     ds.cfg.kind, ds.cfg.vision = "api", True
-    room = ChatRoom("chat", [ds], FakeSink(), round_cfg, store)
-    room.add_user_message("阿明", "[发送了一张图片]", images=[str(tmp_path / "gone.jpg")])
+    room = Conversation("chat", [ds], FakeSink(), round_cfg, store)
+    room.add_user_message("主人", "[发送了一张图片]", images=[str(tmp_path / "gone.jpg")])
     await room.wait_idle()
     assert ds.images == [[]] and "附在这条消息里" not in ds.prompts[0]
 
@@ -113,9 +113,9 @@ async def test_missing_files_are_not_handed_over(make, store, round_cfg, tmp_pat
 async def test_claude_cli_gets_pictures_as_a_json_message(tmp_path, monkeypatch):
     import json
 
-    from roundtable.participants import claude_cli
-    from roundtable.participants.claude_cli import ClaudeCLI
-    from roundtable.vision import can_see_images
+    from nookling.participants import claude_cli
+    from nookling.participants.claude_cli import ClaudeCLI
+    from nookling.vision import can_see_images
 
     pc = ParticipantConfig(id="claude", name="Claude", kind="claude_cli", command=["claude"])
     assert not can_see_images(pc)

@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from . import owner
 from .games.spire_bridge import atomic_json
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ REST_ROOMS = (
     ("kitchen", re.compile(r"厨房|吃|喝|饭|零食|咖啡|茶|饿")),
     ("fun", re.compile(r"游戏|电视|视频|番|剧|音乐")),
 )
-DIARY_NOTE = "阿明能翻你的日记本。日记是你的隐私，他每次翻了哪天的，你都会知道。"
+DIARY_NOTE = "{owner}能翻你的日记本。日记是你的隐私，{owner}每次翻了哪天的，你都会知道。"
 REREAD_SECONDS = 600  # opening the same day again within this is the same read
 
 
@@ -222,7 +223,7 @@ class Home:
             if label not in days:
                 days.append(label)
         when = datetime.fromtimestamp(fresh[-1]["ts"]).strftime("%m-%d %H:%M")
-        return (f"[日记本] 阿明翻了你 {'、'.join(days)} 的日记（最近一次是 {when}）。"
+        return (f"[日记本] {owner.name()}翻了你 {'、'.join(days)} 的日记（最近一次是 {when}）。"
                 "怎么反应随你的性格：可以不在意、害羞、说他几句，也可以以后写得收着点。只告诉你这一次。[/日记本]")
 
     def prompt_section(self, member: str) -> str:
@@ -230,7 +231,7 @@ class Home:
             return ""
         shared = "、".join(r["name"] for r in self.rooms if r.get("shared"))
         return (f"[家] 你和朋友们住在同一个家里：{shared}，每人还有自己的卧室（你的叫「{self.room_name(bedroom(member))}」）。"
-                f"你做日常活动时会去对应的房间，比如看东西在书房、玩游戏在娱乐室。{DIARY_NOTE}[/家]")
+                f"你做日常活动时会去对应的房间，比如看东西在书房、玩游戏在娱乐室。{DIARY_NOTE.format(owner=owner.name())}[/家]")
 
     # ---- views ----
 

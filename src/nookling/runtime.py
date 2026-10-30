@@ -1,4 +1,4 @@
-"""The running app: members, rooms and Telegram bots, rebuilt live when settings change."""
+"""The running app: members, conversations and Telegram bots, rebuilt live when settings change."""
 
 from __future__ import annotations
 
@@ -15,10 +15,8 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand
 
-from .config import ConfigError, telegram_problems
+from .config import ConfigError
 from .participants import (
     HistoryParticipant,
     Participant,
@@ -42,7 +40,7 @@ from .prompts import (
     tools_section,
     search_instructions,
 )
-from .room import ChatRoom
+from .conversation import Conversation
 from .recall import chat_query
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
 from .drawing import (
@@ -55,6 +53,7 @@ from .drawing import (
     supports_drawing,
 )
 from .journal import JournalStore, browse_once
+from . import owner
 from .home import ACCESSORIES, Home
 from .life import LifeEngine, LifeStore, object_reply
 from .life_work import LifeWorkbench
@@ -90,19 +89,12 @@ from .vision import (
     supports_vision,
 )
 from .stickers import MAX_FILE_BYTES as MAX_STICKER_BYTES, StickerLibrary, parse_set_name
-from .telegram_bot import TelegramSink, build_router
+from .apps.telegram import TelegramApp
 from .transcript import USER, Message, label
 
 log = logging.getLogger(__name__)
 
 TEST_CHAT = "__admin_test__"
-BOT_COMMANDS = [
-    BotCommand(command="stop", description="中止当前这一轮"),
-    BotCommand(command="reset", description="清空所有模型的记忆"),
-    BotCommand(command="turns", description="设置每轮发言上限"),
-    BotCommand(command="status", description="查看状态和群 ID"),
-    BotCommand(command="help", description="使用说明"),
-]
 
 
 class LogBuffer(logging.Handler):
@@ -126,21 +118,13 @@ class Runtime:
         self.notices: list[str] = []  # shown on the status page
         self.settings, self.secrets = store.load()
         self.config = build_config(self.settings, self.secrets, store.data_dir)
+        owner.set_name(self.config.owner_name)
 
         self.participants: list[Participant] = []
         self.participant_errors: dict[str, str] = {}  # member could not be started
         self.participant_warnings: dict[str, str] = {}  # started, but something is off
-        self.rooms: dict[str, ChatRoom] = {}
+        self.conversations: dict[str, Conversation] = {}
 
-        self.bots: dict[str, Bot] = {}  # participant id -> its bot
-        self.bot_usernames: dict[str, str] = {}
-        self.bot_user_ids: dict[int, str] = {}  # Telegram user id of a model bot -> participant id
-        self.bot_profiles: dict[str, tuple[str | None, str | None]] = {}  # shown name and intro
-        self.controller: Bot | None = None
-        self.controller_username = ""
-        self.privacy_warning = False
-        self.reaction_warning = False  # not a group admin: Telegram does not send it reactions
-        self.telegram_state = "未启动"
 
         self.stickers = StickerLibrary(store.data_dir)
         self.kaomoji = KaomojiLibrary(store.data_dir)
@@ -189,12 +173,13 @@ class Runtime:
         self.home = Home(store.data_dir)
         self._browsing_now: set[str] = set()
         self._background: set[asyncio.Task] = set()
-        self.sink = TelegramSink(self)
+        self.telegram = TelegramApp(self)  # the first chat app on the house computer
+        self.sink = self.telegram.sink
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
         self._rebuild_participants()
 
-    # ---- members and rooms ----
+    # ---- members and conversations ----
 
     @property
     def sticker_limit(self) -> int:
@@ -302,8 +287,8 @@ class Runtime:
         self.participant_errors = errors
         self.home.ensure({pc.id: pc.name for pc in self.config.enabled_participants})
         self.refresh_prompts()
-        for room in self.rooms.values():
-            room.update(built, self.config.round, self.sticker_limit, self.config.no_coding, self.config.reactions_enabled)
+        for convo in self.conversations.values():
+            convo.update(built, self.config.round, self.sticker_limit, self.config.no_coding, self.config.reactions_enabled)
 
     def refresh_prompts(self) -> None:
         """Settings, stickers or memory changed: rebuild every system prompt (next turn on)."""
@@ -326,15 +311,15 @@ class Runtime:
     def on_reaction(self, chat: str, tg_id: int, user_name: str, added: list[str], removed: list[str],
                     guest: bool = False) -> None:
         """A human reacted to a message in the group (or took a reaction back); only the owner's teach the members."""
-        room = self.room(chat)
-        target = room.message_for(self.sink.parts.get((chat, tg_id), tg_id))
+        convo = self.conversation(chat)
+        target = convo.message_for(self.sink.parts.get((chat, tg_id), tg_id))
         if target is None or target.from_user:
             return
         text = plain_text(target.text)
         changed = False
-        if guest:  # a guest's taste is not the owner's: the room still sees the reaction
+        if guest:  # a guest's taste is not the owner's: the convo still sees the reaction
             if added:
-                room.note_reaction(user_name, target, added[-1], guest=True)
+                convo.note_reaction(user_name, target, added[-1], guest=True)
             return
         for emoji in added:
             item = self.feedback.react(target.speaker_id, text, emoji)
@@ -344,7 +329,7 @@ class Runtime:
         if removed and not added:
             changed = self.feedback.unreact(target.speaker_id, text)
         if added:
-            room.note_reaction(user_name, target, added[-1])
+            convo.note_reaction(user_name, target, added[-1])
         if changed:
             self.refresh_prompts()
 
@@ -403,17 +388,17 @@ class Runtime:
         return self.config.data_dir / "chats" / f"{key}.jsonl"
 
     def chat_keys(self) -> list[str]:
-        """Every chat with a transcript, a running room or saved sessions."""
-        keys = set(self.rooms) | set(self.sessions.chats())
+        """Every chat with a transcript, a running convo or saved sessions."""
+        keys = set(self.conversations) | set(self.sessions.chats())
         chats_dir = self.config.data_dir / "chats"
         if chats_dir.exists():
             keys |= {p.stem for p in chats_dir.glob("*.jsonl")}
         return sorted(k for k in keys if not k.startswith("__"))
 
-    def room(self, chat_id: int | str) -> ChatRoom:
+    def conversation(self, chat_id: int | str) -> Conversation:
         key = str(chat_id)
-        if key not in self.rooms:
-            self.rooms[key] = ChatRoom(
+        if key not in self.conversations:
+            self.conversations[key] = Conversation(
                 key, self.participants, self.sink, self.config.round, self.sessions,
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
@@ -423,12 +408,12 @@ class Runtime:
             )
             # Old life shares predate the explicit origin field. Match public records,
             # without rewriting the transcript or exposing any private activity.
-            room = self.rooms[key]
-            room.messages = [replace(m, external_to_session=True) if any(
+            convo = self.conversations[key]
+            convo.messages = [replace(m, external_to_session=True) if any(
                 s["member"] == m.speaker_id and s["text"] == m.text and abs(s["ts"] - m.ts) <= 120
                 for s in self.life.shares if s.get("external_to_session", True)
-            ) else m for m in room.messages]
-        return self.rooms[key]
+            ) else m for m in convo.messages]
+        return self.conversations[key]
 
     async def apply(self, settings: dict | None = None, secrets: dict | None = None) -> None:
         """Save new settings and/or secrets, then rebuild everything that depends on them."""
@@ -443,71 +428,19 @@ class Runtime:
             self.store.save(settings, secrets)
             self.settings, self.secrets = self.store.load()
             self.config = build_config(self.settings, self.secrets, self.store.data_dir)
-            cut_off = [room for room in self.rooms.values() if await room.stop()]
+            owner.set_name(self.config.owner_name)
+            cut_off = [convo for convo in self.conversations.values() if await convo.stop()]
             self.memory.drop_scope({p.id for p in self.config.participants})
             self._rebuild_participants()
-            await self._sync_bots()
-            for room in cut_off:
-                room.resume()  # a reply that was on its way is not lost
+            self.participant_warnings = await self.telegram.sync()
+            for convo in cut_off:
+                convo.resume()  # a reply that was on its way is not lost
             self._changed.set()
         log.info("配置已更新")
 
-    async def _sync_bots(self) -> None:
-        wanted = {p.id: p.cfg.bot_token for p in self.participants if p.cfg.bot_token}
-        for pid in list(self.bots):
-            if self.bots[pid].token != wanted.get(pid):
-                bot = self.bots.pop(pid)
-                self.bot_usernames.pop(pid, None)
-                self.bot_profiles.pop(pid, None)
-                await bot.session.close()
-        warnings = {}
-        for pid, token in wanted.items():
-            if pid not in self.bots:
-                try:
-                    self.bots[pid] = Bot(token)
-                except Exception as e:  # malformed token
-                    warnings[pid] = f"bot token 格式不对：{e}"
-
-        async def fetch(pid: str, bot: Bot) -> None:
-            try:
-                me = await asyncio.wait_for(bot.get_me(), 15)
-            except Exception as e:
-                warnings[pid] = f"bot 连接失败：{e}"
-                return
-            self.bot_usernames[pid] = me.username or ""
-            self.bot_user_ids[me.id] = pid
-            with suppress(Exception):
-                intro = await asyncio.wait_for(bot.get_my_short_description(), 15)
-                self.bot_profiles[pid] = (me.first_name, intro.short_description)
-
-        await asyncio.gather(*(fetch(pid, b) for pid, b in self.bots.items() if pid not in self.bot_usernames))
-        await asyncio.gather(*(self._sync_profile(p) for p in self.participants if p.id in self.bots))
-        for p in self.participants:
-            if p.id not in wanted:
-                warnings.setdefault(p.id, "没有设置 bot token，它的发言发不到群里")
-            username = self.bot_usernames.get(p.id)
-            if username and username not in p.aliases:
-                p.aliases.append(username)
-        self.participant_warnings = warnings
-
-    async def _sync_profile(self, p: Participant) -> None:
-        """Show the role's name and one-line intro on its Telegram bot."""
-        bot = self.bots[p.id]
-        name, intro = self.bot_profiles.get(p.id, (None, None))
-        try:
-            if name != p.name:
-                await asyncio.wait_for(bot.set_my_name(name=p.name), 15)
-                log.info("%s 的 bot 显示名已改为「%s」", p.id, p.name)
-            if intro != p.cfg.tagline:
-                await asyncio.wait_for(bot.set_my_short_description(short_description=p.cfg.tagline), 15)
-        except Exception as e:  # Telegram rate-limits name changes; try again next time
-            log.warning("%s 的 bot 资料没能更新：%s", p.id, e)
-            return
-        self.bot_profiles[p.id] = (p.name, p.cfg.tagline)
-
     async def start(self) -> None:
         self.events.started()
-        await self._sync_bots()
+        self.participant_warnings = await self.telegram.sync()
 
     # ---- admin actions ----
 
@@ -542,19 +475,19 @@ class Runtime:
     def chat_overview(self) -> list[dict]:
         out = []
         for key in self.chat_keys():
-            room = self.room(key)
-            last = room.messages[-1] if room.messages else None
+            convo = self.conversation(key)
+            last = convo.messages[-1] if convo.messages else None
             out.append({
                 "key": key,
-                "busy": room.busy,
-                "message_count": len(room.messages),
+                "busy": convo.busy,
+                "message_count": len(convo.messages),
                 "last_ts": last.ts if last else 0,
                 "last": f"{last.speaker_name}: {last.text}" if last else "",
             })
         return sorted(out, key=lambda c: c["last_ts"], reverse=True)
 
     def chat_detail(self, key: str) -> dict:
-        room = self.room(key)
+        convo = self.conversation(key)
         members = []
         for p in self.participants:
             entry = {"id": p.id, "name": p.name, "kind": p.cfg.kind}
@@ -565,8 +498,8 @@ class Runtime:
             members.append(entry)
         return {
             "key": key,
-            "busy": room.busy,
-            "messages": [m.to_json() for m in room.messages],
+            "busy": convo.busy,
+            "messages": [m.to_json() for m in convo.messages],
             "members": members,
         }
 
@@ -576,10 +509,10 @@ class Runtime:
         allowed = self.config.telegram.allowed_chat_ids
         if old_key == new_key or (allowed and old not in allowed):
             return False
-        room = self.rooms.pop(old_key, None)
-        if room is not None:
-            await room.stop()
-        self.rooms.pop(new_key, None)  # rebuilt from the moved transcript
+        convo = self.conversations.pop(old_key, None)
+        if convo is not None:
+            await convo.stop()
+        self.conversations.pop(new_key, None)  # rebuilt from the moved transcript
         chats = self.config.data_dir / "chats"
         if (chats / f"{old_key}.jsonl").exists():
             target = chats / f"{new_key}.jsonl"
@@ -605,9 +538,9 @@ class Runtime:
         return True
 
     async def reset_member_context(self, key: str, pid: str) -> None:
-        room = self.room(key)
-        await room.stop()
-        room.reset_member(self._member(pid))
+        convo = self.conversation(key)
+        await convo.stop()
+        convo.reset_member(self._member(pid))
 
     def delete_history_entry(self, key: str, pid: str, index: int) -> None:
         p = self._member(pid)
@@ -622,7 +555,7 @@ class Runtime:
     async def import_sticker_set(self, value: str, limit: int = 120) -> int:
         """Download a Telegram sticker set into the library, labelled by each sticker's emoji."""
         name = parse_set_name(value)
-        bot = self.controller or next(iter(self.bots.values()), None)
+        bot = self.telegram.controller or next(iter(self.telegram.bots.values()), None)
         if bot is None:
             raise ConfigError("需要至少一个能用的 bot 才能下载贴纸包")
         try:
@@ -687,8 +620,8 @@ class Runtime:
         viewer = self.viewer()
         if viewer is None:
             return None
-        room = self.rooms.get(chat_key)
-        recent = [f"{m.speaker_name}: {m.text}" for m in room.messages[-6:]] if room else []
+        convo = self.conversations.get(chat_key)
+        recent = [f"{m.speaker_name}: {m.text}" for m in convo.messages[-6:]] if convo else []
         prompt = look_prompt(what, caption, appearance_lines(self.config.enabled_participants), recent)
         await self.sink.activity(chat_key, viewer, "正在看图")
         try:
@@ -750,19 +683,19 @@ class Runtime:
     async def _alert_owner(self) -> None:
         """Several problems, or an error: tell the owner privately (the user may not watch the logs)."""
         text = self.events.alert_text()
-        if not text or self.controller is None:
+        if not text or not self.telegram.connected:
             return
         self.events.mark_alerted()  # even if it can't be sent: not again every 30 seconds
         for uid in self.config.telegram.allowed_user_ids:
             with suppress(Exception):  # never opened a private chat with the bot
-                await self.controller.send_message(uid, text)
+                await self.telegram.controller.send_message(uid, text)
 
     async def _proactive_tick(self) -> None:
         if self.journal.forget_expired():
             self.refresh_prompts()
         self._chronicle_tick()
         self._memory_tick()
-        if self.controller is not None:
+        if self.telegram.connected:
             await self._followup_tick()
             await self._routine_tick()
         for p in list(self.participants):
@@ -777,7 +710,7 @@ class Runtime:
                 task = asyncio.create_task(self._browse(p))
                 task.add_done_callback(lambda _t, pid=p.id: self._browsing_now.discard(pid))
 
-        if self.controller is None:  # Telegram not running: nowhere to post
+        if not self.telegram.connected:  # no chat app running: nowhere to post
             return
         for p in list(self.participants):
             if self._life_enabled(p.id) or self._asleep(p):
@@ -785,12 +718,12 @@ class Runtime:
             if not self.proactive.due(p.cfg):
                 continue
             chat = self.proactive_chat()
-            room = self.room(chat) if chat else None
-            quiet = seconds_quiet(room.last_activity) if room else 0
-            if room is None or room.busy or quiet < p.cfg.proactive_idle_minutes * 60:
+            convo = self.conversation(chat) if chat else None
+            quiet = seconds_quiet(convo.last_activity) if convo else 0
+            if convo is None or convo.busy or quiet < p.cfg.proactive_idle_minutes * 60:
                 self.proactive.postpone(p.cfg)  # not now; look again in a few minutes
                 continue
-            await self._proactive_attempt(p, room)
+            await self._proactive_attempt(p, convo)
 
     # ---- members' continuing daily life ----
 
@@ -850,7 +783,7 @@ class Runtime:
                        proactive_hours=policy.hours, proactive_idle_minutes=policy.quiet_minutes)
 
     def _life_idle(self) -> bool:
-        return (not self.games.running and not any(room.busy for room in self.rooms.values())
+        return (not self.games.running and not any(convo.busy for convo in self.conversations.values())
                 and not self._browsing_now.intersection(self.config.life.members))
 
     def diary_entries(self) -> list[dict]:
@@ -874,9 +807,9 @@ class Runtime:
 
     def home_view(self) -> dict:
         chat = self.proactive_chat()
-        room = self.rooms.get(chat) if chat else None
+        convo = self.conversations.get(chat) if chat else None
         phone = {}
-        for m in room.messages if room else ():
+        for m in convo.messages if convo else ():
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
         return self.home.view(self._residents(), phone)
@@ -905,7 +838,7 @@ class Runtime:
             raise ConfigError("没有这位成员")
         now = self.home.looks.get(pid, {})
         options = "、".join(f"{key}（{name}）" for key, name in ACCESSORIES.items())
-        prompt = (now_line() + "\n这不是群聊。阿明在家里给每个人做了一个方块小人，你可以给自己挑外形。"
+        prompt = (now_line() + f"\n这不是群聊。{owner.name()}在家里给每个人做了一个方块小人，你可以给自己挑外形。"
                   f"\n现在是颜色 {now.get('color')}、配饰 {ACCESSORIES.get(now.get('accessory'), '无')}。"
                   f"\n配饰只能从这些里选一个：{options}。颜色写成 #rrggbb，按你自己的喜好挑。"
                   '\n只输出 JSON：{"color":"#rrggbb","accessory":"清单里的英文 ID","why":"一句话，为什么这么挑"}')
@@ -981,15 +914,15 @@ class Runtime:
             return any(p.id == pid and not self._asleep(p) and self._life_enabled(pid) for p in self.participants)
         def feed(since):
             chat = self.proactive_chat()
-            room = self.room(chat) if chat else None
-            return [{'speaker': m.speaker_name, 'text': m.text[:1000]} for m in room.messages if m.ts >= since] if room else []
+            convo = self.conversation(chat) if chat else None
+            return [{'speaker': m.speaker_name, 'text': m.text[:1000]} for m in convo.messages if m.ts >= since] if convo else []
         async def wait_public():
             chat = self.proactive_chat()
-            room = self.room(chat) if chat else None
-            if room:
-                count = len(room.messages)
+            convo = self.conversation(chat) if chat else None
+            if convo:
+                count = len(convo.messages)
                 for _ in range(100):
-                    if not room.busy or len(room.messages) > count:
+                    if not convo.busy or len(convo.messages) > count:
                         break
                     await asyncio.sleep(0.2)
         return GameConversation(player, folder, {p.id: p.name for p in self.config.participants},
@@ -1000,9 +933,9 @@ class Runtime:
 
     def _game_share_ready(self, pid):
         chat = self.proactive_chat()
-        room = self.room(chat) if chat else None
+        convo = self.conversation(chat) if chat else None
         if (not self.games.config['share_to_group'] or not self._life_enabled(pid)
-                or self.controller is None or room is None or room.busy):
+                or not self.telegram.connected or convo is None or convo.busy):
             return False
         policy = self._life_policy(self._member(pid))
         plan = self.life_posts.plan(policy)
@@ -1018,11 +951,11 @@ class Runtime:
         if (self.games.running != pid or not image.resolve().is_relative_to(expected.resolve())
                 or image.is_symlink() or image.suffix != '.png' or not image.is_file()):
             raise ConfigError('只允许分享本次游戏生成的截图')
-        room, speaker = self.room(self.proactive_chat()), self._member(pid)
+        convo, speaker = self.conversation(self.proactive_chat()), self._member(pid)
         policy = self._life_policy(speaker)
         self.life_posts.record(policy, None)
         at = time.time()
-        future = room.start_proactive(speaker, lambda _: '', max(1, speaker.cfg.proactive_replies),
+        future = convo.start_proactive(speaker, lambda _: '', max(1, speaker.cfg.proactive_replies),
             prepared_text=caption, discussion=True, image_path=image, image_description=scene)
         if future is None:
             return None
@@ -1165,12 +1098,12 @@ class Runtime:
         if not chat or self._asleep(player):
             log.info('%s 想在群里说「%s」，但现在不方便（没有群或在睡觉），没发', player.name, text)
             return
-        room = self.room(chat)
+        convo = self.conversation(chat)
         for _ in range(12):  # a quiet moment, up to a minute
-            if not room.busy:
+            if not convo.busy:
                 break
             await asyncio.sleep(5)
-        future = room.start_proactive(player, lambda unseen: '', 1, prepared_text=text)
+        future = convo.start_proactive(player, lambda unseen: '', 1, prepared_text=text)
         if future is not None:
             with suppress(Exception):
                 await asyncio.wait_for(future, self.config.round.call_timeout + 60)
@@ -1234,8 +1167,8 @@ class Runtime:
     def _life_context(self, pid: str) -> str:
         p = self._member(pid)
         chat = self.proactive_chat()
-        room = self.room(chat) if chat else None
-        recent = "\n".join(f"{m.speaker_name}：{m.text[:600]}" for m in room.messages[-10:]) if room else "暂无新消息"
+        convo = self.conversation(chat) if chat else None
+        recent = "\n".join(f"{m.speaker_name}：{m.text[:600]}" for m in convo.messages[-10:]) if convo else "暂无新消息"
         interests = p.cfg.browse_topics or p.cfg.proactive_topics or "按自己的兴趣选择"
         friends = "\n".join(
             f"- {m.name}（ID {m.id}）：喜欢 {m.browse_topics or m.proactive_topics or '随缘聊天'}；"
@@ -1246,7 +1179,7 @@ class Runtime:
                 "个人行动可让应用代读具体公开网页，或保存笔记、收藏、创作文字。成果归自己保留，分享仍需另行决定。"
                 "没有搜索能力时可请朋友找链接，不能假装已经查到。个人活动与被朋友找去私聊分开计数。\n"
                 f"最近的公开群聊（不是给你的新任务）：\n{recent}\n"
-                f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, room) else '暂不合适，可以先留着，下次再决定'}。\n"
+                f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, convo) else '暂不合适，可以先留着，下次再决定'}。\n"
                 + self.life.diary.recall(pid, "最近看了什么")
                 + ("\n" + told if (told := self.home.tell(pid)) else ""))
 
@@ -1382,27 +1315,27 @@ class Runtime:
             self._life_member = ""
             self.refresh_prompts()
 
-    def _life_share_ready(self, p: Participant, room: ChatRoom | None) -> bool:
-        if not self._life_enabled(p.id) or self.controller is None or room is None or room.busy:
+    def _life_share_ready(self, p: Participant, convo: Conversation | None) -> bool:
+        if not self._life_enabled(p.id) or not self.telegram.connected or convo is None or convo.busy:
             return False
         policy = self._life_policy(p)
         plan = self.life_posts.plan(policy)
         return (self.life_posts.in_hours(policy) and plan.posts < policy.proactive_per_day
                 and plan.attempts < policy.proactive_per_day * 2
-                and seconds_quiet(room.last_activity) >= policy.proactive_idle_minutes * 60)
+                and seconds_quiet(convo.last_activity) >= policy.proactive_idle_minutes * 60)
 
     async def _life_share(self, pid: str, message: str, sources=()) -> str | None:
         p = self._member(pid)
         chat = self.proactive_chat()
-        room = self.room(chat) if chat else None
-        if not self._life_share_ready(p, room):
+        convo = self.conversation(chat) if chat else None
+        if not self._life_share_ready(p, convo):
             return None
-        if sources and room.shared_recently(sources):
+        if sources and convo.shared_recently(sources):
             return None
         policy = self._life_policy(p)
         # Sharing is selected by the actor; reserve a bounded attempt before posting.
         self.life_posts.record(policy, None)
-        future = room.start_proactive(
+        future = convo.start_proactive(
             p, lambda unseen: build_personal_share_prompt(unseen, message, sources, me=p.id),
             max(1, p.cfg.proactive_replies), sources=sources, discussion=True,
         )
@@ -1423,23 +1356,23 @@ class Runtime:
 
     # ---- drawing stickers for each other ----
 
-    def _on_draw(self, room: ChatRoom, drawer: Participant, request: tuple[str, str], requester) -> None:
+    def _on_draw(self, convo: Conversation, drawer: Participant, request: tuple[str, str], requester) -> None:
         pc = drawer.cfg
         if not (pc.can_draw and supports_drawing(pc)):
             return  # the tag is ignored for members that cannot draw
         if drawer.id in self.drawings.busy:
-            self._spawn(room.deliver_drawing(drawer, "手上这张还没画完，排个队。", None, requester))
+            self._spawn(convo.deliver_drawing(drawer, "手上这张还没画完，排个队。", None, requester))
             return
         if self.drawings.remaining(pc) <= 0:
-            self._spawn(room.deliver_drawing(drawer, "今天画不动了，明天再说。", None, requester))
+            self._spawn(convo.deliver_drawing(drawer, "今天画不动了，明天再说。", None, requester))
             return
         self.drawings.busy.add(drawer.id)
-        self._spawn(self._draw(room, drawer, *request, requester))
+        self._spawn(self._draw(convo, drawer, *request, requester))
 
-    async def _draw(self, room: ChatRoom, drawer: Participant, label: str, description: str, requester) -> None:
+    async def _draw(self, convo: Conversation, drawer: Participant, label: str, description: str, requester) -> None:
         asker = requester.speaker_name if requester is not None else ""
-        await room.sink.activity(room.key, drawer, f"正在画表情包：{label}")
-        log.info("[%s] %s 开始画「%s」：%s", room.key, drawer.name, label, description)
+        await convo.sink.activity(convo.key, drawer, f"正在画表情包：{label}")
+        log.info("[%s] %s 开始画「%s」：%s", convo.key, drawer.name, label, description)
         ok = False
         try:
             path = await drawer.draw(build_draw_prompt(label, description, self.config.enabled_participants))
@@ -1449,13 +1382,13 @@ class Runtime:
             ok = True
             self.refresh_prompts()  # everyone can use the new sticker now
             text = f"画好了 @{asker}，拿去用。" if asker and asker != drawer.name else "画好了。"
-            log.info("[%s] %s 画好了「%s」", room.key, drawer.name, label)
-            await room.sink.clear_activity(room.key, drawer)
-            await room.deliver_drawing(drawer, text, sticker, requester)
+            log.info("[%s] %s 画好了「%s」", convo.key, drawer.name, label)
+            await convo.sink.clear_activity(convo.key, drawer)
+            await convo.deliver_drawing(drawer, text, sticker, requester)
         except Exception as e:
             log.warning("%s 画图失败：%s", drawer.id, e)
-            await room.sink.clear_activity(room.key, drawer)
-            await room.deliver_drawing(drawer, "这张翻车了，没画出来。", None, requester)
+            await convo.sink.clear_activity(convo.key, drawer)
+            await convo.deliver_drawing(drawer, "这张翻车了，没画出来。", None, requester)
         finally:
             self.drawings.busy.discard(drawer.id)
             self.drawings.record(Drawing(time.time(), drawer.id, asker, label, description, ok))
@@ -1473,17 +1406,17 @@ class Runtime:
 
     async def _followup_tick(self) -> None:
         for item in self.followups.due()[:1]:  # at most one per check
-            room = self.room(item.chat)
+            convo = self.conversation(item.chat)
             asker = self._followup_asker(item)
             if asker is None:  # everyone is asleep: when someone is up; no members at all: drop it
                 self.followups.later(item) if self.participants else self.followups.finish(item, asked=False)
                 continue
-            future = None if room.busy else room.start_proactive(
+            future = None if convo.busy else convo.start_proactive(
                 asker, lambda unseen, item=item: build_followup_prompt(item, unseen, now_line()), 1)
             if future is None:  # the group is busy: a bit later
                 self.followups.later(item)
                 continue
-            log.info("[%s] %s 想起来要问：%s", room.key, asker.name, item.text)
+            log.info("[%s] %s 想起来要问：%s", convo.key, asker.name, item.text)
             try:
                 posted = await asyncio.wait_for(future, self.config.round.call_timeout + 60)
             except Exception as e:
@@ -1504,17 +1437,17 @@ class Runtime:
     async def _routine_tick(self) -> None:
         """Someone just woke up or is going to bed: it may say so, or answer what it missed."""
         chat = self.proactive_chat()
-        room = self.room(chat) if chat else None
+        convo = self.conversation(chat) if chat else None
         for p in self.participants:
             self.home.settle(p.id, self.routines.status(p))
         for p, before, after in self.routines.changes(self.participants, self._routine_last):
             if before == ASLEEP:
                 self._routine_events.append((p.id, "wake", time.time()))
-            elif after == ASLEEP and room is not None and seconds_quiet(room.last_activity) < 1800:
+            elif after == ASLEEP and convo is not None and seconds_quiet(convo.last_activity) < 1800:
                 if random.random() < GOODNIGHT_CHANCE:
                     self._routine_events.append((p.id, "sleep", time.time()))
         self._routine_events = [e for e in self._routine_events if time.time() - e[2] < 7200]
-        if room is None or room.busy or not self._routine_events:
+        if convo is None or convo.busy or not self._routine_events:
             return
         pid, kind, _ = self._routine_events.pop(0)
         p = next((m for m in self.participants if m.id == pid), None)
@@ -1524,18 +1457,18 @@ class Runtime:
             # Only what was said while it slept: after a reset, older talk is unseen too, but not missed.
             asleep = fell_asleep(p.cfg, self.routines.now())
             since = asleep.timestamp() if asleep else 0.0
-            missed = [m for m in room._unseen(p) if m.from_user and m.ts >= since]
+            missed = [m for m in convo._unseen(p) if m.from_user and m.ts >= since]
             # Nothing missed: only sometimes a "morning", and not from Claude (it shares the owner's quota).
-            if not missed and (p.cfg.kind == "claude_cli" or random.random() >= MORNING_CHANCE or not room.messages):
+            if not missed and (p.cfg.kind == "claude_cli" or random.random() >= MORNING_CHANCE or not convo.messages):
                 return
             make = lambda unseen: wake_prompt([m for m in unseen if m.ts >= since], now_line(), bool(missed))  # noqa: E731
         else:
             make = lambda unseen: goodnight_prompt(unseen, now_line())  # noqa: E731
-        future = room.start_proactive(p, make, 1 if kind == "wake" else 0,
+        future = convo.start_proactive(p, make, 1 if kind == "wake" else 0,
                                       show_images_since=since if kind == "wake" else None)
         if future is None:
             return
-        log.info("[%s] %s %s", room.key, p.name, "睡醒了，看看群" if kind == "wake" else "要去睡了")
+        log.info("[%s] %s %s", convo.key, p.name, "睡醒了，看看群" if kind == "wake" else "要去睡了")
         try:
             await asyncio.wait_for(future, self.config.round.call_timeout + 60)
         except Exception as e:  # noqa: BLE001
@@ -1549,15 +1482,15 @@ class Runtime:
         chat = self.proactive_chat()
         if not chat:
             return
-        room = self.room(chat)
+        convo = self.conversation(chat)
         now = now or datetime.now()
         oldest = (now - timedelta(days=3)).date().isoformat()  # catch up on a few missed days at most
-        days = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts)
+        days = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in convo.messages if m.ts)
         candidates = [d for d, n in days.items() if n >= CHRONICLE_MIN_MESSAGES and d >= oldest]
         day = self.chronicle.day_to_write(candidates, now)
         if day is not None:
             self._chronicle_running = True
-            self._spawn(self._write_chronicle(room, day))
+            self._spawn(self._write_chronicle(convo, day))
 
     # ---- learning about the user from the day's chat ----
 
@@ -1567,18 +1500,18 @@ class Runtime:
         chat = self.proactive_chat()
         if not chat:
             return
-        room = self.room(chat)
+        convo = self.conversation(chat)
         now = now or datetime.now()
-        said = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in room.messages if m.ts and m.from_owner)
+        said = Counter(datetime.fromtimestamp(m.ts).date().isoformat() for m in convo.messages if m.ts and m.from_owner)
         day = self.memory.day_to_consolidate([d for d, n in said.items() if n >= MIN_USER_MESSAGES], now)
         if day is not None:
             self._memory_running = True
-            self._spawn(self._consolidate_memory(room, day))
+            self._spawn(self._consolidate_memory(convo, day))
 
-    async def _consolidate_memory(self, room: ChatRoom, day: str) -> list:
+    async def _consolidate_memory(self, convo: Conversation, day: str) -> list:
         """Read one day's chat and keep what the user said about himself, with his words as proof."""
         try:
-            todays = [m for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
+            todays = [m for m in convo.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
             user_texts = [m.text for m in todays if m.from_owner]  # what guests say is not about the owner
             if not user_texts:
                 self.memory.record_consolidation(day, [], self.config.memory_learn, 0.0)
@@ -1616,7 +1549,7 @@ class Runtime:
             raise ConfigError('长期记忆的学习方式是「关闭」，先改成「需要我确认」或「自动记住」')
         day = day or datetime.now().date().isoformat()
         self._memory_running = True
-        return await self._consolidate_memory(self.room(chat), day)
+        return await self._consolidate_memory(self.conversation(chat), day)
 
     def _chronicle_writer(self) -> Participant | None:
         """The cheapest member to write the day up: an API one, then Codex or Grok, Claude last."""
@@ -1624,12 +1557,12 @@ class Runtime:
         members = sorted(self.participants, key=lambda p: rank.get(p.cfg.kind, 4))
         return members[0] if members else None
 
-    async def _write_chronicle(self, room: ChatRoom, day: str) -> list:
+    async def _write_chronicle(self, convo: Conversation, day: str) -> list:
         import uuid
 
         try:
             lines = [f"{datetime.fromtimestamp(m.ts):%H:%M} {label(m)}: {m.text[:300]}"
-                     for m in room.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
+                     for m in convo.messages if m.ts and datetime.fromtimestamp(m.ts).date().isoformat() == day]
             writer = self._chronicle_writer()
             if writer is None or not lines:
                 return []
@@ -1669,7 +1602,7 @@ class Runtime:
         day = day or datetime.now().date().isoformat()
         self.chronicle.forget_day(day)
         self._chronicle_running = True
-        return await self._write_chronicle(self.room(chat), day)
+        return await self._write_chronicle(self.conversation(chat), day)
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -1722,7 +1655,7 @@ class Runtime:
         finally:
             self._browsing_now.discard(pid)
 
-    async def _proactive_attempt(self, p: Participant, room: ChatRoom) -> str | None:
+    async def _proactive_attempt(self, p: Participant, convo: Conversation) -> str | None:
         pc = p.cfg
         can_search = pc.web_search and supports_web_search(pc)
         entry = self.journal.best_unshared(pc.id)
@@ -1737,12 +1670,12 @@ class Runtime:
 
         sources = [{"url": entry.url, "title": entry.title, "excerpt": entry.summary,
                     "read_level": entry.read_level or "群友的浏览摘记，未记录具体阅读范围"}] if entry else []
-        future = room.start_proactive(p, make_prompt, pc.proactive_replies, sources=sources,
+        future = convo.start_proactive(p, make_prompt, pc.proactive_replies, sources=sources,
                                       discussion=bool(entry))
         if future is None:
             self.proactive.postpone(pc)
             return None
-        log.info("[%s] %s 主动发言中……", room.key, p.name)
+        log.info("[%s] %s 主动发言中……", convo.key, p.name)
         try:
             posted = await asyncio.wait_for(future, self.config.round.call_timeout + 60)
         except Exception as e:
@@ -1760,15 +1693,15 @@ class Runtime:
         p = next((x for x in self.participants if x.id == pid), None)
         if p is None:
             raise ConfigError("这个成员没有启用，或者启动失败了")
-        if self.controller is None:
+        if not self.telegram.connected:
             raise ConfigError("Telegram 还没连上，发不出去")
         chat = self.proactive_chat()
         if chat is None:
             raise ConfigError("还不知道要发到哪个群：先在群里聊一句，或在「群聊规则」里填主动发言的群 ID")
-        room = self.room(chat)
-        if room.busy:
+        convo = self.conversation(chat)
+        if convo.busy:
             raise ConfigError("群里正在聊，等这一轮结束再试")
-        posted = await self._proactive_attempt(p, room)
+        posted = await self._proactive_attempt(p, convo)
         return {"chat": chat, "posted": posted}
 
     async def set_max_turns(self, n: int) -> None:
@@ -1793,29 +1726,24 @@ class Runtime:
                 "kind": pc.kind,
                 "state": state,
                 "message": message,
-                "bot_username": self.bot_usernames.get(pc.id, ""),
+                "bot_username": self.telegram.bot_usernames.get(pc.id, ""),
                 "routine": self._routine_label(running[pc.id]) if pc.id in running else "",
             })
-        rooms = [
+        convos = [
             {
-                "key": room.key,
-                "busy": room.busy,
-                "message_count": len(room.messages),
-                "recent": [{"speaker": m.speaker_name, "text": m.text} for m in room.messages[-12:]],
-                "urges": room.decision_report(),
+                "key": convo.key,
+                "busy": convo.busy,
+                "message_count": len(convo.messages),
+                "recent": [{"speaker": m.speaker_name, "text": m.text} for m in convo.messages[-12:]],
+                "urges": convo.decision_report(),
             }
-            for room in self.rooms.values()
-            if room.key != TEST_CHAT
+            for convo in self.conversations.values()
+            if convo.key != TEST_CHAT
         ]
         return {
-            "telegram": {
-                "state": self.telegram_state,
-                "controller": self.controller_username,
-                "privacy_warning": self.privacy_warning,
-                "reaction_warning": self.reaction_warning,
-            },
+            "telegram": self.telegram.status(),
             "members": members,
-            "rooms": rooms,
+            "conversations": convos,
             "pending_memory": self.memory.pending_count(),
             "proactive": {
                 "chat": self.proactive_chat(),
@@ -1839,79 +1767,12 @@ class Runtime:
             await asyncio.wait_for(self._changed.wait(), timeout)
         self._changed.clear()
 
-    async def telegram_loop(self) -> None:
-        """Keep the controller bot polling; restart it when its token or the setup changes."""
-        while True:
-            problems = telegram_problems(self.config)
-            if problems:
-                self.telegram_state = "未配置：" + "；".join(problems)
-                await self._wait_change()
-                continue
-
-            token = self.config.telegram.controller_token
-            try:
-                bot = Bot(token)
-            except Exception as e:
-                self.telegram_state = f"总控 bot token 格式不对：{e}"
-                await self._wait_change()
-                continue
-            try:
-                me = await asyncio.wait_for(bot.get_me(), 20)
-            except Exception as e:
-                self.telegram_state = f"总控 bot 连接失败，30 秒后重试：{e}"
-                await bot.session.close()
-                await self._wait_change(timeout=30)
-                continue
-
-            self.controller, self.controller_username = bot, me.username or ""
-            self.privacy_warning = not me.can_read_all_group_messages
-            if self.privacy_warning:
-                log.warning("总控 bot @%s 开着 privacy mode，收不到群里的普通消息", me.username)
-            self.reaction_warning = False
-            chat = self.proactive_chat()
-            if chat:
-                with suppress(Exception):
-                    member = await asyncio.wait_for(bot.get_chat_member(int(chat), me.id), 20)
-                    self.reaction_warning = member.status not in ("administrator", "creator")
-                if self.reaction_warning:
-                    log.warning("总控 bot @%s 不是群管理员，收不到你在群里点的赞和踩", me.username)
-            with suppress(Exception):
-                await bot.set_my_commands(BOT_COMMANDS)
-
-            dp = Dispatcher()
-            dp.include_router(build_router(self))
-            polling = asyncio.create_task(
-                dp.start_polling(bot, handle_signals=False, allowed_updates=["message", "message_reaction"])
-            )
-            self.telegram_state = "运行中"
-            log.info("总控 bot @%s 开始接收消息", me.username)
-            try:
-                while True:
-                    changed = asyncio.create_task(self._wait_change())
-                    done, _ = await asyncio.wait({polling, changed}, return_when=asyncio.FIRST_COMPLETED)
-                    if polling in done:
-                        changed.cancel()
-                        self.telegram_state = f"接收消息中断，5 秒后重连：{polling.exception()}"
-                        await asyncio.sleep(5)
-                        break
-                    if self.config.telegram.controller_token != token or telegram_problems(self.config):
-                        break
-            finally:
-                if not polling.done():
-                    with suppress(Exception):
-                        await dp.stop_polling()
-                    with suppress(BaseException):
-                        await polling
-                self.controller = None
-                await bot.session.close()
-
     async def shutdown(self) -> None:
         await self._cancel_life()
         await self.stop_game()
-        for room in self.rooms.values():
-            await room.stop()
-        for bot in self.bots.values():
-            await bot.session.close()
+        for convo in self.conversations.values():
+            await convo.stop()
+        await self.telegram.shutdown()
 
 
 __all__ = ["LogBuffer", "ParticipantError", "Runtime"]

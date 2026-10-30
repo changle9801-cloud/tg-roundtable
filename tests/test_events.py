@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from roundtable.events import ALERT_EVERY, DOWN_AFTER, EventLog
+from nookling.events import ALERT_EVERY, DOWN_AFTER, EventLog
 
 
 class Clock:
@@ -16,7 +16,7 @@ class Clock:
 
 
 def log_with(events: EventLog) -> logging.Logger:
-    logger = logging.getLogger("roundtable.room.test")
+    logger = logging.getLogger("nookling.conversation.test")
     logger.handlers[:] = [events]
     logger.propagate = False
     return logger
@@ -36,7 +36,7 @@ def test_warnings_are_kept_and_repeats_merged(tmp_path):
     again = EventLog(tmp_path, now=clock)  # after a restart
     items = again.recent()
     assert [e["level"] for e in items] == ["error", "warning"]
-    assert items[1]["count"] == 2 and items[1]["source"] == "room.test"
+    assert items[1]["count"] == 2 and items[1]["source"] == "conversation.test"
     assert items[0]["text"].endswith("ValueError: bad")
 
 

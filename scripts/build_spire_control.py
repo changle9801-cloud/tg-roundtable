@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from roundtable.games.spire import ASSETS, exclusive_game, process_alive
+from nookling.games.spire import ASSETS, exclusive_game, process_alive
 
 
 def build(root, install):

@@ -3,7 +3,7 @@
     <data_dir>/chronicle.json
 
 Once a day (late evening, or the next time the bot runs) one member reads that day's group
-chat and writes down one to three moments worth remembering ("阿明把洗衣液倒进了咖啡机"),
+chat and writes down one to three moments worth remembering ("the owner poured detergent into the coffee machine"),
 plus any running joke the group made up; those go into the meme library. Every member sees
 the recent moments, so "你上次不是还……" becomes possible.
 """

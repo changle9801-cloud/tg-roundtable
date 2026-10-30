@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 from conftest import FakeSink
 
-from roundtable.config import RoundConfig
-from roundtable.life import LifeStore
-from roundtable.prompts import build_turn_prompt
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
-from roundtable.transcript import GUEST_NOTE, USER, Message, label
+from nookling.config import RoundConfig
+from nookling.life import LifeStore
+from nookling.prompts import build_turn_prompt
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
+from nookling.transcript import USER, Message, label
 
 
 def test_a_guest_is_labelled_and_kept_across_restarts():
@@ -26,16 +26,16 @@ def test_a_guest_is_labelled_and_kept_across_restarts():
     assert Message.from_json(json.loads(json.dumps(guest.to_json()))).guest
     assert "guest" not in owner.to_json()
     prompt = build_turn_prompt([owner, guest], 2)
-    assert "小林（群友）: 大阪" in prompt and GUEST_NOTE in prompt
-    assert GUEST_NOTE not in build_turn_prompt([owner], 2)
+    assert "小林（群友）: 大阪" in prompt and "不是主人本人" in prompt
+    assert "不是主人本人" not in build_turn_prompt([owner], 2)
 
 
 async def test_the_members_see_who_is_a_guest(make, store):
     codex = make("codex", ["你在哪个城市？"])
-    room = ChatRoom("chat", [codex], FakeSink(), RoundConfig(call_timeout=5), store)
+    room = Conversation("chat", [codex], FakeSink(), RoundConfig(call_timeout=5), store)
     room.add_user_message("小林", "@Codex 介绍一下今天天气", guest=True)
     await room.wait_idle()
-    assert "小林（群友）" in codex.prompts[0] and "不是阿明本人" in codex.prompts[0]
+    assert "小林（群友）" in codex.prompts[0] and "不是主人本人" in codex.prompts[0]
     assert room.messages[0].guest
 
 
@@ -50,7 +50,7 @@ def test_the_first_allowed_id_is_the_owner(tmp_path):
 async def test_what_a_guest_says_is_not_remembered_about_the_owner(tmp_path):
     rt = Runtime(SettingsStore(tmp_path))
     rt.refresh_prompts = lambda: None
-    room = rt.room("-100")
+    room = rt.conversation("-100")
     day = datetime(2026, 10, 27, 8, 0).timestamp()
     for i, text in enumerate(["今天又加班到九点", "下个月想去成都玩", "成都那边吃得好"]):
         room.messages.append(Message(USER, "Orion", text, (), day + i * 60))
@@ -59,7 +59,7 @@ async def test_what_a_guest_says_is_not_remembered_about_the_owner(tmp_path):
 
     async def cheap(prompt, system, purpose="game_memory"):
         asked.append(prompt)
-        return json.dumps([{"about": "阿明", "text": "阿明住在大阪", "quote": "我住在大阪", "replaces": ""}],
+        return json.dumps([{"about": "主人", "text": "主人住在大阪", "quote": "我住在大阪", "replaces": ""}],
                           ensure_ascii=False)
 
     rt._cheap_ask = cheap
@@ -70,7 +70,7 @@ async def test_what_a_guest_says_is_not_remembered_about_the_owner(tmp_path):
 
 def test_a_guest_reaction_teaches_nothing(tmp_path):
     rt = Runtime(SettingsStore(tmp_path))
-    room = rt.room("-100")
+    room = rt.conversation("-100")
     target = Message("codex", "Codex", "嗯，这句爱听", (), time.time())
     room._append(target)
     room.message_for = lambda tg_id: target

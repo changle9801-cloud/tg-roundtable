@@ -7,15 +7,15 @@ from collections import Counter
 
 from conftest import FakeSink
 
-from roundtable.moderator import RuleModerator
-from roundtable.participants import ParticipantError
-from roundtable.room import ChatRoom
-from roundtable.transcript import Message
+from nookling.moderator import RuleModerator
+from nookling.participants import ParticipantError
+from nookling.conversation import Conversation
+from nookling.transcript import Message
 
 
 def room_with(participants, round_cfg, store, seed=0):
     sink = FakeSink()
-    room = ChatRoom("chat", participants, sink, round_cfg, store, RuleModerator(random.Random(seed)))
+    room = Conversation("chat", participants, sink, round_cfg, store, RuleModerator(random.Random(seed)))
     return room, sink
 
 
@@ -184,12 +184,12 @@ async def test_no_one_keeps_the_first_answer_forever(make, round_cfg, store):
 
 
 async def test_talking_to_everyone_brings_more_replies(make, store):
-    from roundtable.config import RoundConfig
+    from nookling.config import RoundConfig
 
     def second_replies(text):
         a, b = make("a", ["嗯"]), make("b", ["嗯"])
         cfg = RoundConfig(max_turns_per_model=1, call_timeout=5, follow_up_chance=0.5, follow_up_decay=0.4)
-        room = ChatRoom("chat", [a, b], FakeSink(), cfg, store, RuleModerator(random.Random(0)))
+        room = Conversation("chat", [a, b], FakeSink(), cfg, store, RuleModerator(random.Random(0)))
         room.moderator.rng.random = lambda: 0.4  # between a plain second reply (0.25) and one to everyone (0.55)
         room.add_user_message("me", text)
         return room

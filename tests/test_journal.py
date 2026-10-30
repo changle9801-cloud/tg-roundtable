@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from roundtable.config import ConfigError, ParticipantConfig
-from roundtable.journal import BROWSE_CHAT, DAY, JournalStore, browse_once, parse_findings
-from roundtable.prompts import build_browse_prompt, build_share_prompt
+from nookling.config import ConfigError, ParticipantConfig
+from nookling.journal import BROWSE_CHAT, DAY, JournalStore, browse_once, parse_findings
+from nookling.prompts import build_browse_prompt, build_share_prompt
 
 NOW = 1_800_000_000.0
 

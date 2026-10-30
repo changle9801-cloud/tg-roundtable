@@ -6,12 +6,12 @@ import random
 
 from conftest import FakeSink
 
-from roundtable.config import RoundConfig
-from roundtable.moderator import RuleModerator
-from roundtable.prompts import FRIEND_RULES, ask_search_instructions, search_instructions
-from roundtable.room import ChatRoom
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore, build_config, normalize_settings
+from nookling.config import RoundConfig
+from nookling.moderator import RuleModerator
+from nookling.prompts import FRIEND_RULES, ask_search_instructions, search_instructions
+from nookling.conversation import Conversation
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore, build_config, normalize_settings
 
 
 def test_prompt_for_a_member_without_search():
@@ -55,7 +55,7 @@ async def test_ask_and_answer_go_back_and_forth(make, store):
     other = make("grok", ["g"])
     cfg = RoundConfig(max_turns_per_model=2, call_timeout=5, follow_up_chance=0.0, follow_up_decay=0.0)
     sink = FakeSink()
-    room = ChatRoom("chat", [ds, codex, other], sink, cfg, store, RuleModerator(random.Random(0)))
+    room = Conversation("chat", [ds, codex, other], sink, cfg, store, RuleModerator(random.Random(0)))
     room.add_user_message("me", "@Deepseek 最近新出的那个游戏你玩了吗")
     await room.wait_idle()
     assert [pid for pid, _ in sink.posts] == ["deepseek", "codex", "deepseek"]

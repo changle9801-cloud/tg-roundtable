@@ -12,14 +12,14 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from roundtable.chronicle import Chronicle
-from roundtable.life import LifeStore
-from roundtable.memes import MEME_INSTRUCTIONS, MemeLibrary
-from roundtable.participants import SessionStore, participant_class
-from roundtable.prompts import build_system_prompt, build_turn_prompt, render_role
-from roundtable.runtime import Runtime
-from roundtable.settings import build_config
-from roundtable.transcript import Message, USER
+from nookling.chronicle import Chronicle
+from nookling.life import LifeStore
+from nookling.memes import MEME_INSTRUCTIONS, MemeLibrary
+from nookling.participants import SessionStore, participant_class
+from nookling.prompts import build_system_prompt, build_turn_prompt, render_role
+from nookling.runtime import Runtime
+from nookling.settings import build_config
+from nookling.transcript import Message, USER
 
 
 CORRECTION = '刚才是我没对上私聊那段，你没记错。后来查了资料，生火沉没是 Aspidochelone 那边的情节，和 Hafgufa 的故事混在一起了，生火那条不能放在 Hafgufa 底下。'

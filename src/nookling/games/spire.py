@@ -298,7 +298,7 @@ class SpireProcess:
             display.write_text('1280\n720\n60\nfalse\nfalse\ntrue\n', encoding='utf-8')
         config_dir = self.profile / 'appdata' / 'ModTheSpire' / 'CommunicationMod'
         config_dir.mkdir(parents=True, exist_ok=True)
-        command = f'{sys.executable} -X utf8 -m roundtable.games.spire_bridge --directory {self.bridge} --session {self.session}'
+        command = f'{sys.executable} -X utf8 -m nookling.games.spire_bridge --directory {self.bridge} --session {self.session}'
         if any(' ' in str(p) for p in (sys.executable, self.bridge)):
             raise ConfigError('CommunicationMod 的进程接口不支持带空格的 Python 或数据路径')
         command = command.replace('\\', '\\\\').replace(':', '\\:')
@@ -320,7 +320,7 @@ class SpireProcess:
                'ROUNDTABLE_CAPTURE_DIR': str((self.run_dir / 'screenshots').resolve())}
         self.proc = subprocess.Popen([str(java), '-Xmx768M', '-Dfile.encoding=UTF-8',
                 '-Duser.home=' + str(self.profile / 'home'), '-jar', 'ModTheSpire.jar',
-                '--mods', 'basemod,CommunicationMod,roundtable-control', '--skip-intro'],
+                '--mods', 'basemod,CommunicationMod,nookling-control', '--skip-intro'],
                 cwd=self.profile, env=env, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         atomic_json(self.root / 'active.json', {'member': self.member, 'pid': self.proc.pid,

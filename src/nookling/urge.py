@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from . import owner
 from .routine import BUSY_FACTOR, FRIEND_NAME_WAKE_CHANCE, FRIEND_WAKE_CHANCE, WAKE_CHANCE
 
 # Wanting to speak about the latest message: reasons, added up...
@@ -74,7 +75,7 @@ def _activity(cfg) -> str:
 def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: bool, named: bool, follows: bool,
                    interested: bool, said: int, busy: bool, liveliness: float, crowding: float,
                    brief: bool = False, about: bool = False, in_thread: bool = False,
-                    fondness: float = 0.0, of: str = "", user: str = "阿明", experienced: bool = False) -> Urge:
+                    fondness: float = 0.0, of: str = "", user: str = "", experienced: bool = False) -> Urge:
     """How much she wants to say something now that the latest message has landed.
 
     ``replies``: replies already started since the message that opened the round; the more
@@ -90,7 +91,7 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
         if to_all:
             parts.append(("说给大家", TO_ALL * crowd))
     if answering:
-        parts.append((f"刚和{user}说话的是她", ANSWERING))
+        parts.append((f"刚和{user or owner.name()}说话的是她", ANSWERING))
     if named:
         parts.append(("被朋友喊名字", NAMED))
     elif follows:
@@ -113,7 +114,7 @@ def wants_to_speak(p, *, pending: bool, replies: int, answering: bool, to_all: b
     if said:
         factors.append((f"这轮说过 {said} 句", TIRED ** said))
     if brief and pending:
-        factors.append(("阿明只是应了一声", BRIEF))
+        factors.append((f"{user or owner.name()}只是应了一声", BRIEF))
     if liveliness != 1:
         factors.append(("热闹程度", liveliness))
     return Urge(p.name, parts, factors, sure=liveliness >= 1 / DEFAULT_LIVELINESS)
@@ -125,7 +126,7 @@ def woken_by_friend(p, *, at: bool) -> Urge:
 
 def woken_by_user() -> Urge:
     """The user speaks and everyone is asleep: one of them may wake (who is drawn afterwards)."""
-    return Urge("有人", [("大家都睡着时阿明说话", WAKE_CHANCE)])
+    return Urge("有人", [(f"大家都睡着时{owner.name()}说话", WAKE_CHANCE)])
 
 
 def interested(cfg, text: str) -> bool:

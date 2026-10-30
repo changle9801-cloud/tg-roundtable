@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
+from . import owner
 from .config import RoundConfig
 from .drawing import extract_draw_requests
 from .followups import FUTURE_WORDS, extract_followups
@@ -58,8 +59,8 @@ MAX_TG_IDS = 500  # Telegram message ids remembered per chat, for reactions and 
 MemoryHook = Callable[[Participant, list[str]], None]
 MemeHook = Callable[[Participant, list[tuple[str, str]]], None]
 FollowUpHook = Callable[[str, Participant, list], None]  # chat, member, [(when, what)]
-# (room, drawer, (label, description), message that asked for it or None)
-DrawHook = Callable[["ChatRoom", Participant, tuple[str, str], "Message | None"], None]
+# (conversation, drawer, (label, description), message that asked for it or None)
+DrawHook = Callable[["Conversation", Participant, tuple[str, str], "Message | None"], None]
 
 
 @dataclass
@@ -105,7 +106,7 @@ class _RoundState:
 
 
 class Sink(Protocol):
-    """Where the room's output goes (Telegram, console, tests)."""
+    """Where the conversation's output goes (Telegram, console, tests)."""
 
     async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> int | None:
         """Post ``text`` (quoting message ``reply_to`` if given); returns the sent message's id if known."""
@@ -144,7 +145,7 @@ def setup_system_prompts(
         )
 
 
-class ChatRoom:
+class Conversation:
     def __init__(
         self,
         key: str,
@@ -383,7 +384,7 @@ class ChatRoom:
                     if priority or owed:
                         speaker = priority or self.moderator.pick(owed, latest, state.last_speaker)
                         self._note("欠的回答", speaker.name, latest, "要她核对" if speaker is priority else
-                                   "阿明点了她" if speaker.id in state.called else "被朋友 @，或该她接着说")
+                                   f"{owner.name()}点了她" if speaker.id in state.called else "被朋友 @，或该她接着说")
                     elif state.discussion_next:
                         speaker = candidates[0]  # the other one in a shared link's exchange
                         self._note("欠的回答", speaker.name, latest, "分享的链接，两人接着聊")
@@ -560,7 +561,7 @@ class ChatRoom:
                 to_all=state.to_all, brief=state.brief, named=comeback and p.id in named, follows=follows,
                 about=p.id in about, in_thread=p.id in recent,
                 fondness=0.0 if latest.guest else self.affinity.get(p.id, {}).get(latest.speaker_id, 0.0),
-                of=latest.speaker_name, user=latest.speaker_name if latest.from_user else "阿明",
+                of=latest.speaker_name, user=latest.speaker_name if latest.from_user else owner.name(),
                 interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
                 experienced=bool(self.has_experience and self.has_experience(p.id, memory_topic)),
                 liveliness=liveliness, crowding=self.follow_up_decay)

@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from roundtable.life import LifeEngine, LifeStore
+from nookling.life import LifeEngine, LifeStore
 from test_life import Script, runtime
 
 
@@ -39,7 +39,7 @@ def test_negative_reading_counts_as_experience_but_failed_read_does_not(tmp_path
 
 
 def test_diary_deduplicates_receipts_and_feelings_fade_without_losing_story(tmp_path):
-    from roundtable.diary import DiaryStore
+    from nookling.diary import DiaryStore
     clock = [datetime(2026, 10, 30, 12).timestamp()]
     diary = DiaryStore(tmp_path, now=lambda: clock[0])
     entry = diary.record("codex", "receipt-1", reading())
@@ -53,11 +53,11 @@ def test_diary_deduplicates_receipts_and_feelings_fade_without_losing_story(tmp_
 
 
 def test_own_experience_changes_participation_and_enters_only_owners_context(tmp_path):
-    from roundtable.room import _RoundState
-    from roundtable.transcript import Message
+    from nookling.conversation import _RoundState
+    from nookling.transcript import Message
     r = runtime(tmp_path)
     r.life.remember_discovery("claude", reading())
-    room = r.room(-100)
+    room = r.conversation(-100)
     message = Message("user", "Orion", "磁吸手柄靠谱吗", ts=100)
     room.messages.append(message)
     scored = {p.id: chance for p, chance, _ in room._urges(r.participants, message, _RoundState(room._fresh_turns(), None))}
@@ -155,7 +155,7 @@ def test_game_diary_preserves_watching_and_follows_corrections_and_hiding(tmp_pa
 def test_video_receipt_requires_content_and_preserves_actual_reading_extent():
     import json
     from types import SimpleNamespace
-    from roundtable.video_reading import video_receipt
+    from nookling.video_reading import video_receipt
     url = "https://www.youtube.com/watch?v=example"
     def result(body):
         return SimpleNamespace(isError=False, content=[SimpleNamespace(type="text", text=json.dumps(body))])

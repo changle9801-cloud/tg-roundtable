@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler
 
-from roundtable.life import LifeStore
-from roundtable.participants import SessionStore, participant_class
-from roundtable.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt, build_turn_prompt, chat_style_context, render_role
-from roundtable.settings import build_config
-from roundtable.transcript import Message, USER
+from nookling.life import LifeStore
+from nookling.participants import SessionStore, participant_class
+from nookling.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt, build_turn_prompt, chat_style_context, render_role
+from nookling.settings import build_config
+from nookling.transcript import Message, USER
 
 
 STYLES = {
@@ -40,7 +40,7 @@ async def main(root, only_after=False):
     secrets = json.loads((root / "secrets.json").read_text(encoding="utf-8"))
     base = "http://127.0.0.1:" + str(saved["web"]["port"])
     opener = build_opener(ProxyHandler({}))
-    headers = {"Cookie": "roundtable_admin=" + secrets["web_token"], "Origin": base, "Content-Type": "application/json"}
+    headers = {"Cookie": "nookling_admin=" + secrets["web_token"], "Origin": base, "Content-Type": "application/json"}
     def request(path, body=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
         with opener.open(Request(base + path, headers=headers, data=data), timeout=15) as response:

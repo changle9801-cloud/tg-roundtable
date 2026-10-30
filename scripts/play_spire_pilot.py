@@ -4,8 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from roundtable.games.spire import GameService, make_game_actor
-from roundtable.settings import build_config
+from nookling.games.spire import GameService, make_game_actor
+from nookling.settings import build_config
 
 
 async def main(root, member, install, decisions):

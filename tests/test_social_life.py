@@ -4,7 +4,7 @@ import json
 
 from test_life import IDEA, Script, observation, runtime
 
-from roundtable.life import LifeStore
+from nookling.life import LifeStore
 
 
 VIDEO = {"url": "https://example.com/game-video", "title": "游戏机改装视频",

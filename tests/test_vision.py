@@ -10,16 +10,16 @@ from types import SimpleNamespace
 
 from aiogram.types import Chat, Message, PhotoSize, Sticker as TgSticker
 
-from roundtable.config import ParticipantConfig
-from roundtable.participants import SessionStore
-from roundtable.participants import codex_cli
-from roundtable.participants.codex_cli import DISABLED_FEATURES, CodexCLI
-from roundtable.prompts import FRIEND_RULES
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore, normalize_settings
-from roundtable.stickers import StickerLibrary
-from roundtable.telegram_bot import describe, to_look_at
-from roundtable.vision import SeenCache
+from nookling.config import ParticipantConfig
+from nookling.participants import SessionStore
+from nookling.participants import codex_cli
+from nookling.participants.codex_cli import DISABLED_FEATURES, CodexCLI
+from nookling.prompts import FRIEND_RULES
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore, normalize_settings
+from nookling.stickers import StickerLibrary
+from nookling.apps.telegram import describe, to_look_at
+from nookling.vision import SeenCache
 
 JPG = b"\xff\xd8\xff" + b"0" * 16
 

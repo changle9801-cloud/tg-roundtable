@@ -2,12 +2,12 @@ import json
 
 import pytest
 
-from roundtable.participants import ParticipantError
-from roundtable.participants.claude_cli import parse_output
-from roundtable.participants.codex_cli import parse_events
-from roundtable.participants.grok_cli import parse_output as parse_grok
-from roundtable.prompts import clean_reply
-from roundtable.telegram_bot import split_text
+from nookling.participants import ParticipantError
+from nookling.participants.claude_cli import parse_output
+from nookling.participants.codex_cli import parse_events
+from nookling.participants.grok_cli import parse_output as parse_grok
+from nookling.prompts import clean_reply
+from nookling.apps.telegram import split_text
 
 
 @pytest.mark.parametrize("raw", ["[PASS]", "PASS", " [pass] ", "[PASS]。", "", "Claude: [PASS]"])
@@ -87,7 +87,7 @@ def test_parse_grok_keeps_the_answer_after_a_search():
 
 
 def test_grok_search_events():
-    from roundtable.participants.grok_cli import describe_tool
+    from nookling.participants.grok_cli import describe_tool
 
     assert describe_tool({"type": "tool_call", "toolName": "X search: {}", "rawInput": {"variant": "XSearch"}}) == "正在 X 上搜索"
     assert describe_tool({"type": "tool_call", "toolName": "web_search"}) == "正在联网搜索"
@@ -101,8 +101,8 @@ def test_parse_grok_error():
 
 
 def test_codex_runs_without_tools(tmp_path, store):
-    from roundtable.config import ParticipantConfig
-    from roundtable.participants.codex_cli import CodexCLI
+    from nookling.config import ParticipantConfig
+    from nookling.participants.codex_cli import CodexCLI
 
     pc = ParticipantConfig(id="codex", name="Codex", kind="codex_cli", command=["codex"])
     codex = CodexCLI(pc, store, tmp_path, timeout=5)

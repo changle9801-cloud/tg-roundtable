@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Roundtable 管理</title>
+  <title>Nookling 小窝</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo">◎</span>
-      <span>Roundtable</span>
+      <span>Nookling · 小窝</span>
       <span id="tg-pill" class="pill">…</span>
     </div>
     <nav class="tabs" role="tablist">
@@ -121,7 +121,10 @@
       <h1>提示词</h1>
       <p class="muted">每个模型收到的提示词依次是：它的角色卡（在「成员」里填写）→ 下面的群聊规则 → 群的背景设定 → 话题范围 → 联网搜索、记忆、表情包说明。</p>
       <div class="card">
-        <h2>群的背景设定</h2>
+        <h2>主人的称呼</h2>
+        <input id="prompt-owner-name" maxlength="12" placeholder="主人">
+        <p class="muted small">成员在提示词、日记本、记忆整理里怎么称呼你，比如你的昵称。群里的消息照样显示你在聊天软件里的名字。</p>
+        <h2 style="margin-top:16px">群的背景设定</h2>
         <textarea id="prompt-scene" rows="3" placeholder="可选。例如：你们是同一栋楼的邻居，这是小区的闲聊群。大家互相认识好几年了，说话很随意。"></textarea>
         <p class="muted small">给所有角色一个共同的语境，角色之间的关系会更自然。</p>
         <label class="field check" style="margin-top:12px">
@@ -319,7 +322,7 @@
         </div>
         <div id="memory-pending"></div>
         <div class="memory-add">
-          <input id="memory-text" placeholder="添加一条记忆，例如：阿明在杭州工作，不吃香菜">
+          <input id="memory-text" placeholder="添加一条记忆，例如：小林在杭州工作，不吃香菜">
           <select id="memory-scope"></select>
           <button id="memory-add" class="primary">添加</button>
         </div>
@@ -345,7 +348,7 @@
         <h2>要跟进的事 <span class="muted small" id="followup-count"></span></h2>
         <p class="muted small" style="margin-top:-6px">你在群里提到以后的安排（面试、出差、看病……），成员会记下来，到时候在群里问一句。白天才问，每天最多 3 次。</p>
         <div class="memory-add">
-          <input id="followup-text" placeholder="例如：阿明今天面试，问问结果">
+          <input id="followup-text" placeholder="例如：今天面试，问问结果">
           <input id="followup-due" type="datetime-local" style="max-width:220px">
           <button id="followup-add" class="primary">添加</button>
         </div>

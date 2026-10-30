@@ -34,7 +34,8 @@ log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 VIDEO_TOOL = Path(__file__).parent.parent / "mcp_servers" / "video.py"  # the built-in 看视频 server
 READER_TOOL = Path(__file__).parent.parent / "mcp_servers" / "reader.py"
-COOKIE = "roundtable_admin"
+COOKIE = "nookling_admin"
+LEGACY_COOKIE = "roundtable_admin"  # set before the rename; still accepted so open pages stay logged in
 
 KIND_LABELS = {
     "claude_cli": "Claude 订阅（Claude Code CLI）",
@@ -68,7 +69,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
             resp = web.Response(status=302, headers={"Location": "/"})
             resp.set_cookie(COOKIE, token, httponly=True, samesite="Strict", path="/")
             return resp
-        if not _same(request.cookies.get(COOKIE, ""), token):
+        if not _same(request.cookies.get(COOKIE) or request.cookies.get(LEGACY_COOKIE, ""), token):
             if request.path.startswith("/api/"):
                 return web.json_response({"error": "未登录，请使用启动时打印的链接打开管理页面"}, status=401)
             return web.Response(status=401, text=UNAUTHORIZED_PAGE, content_type="text/html")
@@ -265,13 +266,13 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         return web.json_response({"models": await runtime.list_models(request.match_info["pid"])})
 
     async def room_action(request):
-        room = runtime.rooms.get(request.match_info["key"])
-        if room is None:
+        convo = runtime.conversations.get(request.match_info["key"])
+        if convo is None:
             return web.json_response({"error": "没有这个群"}, status=404)
         if request.match_info["action"] == "stop":
-            await room.stop()
+            await convo.stop()
         else:
-            await room.reset()
+            await convo.reset()
         return web.json_response(runtime.status())
 
     def stickers_response(**extra):
@@ -483,7 +484,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
         return web.json_response(runtime.chat_detail(request.match_info["key"]))
 
     async def reset_chat(request):
-        await runtime.room(request.match_info["key"]).reset()
+        await runtime.conversation(request.match_info["key"]).reset()
         return web.json_response(runtime.chat_detail(request.match_info["key"]))
 
     async def reset_member(request):
@@ -549,7 +550,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_get("/api/journal", get_journal)
     app.router.add_delete("/api/journal/{eid}", delete_journal_entry)
     app.router.add_get("/api/members/{pid}/models", member_models)
-    app.router.add_post("/api/rooms/{key}/{action:stop|reset}", room_action)
+    app.router.add_post("/api/conversations/{key}/{action:stop|reset}", room_action)
     app.router.add_post("/api/stickers", upload_stickers)
     app.router.add_post("/api/stickers/import", import_set)
     app.router.add_put("/api/stickers/{sid}", update_sticker)

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from roundtable.config import ConfigError
-from roundtable.games.spire import GameService, SpireProcess, exclusive_game, legal_actions, normalize_permissions, visible_state
-from roundtable.games.spire_bridge import command_for, atomic_json
-from roundtable.life import LifeEngine, LifeStore
+from nookling.config import ConfigError
+from nookling.games.spire import GameService, SpireProcess, exclusive_game, legal_actions, normalize_permissions, visible_state
+from nookling.games.spire_bridge import command_for, atomic_json
+from nookling.life import LifeEngine, LifeStore
 from test_life import runtime
 from test_web import admin, login  # noqa: F401
 
@@ -44,7 +44,7 @@ def test_hidden_draw_order_and_seed_do_not_reach_model():
 
 
 def test_reward_memory_distinguishes_free_card_from_gold_spent():
-    from roundtable.games.spire import highlights
+    from nookling.games.spire import highlights
     before = {'floor': 1, 'gold': 99, 'screen_type': 'CARD_REWARD', 'deck': []}
     after = {**before, 'deck': [{'name': 'Pommel Strike'}]}
     moments = highlights([{'before': {'in_game': True, 'game': before}, 'after': {'game': after}}])
@@ -75,7 +75,7 @@ def test_permissions_are_explicit_and_bounded(tmp_path):
 
 
 def test_profile_setup_preserves_original_saves_and_separates_members(tmp_path):
-    from roundtable.games.spire import ASSETS
+    from nookling.games.spire import ASSETS
     root, install = tmp_path / 'game', tmp_path / 'human-game'
     (install / 'jre/bin').mkdir(parents=True)
     (install / 'jre/bin/java.exe').write_bytes(b'java')
@@ -129,7 +129,7 @@ async def test_real_results_are_required_for_game_receipts(tmp_path, monkeypatch
         async def close(self): return True
     class Actor:
         async def reply(self, *args): return json.dumps({'action': command, 'reason': '自己选择的一步'})
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
     service = GameService(tmp_path, lambda *_: Actor())
     service.config.update(enabled=True, members=['a'])
     receipt = await service.play('a', decision_limit=1)
@@ -185,7 +185,7 @@ async def test_stop_cancels_a_pending_model_decision_and_keeps_execution_receipt
         async def reply(self, *args):
             entered.set()
             await asyncio.Event().wait()
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
     service = GameService(tmp_path, lambda *_: Actor())
     service.config.update(enabled=True, members=['a'])
     task = asyncio.create_task(service.play('a'))
@@ -211,7 +211,7 @@ async def test_pause_waits_for_dispatched_action_and_records_it_before_save(tmp_
         async def close(self): order.append('saved'); return True
     class Actor:
         async def reply(self, *args): return '{"action":"end"}'
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
     service = GameService(tmp_path, lambda *_: Actor())
     service.config.update(enabled=True, members=['a'])
     task = asyncio.create_task(service.play('a'))
@@ -238,8 +238,8 @@ async def test_returning_to_desktop_during_thinking_does_not_execute_choice(tmp_
         async def reply(self, *args):
             idle[0] = 0
             return '{"action":"end"}'
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
-    monkeypatch.setattr('roundtable.games.spire.idle_seconds', lambda: idle[0])
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.idle_seconds', lambda: idle[0])
     service = GameService(tmp_path, lambda *_: Actor())
     service.config.update(enabled=True, members=['a'], autoplay=True)
     result = await service.play('a', automatic=True)
@@ -259,9 +259,9 @@ async def test_stop_before_scheduled_game_launch_never_opens_game(tmp_path):
 def test_autoplay_requires_desktop_idle_and_respects_daily_limit(tmp_path, monkeypatch):
     service = GameService(tmp_path, lambda *_: None)
     service.config.update(enabled=True, members=['a'], autoplay=True, sessions_per_day=1)
-    monkeypatch.setattr('roundtable.games.spire.idle_seconds', lambda: 0)
+    monkeypatch.setattr('nookling.games.spire.idle_seconds', lambda: 0)
     assert service.available('a') and not service.available('a', automatic=True)
-    monkeypatch.setattr('roundtable.games.spire.idle_seconds', lambda: 9999)
+    monkeypatch.setattr('nookling.games.spire.idle_seconds', lambda: 9999)
     assert service.available('a', automatic=True)
     path = service.root / 'runs/done'; path.mkdir(parents=True)
     from datetime import date
@@ -300,7 +300,7 @@ async def test_a_card_not_in_hand_gets_a_second_chance(tmp_path, monkeypatch):
         async def reply(self, key, prompt):
             prompts.append(prompt)
             return json.dumps({'action': next(answers), 'reason': '趁易伤先重击'})
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
     service = GameService(tmp_path, lambda *_: Actor())
     service.config.update(enabled=True, members=['a'])
     receipt = await service.play('a', decision_limit=1)

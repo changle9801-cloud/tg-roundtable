@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from roundtable.config import ParticipantConfig, RoundConfig
-from roundtable.participants import Participant, SessionStore
+from nookling.config import ParticipantConfig, RoundConfig
+from nookling.participants import Participant, SessionStore
 
 
 class FakeParticipant(Participant):

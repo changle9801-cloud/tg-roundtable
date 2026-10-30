@@ -3,13 +3,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from roundtable.config import ConfigError
-from roundtable.life import LifeStore
-from roundtable.life_work import LifeWorkbench
-from roundtable.mcp_servers.reader import html_content
-from roundtable.proactive import ProactiveScheduler
-from roundtable.runtime import Runtime
-from roundtable.settings import normalize_settings
+from nookling.config import ConfigError
+from nookling.life import LifeStore
+from nookling.life_work import LifeWorkbench
+from nookling.mcp_servers.reader import html_content
+from nookling.proactive import ProactiveScheduler
+from nookling.runtime import Runtime
+from nookling.settings import normalize_settings
 from test_life import MEMBERS, Script, runtime
 from test_web import admin, login  # noqa: F401
 

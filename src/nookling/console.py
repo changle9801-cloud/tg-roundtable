@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from .config import Config
 from .participants import Participant, SessionStore, build_participants
-from .room import ChatRoom, setup_system_prompts
+from .conversation import Conversation, setup_system_prompts
 from .stickers import Sticker, StickerLibrary
 
 CHAT_KEY = "console"
@@ -53,7 +53,7 @@ async def run_console(cfg: Config, user_name: str = "我") -> None:
     stickers = StickerLibrary(cfg.data_dir)
     limit = cfg.max_stickers if cfg.stickers_enabled else 0
     setup_system_prompts(participants, cfg.system_template, stickers.prompt_section(limit), cfg.scene, cfg.no_coding)
-    room = ChatRoom(CHAT_KEY, participants, ConsoleSink(), cfg.round, store, stickers=stickers, sticker_limit=limit)
+    convo = Conversation(CHAT_KEY, participants, ConsoleSink(), cfg.round, store, stickers=stickers, sticker_limit=limit)
 
     names = "、".join(p.name for p in participants)
     print(f"终端模式。成员：{names}。命令：/stop /reset /quit\n")
@@ -67,10 +67,10 @@ async def run_console(cfg: Config, user_name: str = "我") -> None:
         if line == "/quit":
             break
         if line == "/stop":
-            print("已中止。" if await room.stop() else "当前没有进行中的对话。")
+            print("已中止。" if await convo.stop() else "当前没有进行中的对话。")
         elif line == "/reset":
-            await room.reset()
+            await convo.reset()
             print("已清空记忆。")
         else:
-            room.add_user_message(user_name, line)
-    await room.stop()
+            convo.add_user_message(user_name, line)
+    await convo.stop()

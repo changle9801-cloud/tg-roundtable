@@ -1,4 +1,6 @@
-# tg-roundtable
+# Nookling · 小窝
+
+> 原名 tg-roundtable。项目正在变成一个开源的「AI 之家」：家人住在一栋可以随意布置的 3D 房子里，家具挂着她们的工具，Telegram 这些聊天软件装在家里的电脑上。方向和顺序见 [docs/nookling.md](docs/nookling.md)。下面的说明仍以现在能用的 Telegram 群聊为主。
 
 在 Telegram 群里和多个 AI 模型一起聊天。Claude、Codex、Grok、DeepSeek 等模型各有一个自己的 bot，能看到彼此的发言，可以互相接话、反驳、补充。一个总控决定每次由谁发言，并限制每个模型的发言次数。
 
@@ -52,7 +54,7 @@
 
 ```bash
 uv sync
-uv run roundtable
+uv run nookling
 ```
 
 启动后终端会打印管理页面的链接 `http://127.0.0.1:8787/?token=…`。第一次启动时还没有配置，会自动在浏览器里打开它。
@@ -137,7 +139,7 @@ uv run roundtable
 
 ## 数据存放在哪里
 
-所有配置和数据都在 `~/.tg-roundtable/`（Windows 上是 `C:\Users\<你>\.tg-roundtable\`），和项目仓库完全分开：
+所有配置和数据都在 `~/.nookling/`（Windows 上是 `C:\Users\<你>\.nookling\`），和项目仓库完全分开。以前用过 tg-roundtable 的，旧的 `~/.tg-roundtable/` 只要还在、新目录还没建，就照旧用它：
 
 | 文件 | 内容 |
 |---|---|
@@ -162,14 +164,14 @@ uv run roundtable
 
 ### 换一个存放位置
 
-1. 新建一个空文件夹，比如 `H:\tg-roundtable-data`
+1. 新建一个空文件夹，比如 `D:\nookling-data`
 2. 停掉 bot，把现有数据复制过去（原目录会保留，复制后会逐个校验）：
 
    ```bash
-   uv run roundtable --move-data-to "H:\tg-roundtable-data"
+   uv run nookling --move-data-to "D:\nookling-data"
    ```
 
-3. 把环境变量 `ROUNDTABLE_HOME` 设为新位置（Windows 可在 PowerShell 里运行 `[Environment]::SetEnvironmentVariable('ROUNDTABLE_HOME', 'H:\tg-roundtable-data', 'User')`，然后重新打开终端），之后直接 `uv run roundtable` 就会用新位置。也可以每次启动时加 `--data-dir` 参数。
+3. 把环境变量 `NOOKLING_HOME` 设为新位置（Windows 可在 PowerShell 里运行 `[Environment]::SetEnvironmentVariable('NOOKLING_HOME', 'D:\nookling-data', 'User')`，然后重新打开终端；旧的 `ROUNDTABLE_HOME` 也照样认），之后直接 `uv run nookling` 就会用新位置。也可以每次启动时加 `--data-dir` 参数。
 4. 确认没问题后再删除旧目录。
 
 指定的数据目录不存在时（比如移动硬盘没接上），程序会直接报错退出，而不是悄悄新建一份空配置。状态页会显示当前用的数据目录。
@@ -186,22 +188,22 @@ uv run roundtable
 ## 命令行参数
 
 ```bash
-uv run roundtable                  # 启动 bot 和管理页面
-uv run roundtable --port 9000      # 换一个管理页面端口
-uv run roundtable --console        # 不连接 Telegram，在终端里试聊
-uv run roundtable --list-models ID # 列出某个 API 成员可用的模型
-uv run roundtable --import-config config.toml  # 从旧版配置文件导入
+uv run nookling                  # 启动 bot 和管理页面
+uv run nookling --port 9000      # 换一个管理页面端口
+uv run nookling --console        # 不连接 Telegram，在终端里试聊
+uv run nookling --list-models ID # 列出某个 API 成员可用的模型
+uv run nookling --import-config config.toml  # 从旧版配置文件导入
 ```
 
 在终端里运行时，关掉那个终端 bot 就停了。想让它一直在后台运行（关掉终端、编辑器或 Claude 应用都不影响），在 PowerShell 里用：
 
 ```powershell
-.\scripts\start-bot.ps1            # 后台启动；数据目录按 ROUNDTABLE_HOME
+.\scripts\start-bot.ps1            # 后台启动；数据目录按 NOOKLING_HOME（旧的 ROUNDTABLE_HOME 也认）
 .\scripts\start-bot.ps1 -Restart   # 改了代码后重启
 .\scripts\stop-bot.ps1             # 停止
 ```
 
-输出写在数据目录的 `logs\roundtable-<时间>.stderr.log`，只留最近 10 次。想登录 Windows 时自动启动，运行一次 `.\scripts\install-autostart.ps1`（在「启动」文件夹放一个快捷方式；加 `-Remove` 取消）。
+输出写在数据目录的 `logs\nookling-<时间>.stderr.log`，只留最近 10 次。想登录 Windows 时自动启动，运行一次 `.\scripts\install-autostart.ps1`（在「启动」文件夹放一个快捷方式；加 `-Remove` 取消）。
 
 出错、警告和 bot 没在运行的时段会记在管理页面「状态」里的「出过的问题」，重启后也留着（`events.json`）。接连出几次问题或者出错时，总控 bot 会私聊告诉你，最多半小时一次；要先私聊总控 bot 发过一次 `/start`，它才能给你发消息。
 
@@ -221,22 +223,24 @@ uv run pytest
 
 结构：
 
-- `src/roundtable/room.py`：一个群的对话记录、发言轮次和次数控制
-- `src/roundtable/moderator.py`：决定下一个由谁发言
-- `src/roundtable/participants/`：各模型的接入方式（`claude_cli.py`、`codex_cli.py`、`grok_cli.py`、`api.py`），新增接入方式时实现 `Participant.reply()` 即可
-- `src/roundtable/runtime.py`：运行中的成员、群和 bot，配置变化时实时重建
-- `src/roundtable/settings.py`：`settings.json` / `secrets.json` 的读写和校验
-- `src/roundtable/stickers.py`：表情库，以及从回复里解析 `[表情:名称]`
-- `src/roundtable/kaomoji.py`：颜文字列表和每个成员的颜文字提示
-- `src/roundtable/tools.py`：MCP 工具：设置、给谁用、为每个 CLI 生成配置、列出工具
-- `src/roundtable/mcp_servers/video.py`：自带的看视频 MCP 服务器（yt-dlp + SenseVoice + ffmpeg）
-- `src/roundtable/memory.py`：长期记忆，从回复里解析 `[记住:…]`，以及每天从群聊整理关于你的事实
-- `src/roundtable/proactive.py`：主动发言和日常浏览的时间安排（时间段、每日上限、随机间隔、链接去重）
-- `src/roundtable/journal.py`：见闻的记录、过期遗忘，以及一次浏览会话
-- `src/roundtable/drawing.py`：互相画表情包：解析 `[画:名称|描述]`、画图提示词、每日张数
-- `src/roundtable/telegram_bot.py`：Telegram 层，总控 bot 负责收消息，各模型 bot 负责发消息
-- `src/roundtable/web/`：管理页面（后端 `server.py`，前端在 `static/`，无需编译）
-- `src/roundtable/console.py`：终端模式
+- `src/nookling/conversation.py`：一段对话（比如一个群）的记录、发言轮次和次数控制
+- `src/nookling/moderator.py`：决定下一个由谁发言
+- `src/nookling/participants/`：各模型的接入方式（`claude_cli.py`、`codex_cli.py`、`grok_cli.py`、`api.py`），新增接入方式时实现 `Participant.reply()` 即可
+- `src/nookling/runtime.py`：运行中的成员、群和 bot，配置变化时实时重建
+- `src/nookling/settings.py`：`settings.json` / `secrets.json` 的读写和校验
+- `src/nookling/stickers.py`：表情库，以及从回复里解析 `[表情:名称]`
+- `src/nookling/kaomoji.py`：颜文字列表和每个成员的颜文字提示
+- `src/nookling/tools.py`：MCP 工具：设置、给谁用、为每个 CLI 生成配置、列出工具
+- `src/nookling/mcp_servers/video.py`：自带的看视频 MCP 服务器（yt-dlp + SenseVoice + ffmpeg）
+- `src/nookling/memory.py`：长期记忆，从回复里解析 `[记住:…]`，以及每天从群聊整理关于你的事实
+- `src/nookling/proactive.py`：主动发言和日常浏览的时间安排（时间段、每日上限、随机间隔、链接去重）
+- `src/nookling/journal.py`：见闻的记录、过期遗忘，以及一次浏览会话
+- `src/nookling/drawing.py`：互相画表情包：解析 `[画:名称|描述]`、画图提示词、每日张数
+- `src/nookling/apps/`：家里电脑上的聊天应用；`telegram.py` 是第一个，总控 bot 负责收消息，各成员的 bot 负责发消息
+- `src/nookling/home.py`：家：房间、谁在哪、在干什么、外形、翻日记的记录（页面在 `web/static/home.js`）
+- `src/nookling/owner.py`：成员怎么称呼你（「提示词」页面里的「主人的称呼」）
+- `src/nookling/web/`：管理页面（后端 `server.py`，前端在 `static/`，无需编译）
+- `src/nookling/console.py`：终端模式
 
 ## License
 
@@ -259,5 +263,5 @@ MIT
 已有自定义全局模板不会被自动覆盖。要应用放宽话风的新默认规则，先停止程序，在项目目录运行以下命令，再重启。脚本只替换公共模板，保留角色卡、兴趣、场景和全部历史，修改前备份原配置；不带 `--apply` 可以预览。
 
 ```powershell
-.venv\Scripts\python.exe scripts\apply_social_defaults.py --data-dir H:\tg-roundtable-data --apply
+.venv\Scripts\python.exe scripts\apply_social_defaults.py --data-dir <数据目录> --apply
 ```

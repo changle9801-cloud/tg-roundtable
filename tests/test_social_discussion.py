@@ -4,8 +4,8 @@ import asyncio
 import pytest
 
 from test_reply_chain import room_for
-from roundtable.moderator import RuleModerator
-from roundtable.transcript import Message
+from nookling.moderator import RuleModerator
+from nookling.transcript import Message
 
 
 def test_public_interests_increase_selection_without_overriding_mentions(make):
@@ -64,7 +64,7 @@ async def test_user_interruption_replaces_the_pair_exchange(make, store):
 
 
 async def test_failed_reply_ends_the_discussion(make, store):
-    from roundtable.participants import ParticipantError
+    from nookling.participants import ParticipantError
     a, b = make('a', ['不应再发']), make('b', [ParticipantError('failed')])
     room, sink = room_for([a, b], store, 0, 0)
     await room.start_proactive(a, lambda _: '', 1, prepared_text='一个新视频', discussion=True)

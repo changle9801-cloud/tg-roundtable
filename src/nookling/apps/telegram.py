@@ -9,20 +9,20 @@ from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
-from aiogram import F, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatAction, ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import FSInputFile, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters
+from aiogram.types import BotCommand, FSInputFile, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters
 from aiogram.types import Message as TgMessage
 
-from .config import ConfigError
-from .participants import Participant
-from .prompts import looks_like_code
-from .stickers import Sticker, StickerLibrary
+from ..config import ConfigError, telegram_problems
+from ..participants import Participant
+from ..prompts import looks_like_code
+from ..stickers import Sticker, StickerLibrary
 
 if TYPE_CHECKING:
-    from .runtime import Runtime
+    from ..runtime import Runtime
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class TelegramSink:
         self.pacing = True  # human-like typing pauses between messages
 
     async def post(self, chat_key: str, participant: Participant, text: str, reply_to: int | None = None) -> int | None:
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if bot is None:
             await self.notice(chat_key, f"{participant.name} 没有可用的 bot，发言没能发出去。")
             return None
@@ -111,7 +111,7 @@ class TelegramSink:
         return last
 
     async def react(self, chat_key: str, participant: Participant, message_id: int, emoji: str) -> None:
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if bot is None:
             return
         try:
@@ -120,7 +120,7 @@ class TelegramSink:
             log.warning("%s could not react %s: %s", participant.id, emoji, e)
 
     async def post_photo(self, chat_key, participant, path, caption, reply_to=None):
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if bot is None:
             return None
         try:
@@ -133,7 +133,7 @@ class TelegramSink:
             return None
 
     async def notice(self, chat_key: str, text: str) -> None:
-        controller = self.runtime.controller
+        controller = self.runtime.telegram.controller
         if controller is None:
             log.warning("[%s] %s", chat_key, text)
             return
@@ -141,7 +141,7 @@ class TelegramSink:
             await controller.send_message(int(chat_key), f"⚙️ {text}")
 
     async def post_sticker(self, chat_key: str, participant: Participant, sticker: Sticker) -> None:
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if bot is None:
             return
         key = (participant.id, sticker.file)  # file ids are per bot; a replaced image has a new file name
@@ -165,7 +165,7 @@ class TelegramSink:
             return
 
     async def activity(self, chat_key: str, participant: Participant, text: str) -> None:
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if bot is None:
             return
         key = (chat_key, participant.id)
@@ -181,14 +181,14 @@ class TelegramSink:
 
     async def clear_activity(self, chat_key: str, participant: Participant) -> None:
         message_id = self.activity_messages.pop((chat_key, participant.id), None)
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
         if message_id is not None and bot is not None:
             with suppress(TelegramAPIError):
                 await bot.delete_message(int(chat_key), message_id)
 
     @asynccontextmanager
     async def typing(self, chat_key: str, participant: Participant):
-        bot = self.runtime.bots.get(participant.id)
+        bot = self.runtime.telegram.bots.get(participant.id)
 
         async def keep_typing():
             while bot is not None:
@@ -297,12 +297,12 @@ def build_router(runtime: Runtime) -> Router:
     async def status(msg: TgMessage):
         if not allowed(msg):
             return
-        room = runtime.room(msg.chat.id)
+        convo = runtime.conversation(msg.chat.id)
         names = "、".join(p.name for p in runtime.participants) or "（无）"
-        state = "讨论中" if room.busy else "空闲"
+        state = "讨论中" if convo.busy else "空闲"
         await msg.answer(
-            f"群 ID：{msg.chat.id}\n成员：{names}\n每轮发言上限：{room.max_turns}\n"
-            f"当前状态：{state}\n记忆中的消息数：{len(room.messages)}"
+            f"群 ID：{msg.chat.id}\n成员：{names}\n每轮发言上限：{convo.max_turns}\n"
+            f"当前状态：{state}\n记忆中的消息数：{len(convo.messages)}"
         )
 
     @r.message(group, Command("home", "家"))
@@ -313,13 +313,13 @@ def build_router(runtime: Runtime) -> Router:
     @r.message(group, Command("stop"))
     async def stop(msg: TgMessage):
         if allowed(msg):
-            stopped = await runtime.room(msg.chat.id).stop()
+            stopped = await runtime.conversation(msg.chat.id).stop()
             await msg.answer("已中止本轮。" if stopped else "当前没有进行中的对话。")
 
     @r.message(group, Command("reset"))
     async def reset(msg: TgMessage):
         if allowed(msg):
-            await runtime.room(msg.chat.id).reset()
+            await runtime.conversation(msg.chat.id).reset()
             await msg.answer("已清空所有模型的记忆。")
 
     @r.message(group, Command("turns"))
@@ -401,10 +401,170 @@ def build_router(runtime: Runtime) -> Router:
             reply_to = None
             replied = msg.reply_to_message
             if replied and replied.from_user:
-                reply_to = runtime.bot_user_ids.get(replied.from_user.id)
-            runtime.room(msg.chat.id).add_user_message(
+                reply_to = runtime.telegram.bot_user_ids.get(replied.from_user.id)
+            runtime.conversation(msg.chat.id).add_user_message(
                 msg.from_user.first_name, text, reply_to, tg_id=msg.message_id, images=images,
                 guest=runtime.is_guest(msg.from_user.id),
             )
 
     return r
+
+
+# ---- the app: bots, the controller's polling loop, status ----
+
+BOT_COMMANDS = [
+    BotCommand(command="stop", description="中止当前这一轮"),
+    BotCommand(command="reset", description="清空所有模型的记忆"),
+    BotCommand(command="turns", description="设置每轮发言上限"),
+    BotCommand(command="status", description="查看状态和群 ID"),
+    BotCommand(command="home", description="看看她们在家里哪个房间、在干嘛"),
+    BotCommand(command="help", description="使用说明"),
+]
+
+
+class TelegramApp:
+    """One controller bot listens in the group; each member speaks through her own bot."""
+
+    def __init__(self, runtime: Runtime):
+        self.runtime = runtime
+        self.sink = TelegramSink(runtime)
+        self.bots: dict[str, Bot] = {}  # participant id -> its bot
+        self.bot_usernames: dict[str, str] = {}
+        self.bot_user_ids: dict[int, str] = {}  # Telegram user id of a model bot -> participant id
+        self.bot_profiles: dict[str, tuple[str | None, str | None]] = {}  # shown name and intro
+        self.controller: Bot | None = None
+        self.controller_username = ""
+        self.privacy_warning = False
+        self.reaction_warning = False  # not a group admin: Telegram does not send it reactions
+        self.state = "未启动"
+
+    @property
+    def connected(self) -> bool:
+        return self.controller is not None
+
+    def status(self) -> dict:
+        return {"state": self.state, "controller": self.controller_username,
+                "privacy_warning": self.privacy_warning, "reaction_warning": self.reaction_warning}
+
+    async def sync(self) -> dict[str, str]:
+        wanted = {p.id: p.cfg.bot_token for p in self.runtime.participants if p.cfg.bot_token}
+        for pid in list(self.bots):
+            if self.bots[pid].token != wanted.get(pid):
+                bot = self.bots.pop(pid)
+                self.bot_usernames.pop(pid, None)
+                self.bot_profiles.pop(pid, None)
+                await bot.session.close()
+        warnings = {}
+        for pid, token in wanted.items():
+            if pid not in self.bots:
+                try:
+                    self.bots[pid] = Bot(token)
+                except Exception as e:  # malformed token
+                    warnings[pid] = f"bot token 格式不对：{e}"
+
+        async def fetch(pid: str, bot: Bot) -> None:
+            try:
+                me = await asyncio.wait_for(bot.get_me(), 15)
+            except Exception as e:
+                warnings[pid] = f"bot 连接失败：{e}"
+                return
+            self.bot_usernames[pid] = me.username or ""
+            self.bot_user_ids[me.id] = pid
+            with suppress(Exception):
+                intro = await asyncio.wait_for(bot.get_my_short_description(), 15)
+                self.bot_profiles[pid] = (me.first_name, intro.short_description)
+
+        await asyncio.gather(*(fetch(pid, b) for pid, b in self.bots.items() if pid not in self.bot_usernames))
+        await asyncio.gather(*(self._sync_profile(p) for p in self.runtime.participants if p.id in self.bots))
+        for p in self.runtime.participants:
+            if p.id not in wanted:
+                warnings.setdefault(p.id, "没有设置 bot token，它的发言发不到群里")
+            username = self.bot_usernames.get(p.id)
+            if username and username not in p.aliases:
+                p.aliases.append(username)
+        return warnings
+
+    async def _sync_profile(self, p: Participant) -> None:
+        """Show the role's name and one-line intro on its Telegram bot."""
+        bot = self.bots[p.id]
+        name, intro = self.bot_profiles.get(p.id, (None, None))
+        try:
+            if name != p.name:
+                await asyncio.wait_for(bot.set_my_name(name=p.name), 15)
+                log.info("%s 的 bot 显示名已改为「%s」", p.id, p.name)
+            if intro != p.cfg.tagline:
+                await asyncio.wait_for(bot.set_my_short_description(short_description=p.cfg.tagline), 15)
+        except Exception as e:  # Telegram rate-limits name changes; try again next time
+            log.warning("%s 的 bot 资料没能更新：%s", p.id, e)
+            return
+        self.bot_profiles[p.id] = (p.name, p.cfg.tagline)
+
+    async def run(self) -> None:
+        """Keep the controller bot polling; restart it when its token or the setup changes."""
+        while True:
+            problems = telegram_problems(self.runtime.config)
+            if problems:
+                self.state = "未配置：" + "；".join(problems)
+                await self.runtime._wait_change()
+                continue
+
+            token = self.runtime.config.telegram.controller_token
+            try:
+                bot = Bot(token)
+            except Exception as e:
+                self.state = f"总控 bot token 格式不对：{e}"
+                await self.runtime._wait_change()
+                continue
+            try:
+                me = await asyncio.wait_for(bot.get_me(), 20)
+            except Exception as e:
+                self.state = f"总控 bot 连接失败，30 秒后重试：{e}"
+                await bot.session.close()
+                await self.runtime._wait_change(timeout=30)
+                continue
+
+            self.controller, self.controller_username = bot, me.username or ""
+            self.privacy_warning = not me.can_read_all_group_messages
+            if self.privacy_warning:
+                log.warning("总控 bot @%s 开着 privacy mode，收不到群里的普通消息", me.username)
+            self.reaction_warning = False
+            chat = self.runtime.proactive_chat()
+            if chat:
+                with suppress(Exception):
+                    member = await asyncio.wait_for(bot.get_chat_member(int(chat), me.id), 20)
+                    self.reaction_warning = member.status not in ("administrator", "creator")
+                if self.reaction_warning:
+                    log.warning("总控 bot @%s 不是群管理员，收不到你在群里点的赞和踩", me.username)
+            with suppress(Exception):
+                await bot.set_my_commands(BOT_COMMANDS)
+
+            dp = Dispatcher()
+            dp.include_router(build_router(self.runtime))
+            polling = asyncio.create_task(
+                dp.start_polling(bot, handle_signals=False, allowed_updates=["message", "message_reaction"])
+            )
+            self.state = "运行中"
+            log.info("总控 bot @%s 开始接收消息", me.username)
+            try:
+                while True:
+                    changed = asyncio.create_task(self.runtime._wait_change())
+                    done, _ = await asyncio.wait({polling, changed}, return_when=asyncio.FIRST_COMPLETED)
+                    if polling in done:
+                        changed.cancel()
+                        self.state = f"接收消息中断，5 秒后重连：{polling.exception()}"
+                        await asyncio.sleep(5)
+                        break
+                    if self.runtime.config.telegram.controller_token != token or telegram_problems(self.runtime.config):
+                        break
+            finally:
+                if not polling.done():
+                    with suppress(Exception):
+                        await dp.stop_polling()
+                    with suppress(BaseException):
+                        await polling
+                self.controller = None
+                await bot.session.close()
+
+    async def shutdown(self) -> None:
+        for bot in self.bots.values():
+            await bot.session.close()

@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from roundtable.mcp_servers import reader
+from nookling.mcp_servers import reader
 
 
 def public_dns(host, *args, **kwargs):

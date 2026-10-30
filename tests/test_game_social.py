@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from roundtable.config import ConfigError
-from roundtable.games.social import GameConversation
-from roundtable.games.spire import GameService, visible_state
-from roundtable.life import LifeStore
+from nookling.config import ConfigError
+from nookling.games.social import GameConversation
+from nookling.games.spire import GameService, visible_state
+from nookling.life import LifeStore
 from test_games import combat
 from test_life import runtime
 from test_reply_chain import room_for
@@ -83,7 +83,7 @@ async def test_a_friends_advice_reaches_the_player_before_the_game_action(tmp_pa
         async def reply(self, _, prompt):
             assert '先出 Defend' in prompt
             return '{"action":"play 2","say":"那我先挡一下。","reason":"听朋友的，先挡住"}'
-    monkeypatch.setattr('roundtable.games.spire.SpireProcess', Process)
+    monkeypatch.setattr('nookling.games.spire.SpireProcess', Process)
     service = GameService(tmp_path, lambda *_: Actor(), lambda *_: social)
     service.config.update(enabled=True, members=['deepseek'])
     result = await service.play('deepseek', decision_limit=1)
@@ -102,7 +102,7 @@ async def test_sharing_requires_a_real_capture_and_successful_delivery(tmp_path,
         posts.append((pid, text, image, scene))
         return {'at': 100, 'text': text} if delivered else None
     social, _, _ = conversation(tmp_path, [], publish=publish, can_share=lambda: True,
-        public_feed=lambda since: [{'speaker': '阿明', 'text': '试试先留那张防御牌'}])
+        public_feed=lambda since: [{'speaker': '主人', 'text': '试试先留那张防御牌'}])
     await social.share('这张牌我有点想拿，你们觉得呢？', visible_state(combat()), capture)
     assert posts[0][2] == picture and '生命 80/80' in posts[0][3]
     assert social.shares == int(delivered) and len(social.store.shares) == int(delivered)
@@ -221,7 +221,7 @@ async def test_unavailable_recipient_is_not_replaced_with_the_current_companion(
 
 
 def test_picture_context_for_text_only_friends_includes_actual_option_effects():
-    from roundtable.games.social import scene_note
+    from nookling.games.social import scene_note
     state = {'game': {'floor': 5, 'current_hp': 80, 'max_hp': 80, 'gold': 102,
                      'screen_type': 'EVENT', 'screen_state': {'options': [
                          {'text': 'Gain 75 Gold. Lose 11 HP.'}, {'text': 'Lose 40 Gold.'}]}}}

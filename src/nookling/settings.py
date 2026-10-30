@@ -14,6 +14,7 @@ import shutil
 from dataclasses import asdict, fields
 from pathlib import Path
 
+from . import owner
 from .config import (
     KNOWN_KINDS,
     Config,
@@ -84,25 +85,29 @@ SECRET_FIELDS = ("bot_token", "api_key")
 PARTICIPANT_FIELDS = [f for f in fields(ParticipantConfig) if f.name not in SECRET_FIELDS]
 
 
-DATA_DIR_ENV = "ROUNDTABLE_HOME"
+DATA_DIR_ENV = "NOOKLING_HOME"
+LEGACY_DATA_DIR_ENV = "ROUNDTABLE_HOME"  # before the project was renamed Nookling
 
 
 def default_data_dir() -> Path:
-    return Path("~/.tg-roundtable").expanduser()
+    """~/.nookling, or the old ~/.tg-roundtable while that one exists and the new one does not."""
+    new, old = Path("~/.nookling").expanduser(), Path("~/.tg-roundtable").expanduser()
+    return old if old.is_dir() and not new.exists() else new
 
 
 def resolve_data_dir(explicit: Path | None) -> Path:
-    """--data-dir, else $ROUNDTABLE_HOME, else ~/.tg-roundtable.
+    """--data-dir, else $NOOKLING_HOME (or the old $ROUNDTABLE_HOME), else the default above.
 
     A chosen location must already exist: if it is on a drive that is not mounted,
     silently starting with an empty config would look like everything was lost.
     """
-    chosen = explicit or (Path(os.environ[DATA_DIR_ENV]) if os.environ.get(DATA_DIR_ENV) else None)
+    env = next((name for name in (DATA_DIR_ENV, LEGACY_DATA_DIR_ENV) if os.environ.get(name)), None)
+    chosen = explicit or (Path(os.environ[env]) if env else None)
     if chosen is None:
         return default_data_dir()
     chosen = chosen.expanduser()
     if not chosen.is_dir():
-        source = "--data-dir" if explicit else f"环境变量 {DATA_DIR_ENV}"
+        source = "--data-dir" if explicit else f"环境变量 {env}"
         raise ConfigError(f"数据目录 {chosen} 不存在（来自 {source}）。如果是新位置，请先创建这个文件夹。")
     return chosen
 
@@ -111,7 +116,7 @@ def default_settings() -> dict:
     return {
         "telegram": {"allowed_user_ids": [], "allowed_chat_ids": [], "controller_participant": ""},
         "round": asdict(RoundConfig()),
-        "prompts": {"system_template": "", "scene": "", "no_coding": True},
+        "prompts": {"system_template": "", "scene": "", "no_coding": True, "owner_name": owner.DEFAULT},
         "stickers": {"enabled": True, "max_per_message": 1, "kaomoji": True, "reactions": True},
         "memory": {"learn": "review"},
         "proactive": {"chat_id": 0},
@@ -260,6 +265,7 @@ def normalize_settings(raw: dict) -> dict:
         "system_template": str(raw_prompts.get("system_template") or ""),
         "scene": str(raw_prompts.get("scene") or "").strip(),
         "no_coding": bool(raw_prompts.get("no_coding")),
+        "owner_name": owner.clean(raw_prompts.get("owner_name")),
     }
     stickers = {**base["stickers"], **(raw.get("stickers") or {})}
     try:
@@ -471,6 +477,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         system_template=settings["prompts"]["system_template"],
         scene=settings["prompts"]["scene"],
         no_coding=settings["prompts"]["no_coding"],
+        owner_name=settings["prompts"]["owner_name"],
         proactive_chat_id=settings["proactive"]["chat_id"],
         vision_member=settings["vision"]["member"],
         tools=build_tools(settings["tools"], secrets),

@@ -7,12 +7,12 @@ from datetime import datetime, timedelta
 import pytest
 from conftest import FakeSink
 
-from roundtable.config import ParticipantConfig, RoundConfig
-from roundtable.proactive import ProactiveScheduler, find_urls, seconds_quiet
-from roundtable.prompts import build_proactive_prompt
-from roundtable.room import ChatRoom
-from roundtable.settings import parse_hours
-from roundtable.transcript import Message
+from nookling.config import ParticipantConfig, RoundConfig
+from nookling.proactive import ProactiveScheduler, find_urls, seconds_quiet
+from nookling.prompts import build_proactive_prompt
+from nookling.conversation import Conversation
+from nookling.settings import parse_hours
+from nookling.transcript import Message
 
 
 class Clock:
@@ -126,7 +126,7 @@ def test_proactive_prompt():
 def room_for(members, store, **round_kw):
     sink = FakeSink()
     cfg = RoundConfig(max_turns_per_model=3, call_timeout=5, follow_up_chance=1.0, follow_up_decay=1.0, **round_kw)
-    return ChatRoom("chat", members, sink, cfg, store), sink
+    return Conversation("chat", members, sink, cfg, store), sink
 
 
 async def test_proactive_post_then_short_reactions(make, store):

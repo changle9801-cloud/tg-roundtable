@@ -7,20 +7,20 @@ import time
 import pytest
 from conftest import FakeSink
 
-from roundtable.config import ParticipantConfig
-from roundtable.drawing import (
+from nookling.config import ParticipantConfig
+from nookling.drawing import (
     DrawLog,
     Drawing,
     build_draw_prompt,
     drawer_instructions,
     extract_draw_requests,
 )
-from roundtable.participants import ParticipantError
-from roundtable.participants import codex_cli
-from roundtable.participants.codex_cli import CodexCLI
-from roundtable.room import ChatRoom
-from roundtable.stickers import StickerLibrary
-from roundtable.transcript import Message
+from nookling.participants import ParticipantError
+from nookling.participants import codex_cli
+from nookling.participants.codex_cli import CodexCLI
+from nookling.conversation import Conversation
+from nookling.stickers import StickerLibrary
+from nookling.transcript import Message
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
 
@@ -66,7 +66,7 @@ async def test_drawer_takes_the_request_and_tag_is_hidden(make, round_cfg, store
     codex = make("codex", ["行，等我一会儿。[画:我不是肥鱼|鲸鱼娘抱尾巴]"])
     calls = []
     sink = FakeSink()
-    room = ChatRoom("chat", [ds, codex], sink, round_cfg, store,
+    room = Conversation("chat", [ds, codex], sink, round_cfg, store,
                     on_draw=lambda room, drawer, req, asker: calls.append((drawer.id, req, asker.speaker_id if asker else None)))
     room.add_user_message("me", "@ds 大肥鱼又摸鱼了")
     await room.wait_idle()
@@ -81,7 +81,7 @@ async def test_delivery_gives_the_requester_a_turn_to_use_it(make, round_cfg, st
     ds = make("ds", ["[表情:我不是肥鱼] 哼"])
     codex = make("codex", [])
     sink = FakeSink()
-    room = ChatRoom("chat", [ds, codex], sink, round_cfg, store, stickers=lib, sticker_limit=1)
+    room = Conversation("chat", [ds, codex], sink, round_cfg, store, stickers=lib, sticker_limit=1)
     asker = Message("ds", "Ds", "@Codex 帮我画", ("codex",), 1.0)
     room.messages.append(asker)
 
@@ -100,7 +100,7 @@ async def test_delivery_during_a_round_adds_a_turn(make, round_cfg, store, tmp_p
     codex = make("codex", [])
     sink = FakeSink()
     round_cfg.max_turns_per_model = 1  # ds has used its only turn when the sticker arrives
-    room = ChatRoom("chat", [ds, codex], sink, round_cfg, store, stickers=lib, sticker_limit=1)
+    room = Conversation("chat", [ds, codex], sink, round_cfg, store, stickers=lib, sticker_limit=1)
     room.add_user_message("me", "Ds 你好")  # addressed, so ds speaks first
     await asyncio.sleep(0.02)  # ds is mid-turn
     asker = Message("ds", "Ds", "@Codex 帮我画", ("codex",), 1.0)
@@ -113,7 +113,7 @@ async def test_delivery_during_a_round_adds_a_turn(make, round_cfg, store, tmp_p
 async def test_failure_posts_nothing_extra(make, round_cfg, store):
     codex = make("codex", [])
     sink = FakeSink()
-    room = ChatRoom("chat", [codex], sink, round_cfg, store)
+    room = Conversation("chat", [codex], sink, round_cfg, store)
     await room.deliver_drawing(codex, "这张翻车了，没画出来。", None, None)
     assert sink.posts == [("codex", "这张翻车了，没画出来。")] and sink.stickers == []
     assert not room.busy

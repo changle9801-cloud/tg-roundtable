@@ -1,4 +1,4 @@
-from roundtable.life_work import LifeWorkbench
+from nookling.life_work import LifeWorkbench
 from test_life import runtime
 
 

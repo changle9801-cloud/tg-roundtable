@@ -7,12 +7,12 @@ import pytest
 from conftest import FakeSink
 from test_life import Script, IDEA, observation
 
-from roundtable.config import ConfigError
-from roundtable.life import LifeStore
-from roundtable.prompts import build_turn_prompt
-from roundtable.room import ChatRoom
-from roundtable.sources import source_list
-from roundtable.transcript import Message
+from nookling.config import ConfigError
+from nookling.life import LifeStore
+from nookling.prompts import build_turn_prompt
+from nookling.conversation import Conversation
+from nookling.sources import source_list
+from nookling.transcript import Message
 
 
 SOURCE = {"url": "https://x.com/repair/status/123456", "title": "修拉链的帖子", "excerpt": "作者说链齿完好时可以只换拉头。",
@@ -27,7 +27,7 @@ async def test_browsing_share_starts_group_chat_with_only_explicit_source(make, 
     claude = make("claude", ["看这个摘记，似乎要先检查链齿。"])
     deepseek = make("deepseek", ["我也会先检查一下。"])
     sink = FakeSink()
-    room = ChatRoom("group", [codex, claude, deepseek], sink, round_cfg, store, log_path=tmp_path / "group.jsonl")
+    room = Conversation("group", [codex, claude, deepseek], sink, round_cfg, store, log_path=tmp_path / "group.jsonl")
     async def share(pid, text, sources=()):
         return await room.start_proactive(codex, lambda unseen: "", 1, prepared_text=text, sources=sources)
     script = Script({"action": "explore", "interest": IDEA}, observation(sources=[SOURCE], follow_up="share", message="原来未必需要整条换掉。"))
@@ -41,7 +41,7 @@ async def test_browsing_share_starts_group_chat_with_only_explicit_source(make, 
         assert SOURCE["excerpt"] in member.prompts[0]
         assert "不代表你已经打开原文" in member.prompts[0]
         assert "不该进入公开上下文的私事" not in member.prompts[0]
-    restored = ChatRoom("group", [codex, claude, deepseek], sink, round_cfg, store, log_path=tmp_path / "group.jsonl")
+    restored = Conversation("group", [codex, claude, deepseek], sink, round_cfg, store, log_path=tmp_path / "group.jsonl")
     assert restored.messages[0].sources[0]["url"] == SOURCE["url"]
     assert LifeStore(tmp_path).shares[0]["sources"][0]["excerpt"] == SOURCE["excerpt"]
 
@@ -83,15 +83,15 @@ async def test_same_source_is_not_reshared_in_same_group_after_restart(make, sto
     a, b = make("a", []), make("b", [])
     sink = FakeSink()
     log = tmp_path / "group.jsonl"
-    room = ChatRoom("g", [a, b], sink, round_cfg, store, log_path=log)
+    room = Conversation("g", [a, b], sink, round_cfg, store, log_path=log)
     await room.start_proactive(a, lambda seen: "", 0, prepared_text="看看这个", sources=[SOURCE])
     await room.wait_idle()
-    restored = ChatRoom("g", [a, b], sink, round_cfg, store, log_path=log)
+    restored = Conversation("g", [a, b], sink, round_cfg, store, log_path=log)
     alias = {**SOURCE, "url": "https://twitter.com/repair/status/123456?s=20"}
     assert await restored.start_proactive(b, lambda seen: "", 0, prepared_text="又看到这个", sources=[alias]) is None
     await restored.wait_idle()
     assert len(sink.posts) == 1
-    other = ChatRoom("other", [a, b], sink, round_cfg, store)
+    other = Conversation("other", [a, b], sink, round_cfg, store)
     assert not other.shared_recently([SOURCE])
     assert not restored.shared_recently([SOURCE], seconds=-1)
 
@@ -100,7 +100,7 @@ async def test_failed_delivery_or_pass_never_creates_shared_evidence(make, store
     a = make("a", [])
     class FailedSink(FakeSink):
         async def post(self, *args, **kwargs): raise OSError("offline")
-    room = ChatRoom("g", [a], FailedSink(), round_cfg, store, log_path=tmp_path / "group.jsonl")
+    room = Conversation("g", [a], FailedSink(), round_cfg, store, log_path=tmp_path / "group.jsonl")
     with pytest.raises(OSError, match="offline"):
         await room.start_proactive(a, lambda seen: "", 0, prepared_text="看看", sources=[SOURCE])
     await room.wait_idle()

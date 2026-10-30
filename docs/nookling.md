@@ -1,6 +1,6 @@
 # Nookling · 小窝
 
-2026-10-30。愿景和架构稿，七个决定已定，还没开始改代码。名字定为 **Nookling**，中文名「小窝」：住在一个小窝里的小家伙们。PyPI 和 GitHub 用户名查过都没被占用（网页搜索不保证穷尽，改名前在 GitHub 上再直接搜一次）。
+2026-10-30。愿景和架构稿，七个决定已定。第 1 步（改名和去个人化）已完成，见「顺序」。名字定为 **Nookling**，中文名「小窝」：住在一个小窝里的小家伙们。PyPI 和 GitHub 用户名查过都没被占用（网页搜索不保证穷尽，改名前在 GitHub 上再直接搜一次）。
 
 ## 一句话
 
@@ -154,6 +154,18 @@ textures/*.png     贴图、地砖、墙纸、壁画
 ## 顺序
 
 1. **改名和去个人化**：包名、仓库名、数据目录、主人称呼进设置、Telegram 搬进应用接口、`room` 改名。功能不变，所有测试照过。
+   - **已完成（2026-10-30）**：
+     - Python 包 `roundtable` → `nookling`，命令 `uv run nookling`。
+     - 数据目录默认 `~/.nookling`；旧的 `~/.tg-roundtable` 在、新的不在时照旧用旧的；环境变量 `NOOKLING_HOME`，旧的 `ROUNDTABLE_HOME` 也认。
+     - 「提示词」页面新增「主人的称呼」（默认「主人」，最长 12 字），代码里写死的「阿明」全部换成它，测试里也一律用默认的「主人」。
+     - 群聊逻辑 `room.py` / `ChatRoom` → `conversation.py` / `Conversation`，管理页接口 `/api/rooms` → `/api/conversations`。
+     - Telegram 搬到 `apps/telegram.py`：`TelegramApp` 管自己的 bot、总控轮询、bot 资料和状态；`apps/__init__.py` 定了别的聊天应用要实现的接口（`sink`、`sync`、`run`、`connected`、`status`、`shutdown`）。群里多了 `/home` 命令提示。
+     - 管理页标题、后台脚本、开机启动快捷方式（`Nookling.lnk`，装的时候顺手删掉旧的）、管理页登录 cookie（旧 cookie 照样认）都换了名字。
+   - **还没做**：
+     - Telegram 的设置还在 `settings.json` 的 `telegram` 下面，没搬进「电脑 → Telegram」；那要等家具系统（第 2 步）有了电脑这件家具。
+     - GitHub 仓库改名要在 GitHub 网页的设置里点；许可证换成 Apache-2.0 放在公开之前。
+     - `docs/` 里以前的开发记录还写着旧路径和旧命令，是当时的记录，没改；公开前再整理。
+     - 杀戮尖塔的截图环境变量 `ROUNDTABLE_CAPTURE_DIR` 没改名，已经编译好的游戏插件读的是它。
 2. **家具系统**：家具定义和摆放进数据，用途和功能分开，功能名连到 MCP 工具和内置能力，家具管理页（建、改、摆、删），地砖、墙纸、壁画；新工具先是储物间里的纸箱。合并 `docs/home.md` 原来的第 2、3 阶段。
 3. **家里的对话**：家人在家里互相聊天、头上冒气泡、页面上能看记录、主人能在页面上直接说话。
 4. **家人参与改造**：自己能做的直接做，要同意的进心愿单（`docs/home.md` 第 5 节）。

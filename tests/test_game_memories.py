@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from roundtable.game_memories import (
+from nookling.game_memories import (
     GameMemoryStore, decision_prompt, fallback_decision, parse_decision, parse_memories, template_memories,
 )
-from roundtable.games.story import signals, worth_remembering
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
+from nookling.games.story import signals, worth_remembering
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
 
 DAY = 86400.0
 
@@ -195,7 +195,7 @@ def test_local_previews_leave_no_memory(tmp_path):
 
 
 async def test_the_cheap_model_writes_them_in_the_members_voice(tmp_path, monkeypatch):
-    import roundtable.runtime as runtime_module
+    import nookling.runtime as runtime_module
 
     asked = []
 
@@ -230,7 +230,7 @@ async def test_admin_page_manages_game_memories(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
 
     from test_web import free_port, login
-    from roundtable.web.server import make_app
+    from nookling.web.server import make_app
 
     store = SettingsStore(tmp_path)
     rt = Runtime(store)
@@ -281,7 +281,7 @@ def test_a_game_put_aside_stays_aside_until_the_time_is_up(tmp_path):
     assert store.resting("deepseek")
     assert "这游戏先放几天（连着输，烦）" in store.play_note("deepseek")
     assert "这游戏先放几天" in store.prompt_section("deepseek")
-    assert "这次是阿明让你开的" in store.profile("deepseek")  # the owner may still start it
+    assert "这次是主人让你开的" in store.profile("deepseek")  # the owner may still start it
     assert "这游戏先放几天" in store.opinions_view("deepseek")["plan"]
     clock[0] += 2 * DAY + 1
     assert not store.resting("deepseek") and store.play_note("deepseek") == ""
@@ -311,7 +311,7 @@ async def _done():
 
 
 def test_daily_life_does_not_offer_a_game_put_aside(tmp_path):
-    from roundtable.life import LifeEngine, LifeStore
+    from nookling.life import LifeEngine, LifeStore
 
     seen = []
 

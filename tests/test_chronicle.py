@@ -9,13 +9,13 @@ from datetime import datetime
 
 import pytest
 
-from roundtable.chronicle import Chronicle, build_prompt, parse_reply
-from roundtable.config import ConfigError
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore
-from roundtable.transcript import Message
+from nookling.chronicle import Chronicle, build_prompt, parse_reply
+from nookling.config import ConfigError
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore
+from nookling.transcript import Message
 
-REPLY = json.dumps({"moments": [{"title": "洗衣液咖啡", "what": "阿明把洗衣液倒进咖啡机，还说喝起来还行", "people": ["阿明", "Grok"]}],
+REPLY = json.dumps({"moments": [{"title": "洗衣液咖啡", "what": "主人把洗衣液倒进咖啡机，还说喝起来还行", "people": ["主人", "Grok"]}],
                     "memes": ["「战略性失误」是 Grok 翻车时的说法"]}, ensure_ascii=False)
 
 
@@ -24,8 +24,8 @@ def test_parse_and_prompt():
     assert moments[0]["title"] == "洗衣液咖啡" and memes == ["「战略性失误」是 Grok 翻车时的说法"]
     with pytest.raises(ConfigError):
         parse_reply("没什么好记的")
-    prompt = build_prompt("2026-10-25", ["10:00 阿明: 早"], ["旧事"], ["旧梗"])
-    assert "2026-10-25" in prompt and "旧事" in prompt and "旧梗" in prompt and "10:00 阿明: 早" in prompt
+    prompt = build_prompt("2026-10-25", ["10:00 主人: 早"], ["旧事"], ["旧梗"])
+    assert "2026-10-25" in prompt and "旧事" in prompt and "旧梗" in prompt and "10:00 主人: 早" in prompt
 
 
 def test_which_day_and_recording(tmp_path):
@@ -63,10 +63,10 @@ async def test_runtime_writes_the_day_up(tmp_path, monkeypatch):
         def reset(self, key):
             seen["reset"] = key
 
-    monkeypatch.setattr("roundtable.runtime.participant_class", lambda cfg: Actor)
-    room = rt.room("-1")
+    monkeypatch.setattr("nookling.runtime.participant_class", lambda cfg: Actor)
+    room = rt.conversation("-1")
     ts = datetime(2026, 10, 25, 21, 0).timestamp()
-    room.messages = [Message("user", "阿明", f"消息{i}", (), ts + i) for i in range(8)]
+    room.messages = [Message("user", "主人", f"消息{i}", (), ts + i) for i in range(8)]
     rt.proactive_chat = lambda: "-1"
     rt._chronicle_tick(datetime(2026, 10, 26, 9, 0))
     for _ in range(50):
@@ -98,9 +98,9 @@ async def test_a_failed_write_up_is_not_retried_every_tick(tmp_path, monkeypatch
         def reset(self, key):
             pass
 
-    monkeypatch.setattr("roundtable.runtime.participant_class", lambda cfg: Broken)
-    room = rt.room("-1")
-    room.messages = [Message("user", "阿明", f"m{i}", (), time.time() - 86400 + i) for i in range(8)]
+    monkeypatch.setattr("nookling.runtime.participant_class", lambda cfg: Broken)
+    room = rt.conversation("-1")
+    room.messages = [Message("user", "主人", f"m{i}", (), time.time() - 86400 + i) for i in range(8)]
     rt._chronicle_running = True
     assert await rt._write_chronicle(room, datetime.fromtimestamp(time.time() - 86400).date().isoformat()) == []
     assert rt.chronicle.done_days and not rt._chronicle_running

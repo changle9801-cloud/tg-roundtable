@@ -2,7 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from roundtable.settings import normalize_settings
+from nookling.settings import normalize_settings
 
 
 def script():

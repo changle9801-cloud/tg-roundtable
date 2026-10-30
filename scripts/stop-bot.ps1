@@ -7,7 +7,7 @@
 param([switch]$List)
 $ErrorActionPreference = 'Stop'
 $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -match '-m roundtable(\s|$)' -and $_.CommandLine -notmatch '--console' })
+    Where-Object { $_.CommandLine -match '-m (nookling|roundtable)(\s|$)' -and $_.CommandLine -notmatch '--console' })
 if ($List) { return $procs.ProcessId }
 if (-not $procs) {
     Write-Host 'bot 没有在运行。'

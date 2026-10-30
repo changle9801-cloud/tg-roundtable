@@ -60,7 +60,7 @@ def fetch(url: str) -> tuple[str, str, str]:
     for _ in range(4):
         public_url(url)
         try:
-            request = Request(url, headers={"User-Agent": "tg-roundtable-reader/1.0",
+            request = Request(url, headers={"User-Agent": "nookling-reader/1.0",
                                            "Accept": "text/html,application/json,application/xml,text/plain,*/*;q=0.1"})
             with opener.open(request, timeout=25) as response:
                 raw = response.read(MAX_BYTES + 1)

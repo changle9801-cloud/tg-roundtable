@@ -38,7 +38,7 @@ class Event:
 
 
 def _source(name: str) -> str:
-    return name.removeprefix("roundtable.")
+    return name.removeprefix("nookling.")
 
 
 def _key(text: str) -> str:

@@ -24,13 +24,13 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
-from roundtable.config import ParticipantConfig
-from roundtable.moderator import RuleModerator
-from roundtable.participants import Participant, SessionStore
-from roundtable.room import ChatRoom
-from roundtable.routine import Routines
-from roundtable.settings import SettingsStore, build_config, resolve_data_dir
-from roundtable.transcript import Message, find_mentions, find_recheck_targets
+from nookling.config import ParticipantConfig
+from nookling.moderator import RuleModerator
+from nookling.participants import Participant, SessionStore
+from nookling.conversation import Conversation
+from nookling.routine import Routines
+from nookling.settings import SettingsStore, build_config, resolve_data_dir
+from nookling.transcript import Message, find_mentions, find_recheck_targets
 
 HISTORY = 40  # messages of context before each replayed one
 
@@ -98,7 +98,7 @@ async def replay(members: list[ParticipantConfig], history: list[Message], user:
     store = SessionStore(tmp / "sessions.json")
     people = [StandIn(cfg, store, tmp / cfg.id) for cfg in members]
     clock = datetime.fromtimestamp(user.ts)
-    room = ChatRoom("replay", people, QuietSink(), round_cfg, store, RuleModerator(random.Random(seed)),
+    room = Conversation("replay", people, QuietSink(), round_cfg, store, RuleModerator(random.Random(seed)),
                     routines=Routines(now=lambda: clock))
     room.messages = list(history)
     room.cursors = {p.id: len(room.messages) for p in people}

@@ -6,10 +6,10 @@ import pytest
 from conftest import FakeSink
 from test_web import admin, login  # noqa: F401  (fixture)
 
-from roundtable.config import ConfigError, ParticipantConfig
-from roundtable.journal import JournalStore, browse_once
-from roundtable.memes import MemeLibrary, extract_memes
-from roundtable.room import ChatRoom
+from nookling.config import ConfigError, ParticipantConfig
+from nookling.journal import JournalStore, browse_once
+from nookling.memes import MemeLibrary, extract_memes
+from nookling.conversation import Conversation
 
 
 def test_extract_memes():
@@ -44,7 +44,7 @@ async def test_chat_replies_feed_the_library(make, store, round_cfg, tmp_path):
     lib = MemeLibrary(tmp_path)
     grok = make("grok", ["刚刷到的 [梗:DeepSeek 在中转站冒充 Claude|https://x.com/a/1]"])
     sink = FakeSink()
-    room = ChatRoom("chat", [grok], sink, round_cfg, store,
+    room = Conversation("chat", [grok], sink, round_cfg, store,
                     on_meme=lambda p, found: lib.add_found(found, p.name))
     room.add_user_message("me", "最近有啥梗")
     await room.wait_idle()

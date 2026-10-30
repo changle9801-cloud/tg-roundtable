@@ -7,14 +7,14 @@ from datetime import datetime
 
 from conftest import FakeSink
 
-from roundtable.moderator import RuleModerator
-from roundtable.room import ChatRoom
-from roundtable.routine import (
+from nookling.moderator import RuleModerator
+from nookling.conversation import Conversation
+from nookling.routine import (
     ASLEEP, BUSY, ONLINE, Routines, describe_routine, fell_asleep, parse_range, status_at, valid_range,
 )
-from roundtable.runtime import Runtime
-from roundtable.settings import SettingsStore, normalize_settings
-from roundtable.transcript import Message
+from nookling.runtime import Runtime
+from nookling.settings import SettingsStore, normalize_settings
+from nookling.transcript import Message
 
 NIGHT = datetime(2026, 10, 27, 3, 0)  # a Tuesday
 WORKDAY = datetime(2026, 10, 27, 14, 0)
@@ -66,7 +66,7 @@ class Dice:
 
 
 def room_with(make, store, round_cfg, routines, *members, rng=None):
-    return ChatRoom("-1", members, FakeSink(), round_cfg, store, routines=routines,
+    return Conversation("-1", members, FakeSink(), round_cfg, store, routines=routines,
                     moderator=RuleModerator(rng) if rng else None)
 
 
@@ -75,12 +75,12 @@ async def test_sleepers_stay_quiet_unless_called(make, store, round_cfg):
     b.cfg.sleep = "00:00-23:59"
     routines = Routines()
     room = room_with(make, store, round_cfg, routines, a, b)
-    room.add_user_message("阿明", "有人吗")
+    room.add_user_message("主人", "有人吗")
     await room.wait_idle()
     assert room.sink.posts == [("a", "在呢")] and b.prompts == []
     assert "B 在睡觉（一般 23:59 起）" in a.prompts[0]
 
-    room.add_user_message("阿明", "@B 起床了")
+    room.add_user_message("主人", "@B 起床了")
     await room.wait_idle()
     assert ("b", "……谁啊，刚睡着") in room.sink.posts
     assert "刚被群里吵醒" in b.prompts[0] and routines.status(b) == ONLINE
@@ -91,14 +91,14 @@ async def test_when_everyone_sleeps_one_may_wake(make, store, round_cfg):
     for p in (a, b):
         p.cfg.sleep = "00:00-23:59"
     room = room_with(make, store, round_cfg, Routines(), a, b, rng=Dice(0.0))
-    room.add_user_message("阿明", "睡不着")
+    room.add_user_message("主人", "睡不着")
     await room.wait_idle()
     assert room.sink.posts == [("a", "唔……几点了")]
 
     c = make("c", ["zzz"])
     c.cfg.sleep = "00:00-23:59"
     quiet = room_with(make, store, round_cfg, Routines(), c, rng=Dice(0.9))
-    quiet.add_user_message("阿明", "睡不着")
+    quiet.add_user_message("主人", "睡不着")
     await quiet.wait_idle()
     assert quiet.sink.posts == []  # nobody up: no answer until morning
 
@@ -137,7 +137,7 @@ async def test_busy_members_answer_after_free_ones(make, store, round_cfg):
     a.cfg.busy, a.cfg.busy_doing = "00:00-23:59", "在上班"
     routines = Routines(now=lambda: WORKDAY)
     room = room_with(make, store, round_cfg, routines, a, b, rng=Dice(0.0))
-    room.add_user_message("阿明", "聊天")
+    room.add_user_message("主人", "聊天")
     await room.wait_idle()
     assert room.sink.posts[0] == ("b", "来了")
     assert "你现在在上班" in a.prompts[0] and "A 在上班（23:59 以后有空）" in b.prompts[0]
@@ -166,9 +166,9 @@ async def test_waking_up_answers_what_was_missed(tmp_path):
     member = type("P", (), {"id": "ds", "name": "DeepSeek", "cfg": cfg})()
     rt.participants = [member]
     before_bed = datetime(2026, 10, 27, 0, 30).timestamp()  # talked about before it slept: not missed
-    room = FakeRoom([Message("user", "阿明", "辞职算了", (), before_bed),
-                     Message("user", "阿明", "你们睡了吗", (), datetime(2026, 10, 27, 3, 0).timestamp())])
-    rt.room = lambda chat: room
+    room = FakeRoom([Message("user", "主人", "辞职算了", (), before_bed),
+                     Message("user", "主人", "你们睡了吗", (), datetime(2026, 10, 27, 3, 0).timestamp())])
+    rt.conversation = lambda chat: room
     rt.proactive_chat = lambda: "-1"
     clock = [datetime(2026, 10, 27, 8, 59)]
     rt.routines.now = lambda: clock[0]

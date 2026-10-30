@@ -5,9 +5,9 @@ import random
 import pytest
 from conftest import FakeSink
 
-from roundtable.config import ConfigError
-from roundtable.room import ChatRoom
-from roundtable.stickers import StickerLibrary, parse_set_name, strip_tags
+from nookling.config import ConfigError
+from nookling.conversation import Conversation
+from nookling.stickers import StickerLibrary, parse_set_name, strip_tags
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -96,7 +96,7 @@ async def test_room_sends_sticker_and_records_it(make, round_cfg, store, lib):
     a = make("a", ["好家伙 [表情:狗头]"])
     b = make("b", ["[PASS]"])
     sink = FakeSink()
-    room = ChatRoom("chat", [a, b], sink, round_cfg, store, stickers=lib, sticker_limit=1)
+    room = Conversation("chat", [a, b], sink, round_cfg, store, stickers=lib, sticker_limit=1)
 
     room.add_user_message("me", "hi @A")
     await room.wait_idle()
@@ -109,7 +109,7 @@ async def test_room_sends_sticker_and_records_it(make, round_cfg, store, lib):
 async def test_room_strips_tags_when_stickers_are_off(make, round_cfg, store, lib):
     a = make("a", ["[表情:狗头]", "真的"])
     sink = FakeSink()
-    room = ChatRoom("chat", [a], sink, round_cfg, store, stickers=lib, sticker_limit=0)
+    room = Conversation("chat", [a], sink, round_cfg, store, stickers=lib, sticker_limit=0)
 
     room.add_user_message("me", "hi")
     await room.wait_idle()

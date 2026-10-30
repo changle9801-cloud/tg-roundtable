@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from conftest import FakeSink
 
-from roundtable.config import ConfigError
-from roundtable.memory import LEARN_INSTRUCTIONS, MemoryStore, extract_memories
-from roundtable.participants import ParticipantError
-from roundtable.room import ChatRoom
+from nookling.config import ConfigError
+from nookling.memory import LEARN_INSTRUCTIONS, MemoryStore, extract_memories
+from nookling.participants import ParticipantError
+from nookling.conversation import Conversation
 
 
 @pytest.fixture
@@ -15,17 +15,17 @@ def mem(tmp_path):
 
 
 def test_extract_memories():
-    text, facts = extract_memories("好的，记下了 [记住:阿明不吃香菜]")
+    text, facts = extract_memories("好的，记下了 [记住:主人不吃香菜]")
     assert text == "好的，记下了"
-    assert facts == ["阿明不吃香菜"]
+    assert facts == ["主人不吃香菜"]
     assert extract_memories("[remember: likes cats] ok")[1] == ["likes cats"]
     assert extract_memories("没有标记") == ("没有标记", [])
 
 
 def test_add_dedupes_and_persists(tmp_path, mem):
-    assert mem.add("阿明在杭州工作") is not None
-    assert mem.add("  阿明在杭州工作 ") is None
-    assert [f.text for f in MemoryStore(tmp_path).items] == ["阿明在杭州工作"]
+    assert mem.add("主人在杭州工作") is not None
+    assert mem.add("  主人在杭州工作 ") is None
+    assert [f.text for f in MemoryStore(tmp_path).items] == ["主人在杭州工作"]
     with pytest.raises(ConfigError):
         mem.add("   ")
 
@@ -62,28 +62,28 @@ def test_drop_scope_makes_orphans_shared(mem):
 
 
 async def test_room_hands_memories_to_hook_and_hides_tags(make, round_cfg, store):
-    a = make("a", ["好的 [记住:阿明喜欢猫]"])
+    a = make("a", ["好的 [记住:主人喜欢猫]"])
     sink = FakeSink()
     seen = []
-    room = ChatRoom("chat", [a], sink, round_cfg, store, on_memory=lambda p, facts: seen.append((p.id, facts)))
+    room = Conversation("chat", [a], sink, round_cfg, store, on_memory=lambda p, facts: seen.append((p.id, facts)))
 
     room.add_user_message("me", "我喜欢猫")
     await room.wait_idle()
 
     assert sink.posts == [("a", "好的")]
-    assert seen == [("a", ["阿明喜欢猫"])]
+    assert seen == [("a", ["主人喜欢猫"])]
     assert room.messages[-1].text == "好的"
 
 
 async def test_transcript_survives_restart(make, round_cfg, store, tmp_path):
     log = tmp_path / "chats" / "chat.jsonl"
     a = make("a", ["hello"])
-    room = ChatRoom("chat", [a], FakeSink(), round_cfg, store, log_path=log)
+    room = Conversation("chat", [a], FakeSink(), round_cfg, store, log_path=log)
     room.add_user_message("me", "hi")
     await room.wait_idle()
 
     b = make("b", ["[PASS]"])
-    again = ChatRoom("chat", [a, b], FakeSink(), round_cfg, store, log_path=log)
+    again = Conversation("chat", [a, b], FakeSink(), round_cfg, store, log_path=log)
     assert [(m.speaker_id, m.text) for m in again.messages] == [("user", "hi"), ("a", "hello")]
     assert again.messages[0].ts > 0
     # Old messages count as seen, so nobody replays them after a restart.
@@ -96,7 +96,7 @@ async def test_transcript_survives_restart(make, round_cfg, store, tmp_path):
 async def test_lost_session_restarts_with_recent_transcript(make, round_cfg, store):
     a = make("a", ["earlier reply", ParticipantError("No conversation found"), "fresh reply"])
     sink = FakeSink()
-    room = ChatRoom("chat", [a], sink, round_cfg, store)
+    room = Conversation("chat", [a], sink, round_cfg, store)
     room.add_user_message("me", "first")
     await room.wait_idle()
     store.set("chat", "a", "stale-session")
@@ -114,7 +114,7 @@ async def test_lost_session_restarts_with_recent_transcript(make, round_cfg, sto
 async def test_real_errors_keep_the_session(make, round_cfg, store):
     a = make("a", [ParticipantError("quota"), ParticipantError("quota")])
     sink = FakeSink()
-    room = ChatRoom("chat", [a], sink, round_cfg, store)
+    room = Conversation("chat", [a], sink, round_cfg, store)
     store.set("chat", "a", "good-session")
 
     room.add_user_message("me", "hi")
@@ -126,7 +126,7 @@ async def test_real_errors_keep_the_session(make, round_cfg, store):
 
 async def test_reset_member_replays_recent_transcript(make, round_cfg, store, tmp_path):
     a = make("a", ["one", "two"])
-    room = ChatRoom("chat", [a], FakeSink(), round_cfg, store)
+    room = Conversation("chat", [a], FakeSink(), round_cfg, store)
     room.add_user_message("me", "first")
     await room.wait_idle()
     store.set("chat", "a", "session-1")

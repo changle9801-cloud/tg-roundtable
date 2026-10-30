@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 from aiohttp import web
 
-from roundtable.config import ConfigError, ParticipantConfig
-from roundtable.participants import ParticipantError
-from roundtable.participants.api import OpenAICompatAPI
+from nookling.config import ConfigError, ParticipantConfig
+from nookling.participants import ParticipantError
+from nookling.participants.api import OpenAICompatAPI
 
 
 @pytest.fixture(autouse=True)
