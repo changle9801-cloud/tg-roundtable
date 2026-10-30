@@ -553,7 +553,8 @@ class LifeEngine:
                   found: Callable[[str, Interest | None, dict], None] = lambda pid, item, result: None,
                   can_browse: Callable[[str], bool] = lambda pid: False,
                   verify=None, work=None, play=None, can_play=lambda pid: False, play_note=lambda pid: "",
-                  moved=lambda pid, action, decision, item: None):
+                  moved=lambda pid, action, decision, item: None,
+                  home_menu=lambda pid: "", home_apply=None):
         self.store, self.ask, self.share = store, ask, share
         self.moved = moved  # she goes to the room where the chosen activity happens
         self.context, self.names, self.changed = context, names, changed
@@ -563,6 +564,7 @@ class LifeEngine:
         self.verify = verify
         self.work = work
         self.play, self.can_play, self.play_note = play, can_play, play_note
+        self.home_menu, self.home_apply = home_menu, home_apply  # changing her bedroom (docs/redecorate.md, 4a)
 
     def mine(self, member: str) -> str:
         return self.store.prompt_section(member, self.names) + "\n" + self.context(member)
@@ -630,6 +632,10 @@ private/share 的 message 是真的想说的一两句话，不是活动总结；
                        '游戏可以作为一起聊天的由头，想找朋友一起看时可加 peer，写当前有空朋友的 ID。'
                        '想玩时输出 {"action":"play","peer":"想邀请的朋友 ID，或空","reason":"为什么现在想玩"}。'
                        + self.play_note(member))
+        if self.home_apply is not None and self.home_menu(member):
+            prompt += ("\n这次还可以选择 home：动动自己的卧室（加点东西、挪一挪、换个颜色、起个名字）。"
+                       "不常做，真想改的时候再选；选了以后会给你看房间里有什么、能加什么。"
+                       '想改时输出 {"action":"home","reason":"想改什么、为什么"}。')
         try:
             decision = await self._ask_json(member, prompt)
             return await self._carry_out(member, peers, can_explore, decision)
@@ -640,13 +646,19 @@ private/share 的 message 是真的想说的一两句话，不是活动总结；
 
     async def _carry_out(self, member: str, peers: list[str], can_explore: bool, decision: dict) -> str:
         action = decision.get("action")
-        if action not in ("work", "browse", "idle", "explore", "private", "share", "play"):
+        if action not in ("work", "browse", "idle", "explore", "private", "share", "play", "home"):
             raise ConfigError(f"没想好做什么（{action!r}）")
         item = None if action == "browse" else self.store.choose_interest(member, decision.get("interest"))
         self.changed()
         self.moved(member, action, decision, item)
         reason = clean_text(decision.get("reason"), 300)
-        if action == "play":
+        if action == "home":
+            menu = self.home_menu(member) if self.home_apply is not None else ""
+            if not menu:
+                raise ConfigError("这周改家里的次数用完了")
+            plan = await self._ask_json(member, now_line() + "\n这是你自己的时间，想动动自己的卧室。\n" + self.mine(member) + "\n" + menu)
+            self.store.event(member, "home", self.home_apply(member, plan))
+        elif action == "play":
             if self.play is None or not self.can_play(member):
                 raise ConfigError('当前没有可用的游戏授权或空闲时段')
             if decision.get('peer'):

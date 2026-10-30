@@ -41,6 +41,8 @@ from .prompts import (
     search_instructions,
 )
 from .apps.house import HOUSE_TALK, HouseSink
+from . import redecorate
+from .furniture import PlacementError
 from .conversation import Conversation
 from .recall import chat_query
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
@@ -1266,8 +1268,22 @@ class Runtime:
                 + "\n" + self._house_note(pid))
 
     def _house_note(self, pid: str) -> str:
-        """「家里现在」 for a member: the house, who is where, where she has been today."""
-        return self.home.house_note(pid, {m.id: m.name for m in self.config.enabled_participants})
+        """「家里现在」 for a member: the house, who is where, where she has been today; and, once, what the
+        others changed at home since she last heard."""
+        names = {m.id: m.name for m in self.config.enabled_participants}
+        news = self.home.news(pid, names)
+        return self.home.house_note(pid, names) + ("\n" + news if news else "")
+
+    def _redecorate(self, pid: str, plan: dict) -> str:
+        """Her plan for her bedroom, carried out (docs/redecorate.md, 4a): a line for her events."""
+        try:
+            result = redecorate.apply(self.home, pid, plan)
+        except PlacementError as e:
+            return f"想改家里，没改成：{e}"
+        done = "；".join(result["done"]) or "最后什么也没改"
+        refused = "；".join(result["refused"])
+        why = str(plan.get("why") or "")[:80] if isinstance(plan, dict) else ""
+        return done + (f"（没做成的：{refused}）" if refused else "") + (f"。为什么：{why}" if why else "")
 
     def _life_moved(self, pid: str, action: str, decision: dict, item) -> None:
         """A daily-life step chose what to do: she goes to the room where it happens."""
@@ -1417,7 +1433,8 @@ class Runtime:
                                 play=lambda member, peer=None: self._play_game(member, automatic=True, peer=peer),
                                 can_play=lambda member: (self.games.available(member, automatic=True)
                                                          and not self.game_memories.resting(member)),
-                                play_note=self.game_memories.play_note, moved=self._life_moved)
+                                play_note=self.game_memories.play_note, moved=self._life_moved,
+                                home_menu=lambda member: redecorate.menu(self.home, member), home_apply=self._redecorate)
             can_explore = self._life_can_browse(pid)
             # Friends it can message: the others in daily life with activities left today.
             awake = {m.id for m in self.participants if not self._asleep(m)}

@@ -44,7 +44,7 @@ SPARE_COLORS = ("#8a5a9e", "#b7791f", "#2c7a7b", "#c05680", "#4a5568")
 VERBS = {
     "browse": "在看东西", "read": "在看东西", "write": "在写东西", "watch": "在看视频", "play": "在玩游戏", "use": "在用东西",
     "phone": "在打电话", "visit": "在找朋友聊天", "share": "在看手机", "rest": "在歇着",
-    "sleep": "在睡觉", "out": "出门了", "talk": "在客厅聊天",
+    "sleep": "在睡觉", "out": "出门了", "talk": "在客厅聊天", "decorate": "在收拾房间",
 }
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 # Where she goes when she just wants to rest, from the words of her own reason.
@@ -68,6 +68,7 @@ ROOM_CELLS = (3, 60)
 MAX_FLOORS = 5
 MOVES_KEPT = 50  # per member: where she went, for 「家里现在」 (docs/house-talk.md, 3c)
 MOVES_TOLD = 8  # of today's, the latest she is told about
+CHANGES_KEPT = 200  # entries of 家里的变化
 
 
 def _metres(value) -> float:
@@ -113,6 +114,8 @@ class Home:
         self.floors: list[dict] = [{"level": 0, "name": "一楼"}]
         self.moves: dict[str, list[dict]] = {}  # member -> where she went and what she did there, latest last
         self._before_talk: dict[str, Place] = {}  # member -> what she was doing when she came to talk
+        self.changes: list[dict] = []  # 家里的变化: who changed what, and how to undo it (docs/redecorate.md)
+        self.redecorations: dict[str, list[float]] = {}  # member -> when she redecorated, for the weekly limit
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -126,6 +129,8 @@ class Home:
                 self.doors = list(raw.get("doors") or [])
                 self.floors = list(raw.get("floors") or self.floors)
                 self.moves = {m: list(v) for m, v in (raw.get("moves") or {}).items()}
+                self.changes = list(raw.get("changes") or [])
+                self.redecorations = {m: list(v) for m, v in (raw.get("redecorations") or {}).items()}
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -139,7 +144,8 @@ class Home:
                                 "pieces": self.pieces or [],
                                 "types": self.types, "extras": self.extras,
                                 "where": {m: asdict(p) for m, p in self.where.items()},
-                                "looks": self.looks, "diary_reads": self.diary_reads[-200:], "moves": self.moves})
+                                "looks": self.looks, "diary_reads": self.diary_reads[-200:], "moves": self.moves,
+                                "changes": self.changes[-CHANGES_KEPT:], "redecorations": self.redecorations})
 
     # ---- who lives here ----
 
@@ -748,6 +754,8 @@ class Home:
             if not piece and (fallback in shut or not any(r["id"] == fallback for r in self.rooms)):
                 fallback = "living"
             place = Place(piece["room"] if piece else fallback, verb, detail, now, True, piece=piece["id"] if piece else "")
+        elif action == "home":  # changing something at home: in her own bedroom (docs/redecorate.md, 4a)
+            place = Place(bedroom(member), "decorate", detail, now, True)
         elif action == "private" and peer:
             if peer_home and peer in self.where and self.where[peer].room not in shut:
                 place = Place(self.where[peer].room, "visit", detail, now, True, peer, here.room)
@@ -954,6 +962,26 @@ class Home:
                 return
         self.diary_reads.append({"member": member, "day": day, "ts": now, "told_at": 0.0})
         self.save()
+
+    # ---- 家里的变化: what the family changed, told to the others once ----
+
+    def record_change(self, member: str, text: str, undo: dict) -> dict:
+        entry = {"id": furniture.new_id().replace("p-", "c-"), "ts": self.now(), "member": member, "text": text,
+                 "undo": undo, "told": [member]}
+        self.changes.append(entry)
+        del self.changes[:-CHANGES_KEPT]
+        self.save()
+        return entry
+
+    def news(self, member: str, names: dict[str, str]) -> str:
+        """Changes others made to the house that she has not heard of yet, once: lines for her next prompt."""
+        fresh = [c for c in self.changes if member not in c["told"]]
+        if not fresh:
+            return ""
+        for c in fresh:
+            c["told"].append(member)
+        self.save()
+        return "[家里的变化] " + "；".join(f"{names.get(c['member'], c['member'])}{c['text']}" for c in fresh[-10:]) + "。"
 
     def tell(self, member: str) -> str:
         """Diary reads she has not heard about yet, once: the line for her next prompt."""

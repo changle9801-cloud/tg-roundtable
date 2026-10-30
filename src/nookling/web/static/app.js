@@ -1752,7 +1752,7 @@ function renderDiary(d) {
             h("span", { class: "muted" }, " · " + source.read_level)))))))),
     !shown.length ? h("p", { class: "muted" }, entries.length ? "这个范围内还没有日记。" : "还没有日记。下次真实活动后，她们可以留下自己的感受。") : null);
 }
-const LIFE_ACTIONS = { idle: "先歇着", work: "推进个人目标", play: "实际玩游戏", blocked: "这次没做成", browse: "随手看看", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
+const LIFE_ACTIONS = { home: "改改家里", idle: "先歇着", work: "推进个人目标", play: "实际玩游戏", blocked: "这次没做成", browse: "随手看看", explore: "继续了解", private: "私聊", shared: "发到群里", deferred: "暂不分享", error: "未完成", interrupted: "已中断" };
 
 function renderLifeSettings() {
   const box = $("#life-settings");
