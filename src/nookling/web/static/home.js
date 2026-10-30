@@ -32,92 +32,68 @@ export function close() {
   if (app) app.stop();
 }
 
-// ---------- layout: rooms as rectangles on the floor (x to the right, z towards the viewer) ----------
-// Rooms come with a size in grid cells; a cell is half a unit. Row A: bedrooms. Row B: study, a hall,
-// the games room. Row C: kitchen, living room, storage, then any other room.
+// ---------- layout: rooms where the floor plan puts them (x to the right, z towards the viewer) ----------
+// Every room, hallways included, has a position and size in grid cells; a cell is half a unit.
+// Doors sit on grid lines between two rooms, or between a room and the outside (docs/floorplan.md).
 
-const CELL = 0.5, HALL = 1.5;
+const CELL = 0.5;
+const near = (a, b) => Math.abs(a - b) < 1e-6;
 
-function doorAt(rect, door) {
-  const along = door.wall === "front" || door.wall === "back" ? rect.w : rect.d;
-  const at = door.at !== undefined ? door.at * CELL : along / 2;
-  const spot = {
-    front: { x: rect.x + at, z: rect.z + rect.d }, back: { x: rect.x + at, z: rect.z },
-    left: { x: rect.x, z: rect.z + at }, right: { x: rect.x + rect.w, z: rect.z + at },
-  }[door.wall];
-  return { ...spot, wall: door.wall, outside: !!door.outside };
-}
-
-function layout(rooms) {
+function layout(data, level = 0) {
   const rects = {};
-  const put = (room, x, z) => {
-    const r = { x, z, w: room.size[0] * CELL, d: room.size[1] * CELL, room };
-    r.doors = (room.doors || []).map((d) => doorAt(r, d));
-    rects[room.id] = r;
-    return r;
-  };
-  const byId = Object.fromEntries(rooms.map((r) => [r.id, r]));
-  const beds = rooms.filter((r) => r.id.startsWith("bed-"));
-  let x = 0;
-  for (const room of beds) x += put(room, x, 0).w;
-  const depthA = Math.max(5, ...beds.map((r) => r.size[1] * CELL));
-  const zB = depthA + HALL;
-  let depthB = 0, hallX = 0;
-  if (byId.study) { const r = put(byId.study, 0, zB); hallX = r.w + HALL / 2; depthB = r.d; }
-  if (byId.fun) depthB = Math.max(depthB, put(byId.fun, hallX + HALL / 2, zB).d);
-  const zC = zB + depthB + HALL;
-  const rowC = ["kitchen", "living", "storage"].map((id) => byId[id]).filter(Boolean);
-  for (const room of rooms) if (!rects[room.id] && !rowC.includes(room)) rowC.push(room);
-  // Rooms the owner added go on the end of row C; a full row starts a new one below, behind a corridor.
-  const limit = Math.max(20, x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0));
-  const rows = [[]];
-  let width = 0;
-  for (const room of rowC) {
-    const w = room.size[0] * CELL;
-    if (width + w > limit && rows.at(-1).length) { rows.push([]); width = 0; }
-    rows.at(-1).push(room);
-    width += w;
+  for (const room of data.rooms) {
+    if (!room.at || (room.level ?? 0) !== level) continue;
+    rects[room.id] = { x: room.at[0] * CELL, z: room.at[1] * CELL, w: room.size[0] * CELL, d: room.size[1] * CELL, room };
   }
-  const corridors = [depthA + HALL / 2, zB + depthB + HALL / 2];
-  let z = zC, widest = 0;
-  rows.forEach((row, i) => {
-    if (i > 0) { corridors.push(z + HALL / 2); z += HALL; }
-    let xx = 0, depth = 0;
-    for (const room of row) { const r = put(room, xx, z); xx += r.w; depth = Math.max(depth, r.d); }
-    widest = Math.max(widest, xx);
-    z += depth;
+  const all = Object.values(rects);
+  const X0 = Math.min(...all.map((r) => r.x)), Z0 = Math.min(...all.map((r) => r.z));
+  const W = Math.max(...all.map((r) => r.x + r.w)), D = Math.max(...all.map((r) => r.z + r.d));
+  const doors = (data.doors || []).filter((d) => (d.level ?? 0) === level).map((d) => {
+    const w = (d.width ?? 3) * CELL, x = d.at[0] * CELL, z = d.at[1] * CELL;
+    return { ...d, w, x: d.line === "z" ? x + w / 2 : x, z: d.line === "z" ? z : z + w / 2, rooms: d.rooms || [] };
   });
-  const W = Math.max(x, hallX + HALL / 2 + (byId.fun ? byId.fun.size[0] * CELL : 0), widest);
-  const living = rects.living || Object.values(rects)[0];
-  const front = living.doors.find((d) => d.outside) || { x: living.x + living.w / 2, z: living.z + living.d };
-  return {
-    W, D: z, rects, front, hallX, outside: { x: front.x, z: front.z + 3 }, corridors,
-    leftX: rows.length > 1 ? -HALL / 2 : null, // a side hall joins the extra rows to the others
-    spans: { A: depthA, B: [zB, depthB], C: zC },
-  };
-}
-
-// The corridor in front of a door: the nearest one on the side the door opens to.
-function corridorFor(L, door) {
-  const side = door.wall === "back" ? -1 : 1;
-  const ahead = L.corridors.filter((c) => (c - door.z) * side > 0);
-  return ahead.sort((a, b) => Math.abs(a - door.z) - Math.abs(b - door.z))[0] ?? L.corridors[0];
-}
-
-function route(L, fromRoom, toRoom, from, to) {
-  const a = L.rects[fromRoom], b = L.rects[toRoom];
-  if (fromRoom === toRoom || !a || !b) return [to];
-  const da = a.doors.find((d) => !d.outside) || a.doors[0], db = b.doors.find((d) => !d.outside) || b.doors[0];
-  if (!da || !db) return [to];
-  const ca = corridorFor(L, da), cb = corridorFor(L, db);
-  const pts = [{ x: da.x, z: da.z }, { x: da.x, z: ca }];
-  if (ca !== cb) {
-    const near = L.corridors.slice(0, 2);
-    const hall = near.includes(ca) && near.includes(cb) || L.leftX === null ? L.hallX : L.leftX;
-    pts.push({ x: hall, z: ca }, { x: hall, z: cb });
+  const wallOf = (r, d) => (d.line === "z" ? (near(d.z, r.z) ? "back" : "front") : (near(d.x, r.x) ? "left" : "right"));
+  for (const r of all) {
+    r.doors = doors.filter((d) => d.rooms.includes(r.room.id)).map((d) => ({ ...d, wall: wallOf(r, d) }));
   }
-  pts.push({ x: db.x, z: cb }, { x: db.x, z: db.z }, to);
+  const frontDoor = doors.find((d) => d.outside);
+  const frontRoom = frontDoor ? frontDoor.rooms[0] : (rects.living ? "living" : all[0]?.room.id);
+  const fr = rects[frontRoom];
+  const front = frontDoor ? { x: frontDoor.x, z: frontDoor.z } : { x: fr.x + fr.w / 2, z: fr.z + fr.d };
+  const out = frontDoor ? { front: [0, 1], back: [0, -1], left: [-1, 0], right: [1, 0] }[wallOf(fr, frontDoor)] : [0, 1];
+  return { W, D, X0, Z0, rects, doors, front, frontRoom, outside: { x: front.x + out[0] * 3, z: front.z + out[1] * 3 } };
+}
+
+// Walking from room to room: through doors only. Rooms are rectangles, so a straight line
+// between two points in the same room never crosses a wall.
+function route(L, fromRoom, toRoom, from, to) {
+  if (fromRoom === toRoom || !L.rects[fromRoom] || !L.rects[toRoom]) return [to];
+  const prev = { [fromRoom]: null };
+  const todo = [fromRoom];
+  while (todo.length && !(toRoom in prev)) {
+    const here = todo.shift();
+    for (const d of L.rects[here].doors) {
+      if (d.outside || d.rooms.length !== 2) continue;
+      const next = d.rooms[0] === here ? d.rooms[1] : d.rooms[0];
+      if (next in prev || !L.rects[next]) continue;
+      prev[next] = { room: here, door: d };
+      todo.push(next);
+    }
+  }
+  if (!(toRoom in prev)) return [to]; // no way in: she just arrives (the floor plan editor will say why)
+  const steps = [];
+  for (let at = toRoom; prev[at]; at = prev[at].room) steps.unshift({ ...prev[at], into: at });
+  const pts = [];
+  for (const { room, door, into } of steps) pts.push(inFront(L.rects[room], door), { x: door.x, z: door.z }, inFront(L.rects[into], door));
+  pts.push(to);
   return pts;
+}
+
+// A point just inside a room, in front of one of its doors.
+function inFront(r, door) {
+  const k = 0.6;
+  if (door.line === "z") return { x: door.x, z: door.z + (near(door.z, r.z) ? k : -k) };
+  return { x: door.x + (near(door.x, r.x) ? k : -k), z: door.z };
 }
 
 // ---------- furniture: each template draws one type, sized and coloured, around its footprint's centre ----------
@@ -341,8 +317,8 @@ function drawPiece(parent, rect, piece, type, clickable, available) {
   return g;
 }
 
-const FLOORS = { bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
-const WALL = 0xd9d4cc, WALL_H = 0.7, DOOR_W = 1.5;
+const FLOORS = { hall: 0xe9e4dc, bed: 0xf3e5d8, study: 0xe3ecef, fun: 0xece4f5, living: 0xf6ead7, kitchen: 0xe8f1e4, storage: 0xe6e2dd };
+const WALL = 0xd9d4cc, WALL_H = 0.7;
 
 function walls(g, r, look) {
   const segment = (w, h, d, x, y, z, length) => {
@@ -360,16 +336,17 @@ function walls(g, r, look) {
   ];
   for (const [wall, x1, z1, x2, z2] of edges) {
     const horizontal = z1 === z2;
-    const gaps = r.doors.filter((dp) => dp.wall === wall).map((dp) => (horizontal ? dp.x : dp.z)).sort((a, b) => a - b);
+    const gaps = r.doors.filter((dp) => dp.wall === wall).map((dp) => [horizontal ? dp.x : dp.z, dp.w]).sort((a, b) => a[0] - b[0]);
     let start = horizontal ? x1 : z1;
     const end = horizontal ? x2 : z2;
-    for (const gc of [...gaps, null]) {
-      const stop = gc === null ? end : gc - DOOR_W / 2;
+    for (const gap of [...gaps, null]) {
+      const gc = gap && gap[0], half = gap ? gap[1] / 2 : 0;
+      const stop = gap === null ? end : gc - half;
       if (stop - start > 0.05) {
         const len = stop - start, mid = start + len / 2;
         g.add(horizontal ? segment(len, WALL_H, t, mid, 0, z1, len) : segment(t, WALL_H, len, x1, 0, mid, len));
       }
-      if (gc !== null) start = gc + DOOR_W / 2;
+      if (gap !== null) start = gc + half;
     }
   }
   for (const door of r.doors.filter((dp) => dp.outside)) g.add(box(1.2, 1.9, 0.12, 0x6d4c41, door.x, 0, door.z));
@@ -623,37 +600,29 @@ class HomeApp {
     this.furniture.clear();
     this.grid.clear();
     this.clickable = [];
-    this.L = layout(data.rooms);
+    this.L = layout(data);
     const L = this.L;
-    const corridor = new THREE.MeshLambertMaterial({ color: 0xe9e4dc });
-    const strip = (w, d, x, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), corridor); m.position.set(x, -0.03, z); this.house.add(m); };
-    const left = L.leftX === null ? 0 : HALL;
-    for (const c of L.corridors) strip(L.W + left, HALL, (L.W - left) / 2, c);
-    strip(HALL, L.spans.B[1], L.hallX, L.spans.B[0] + L.spans.B[1] / 2);
-    if (L.leftX !== null) {
-      const top = L.corridors[0], bottom = L.corridors.at(-1);
-      strip(HALL, bottom - top, L.leftX, (top + bottom) / 2);
-    }
-    const ground = new THREE.Mesh(new THREE.BoxGeometry(L.W + 6, 0.05, L.D + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
-    ground.position.set(L.W / 2, -0.09, L.D / 2 + 1);
+    const ground = new THREE.Mesh(new THREE.BoxGeometry(L.W - L.X0 + 6, 0.05, L.D - L.Z0 + 8), new THREE.MeshLambertMaterial({ color: 0xc8d5b9 }));
+    ground.position.set((L.X0 + L.W) / 2, -0.09, (L.Z0 + L.D) / 2 + 1);
     this.house.add(ground);
     this.roomLabels = [];
     for (const room of data.rooms) {
       const r = L.rects[room.id];
       if (!r) continue;
-      const kind = room.id.startsWith("bed-") ? "bed" : room.id;
+      const hall = room.kind === "hall";
+      const kind = room.id.startsWith("bed-") ? "bed" : hall ? "hall" : room.id;
       const tile = room.floor?.tile || 1;
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.08, r.d), surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile));
-      floor.position.set(r.x + r.w / 2, -0.04, r.z + r.d / 2);
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, hall ? 0.06 : 0.08, r.d), surfaceMaterial(room.floor, FLOORS[kind] ?? 0xeeeeee, r.w / tile, r.d / tile));
+      floor.position.set(r.x + r.w / 2, hall ? -0.03 : -0.04, r.z + r.d / 2);
       this.house.add(floor);
-      walls(this.house, r, room.walls);
+      if (!hall || room.walls) walls(this.house, r, room.walls); // hallways are open, like the old corridors
       const lines = [];
       for (let i = 0; i <= room.size[0]; i++) lines.push(r.x + i * CELL, 0.012, r.z, r.x + i * CELL, 0.012, r.z + r.d);
       for (let j = 0; j <= room.size[1]; j++) lines.push(r.x, 0.012, r.z + j * CELL, r.x + r.w, 0.012, r.z + j * CELL);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
       this.grid.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x9e9384, transparent: true, opacity: 0.45 })));
-      this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, 0.2, r.z + r.d - 0.25) });
+      if (!hall) this.roomLabels.push({ id: room.id, pos: new THREE.Vector3(r.x + r.w / 2, 0.2, r.z + r.d - 0.25) });
     }
     // Seats come from the furniture: each use of each placed piece is a spot someone can take.
     this.seats = {};
@@ -672,7 +641,7 @@ class HomeApp {
       this.pieceAt[piece.id] = centre;
       if (type.screen) (this.screens[piece.room] ||= []).push(centre);
     }
-    this.center = new THREE.Vector3(L.W / 2, 0, L.D / 2);
+    this.center = new THREE.Vector3((L.X0 + L.W) / 2, 0, (L.Z0 + L.D) / 2);
     if (!this.aimed) this.aimCamera(); // keep the viewer's own angle and zoom across redraws
     else this.resize(); // the house may have grown: fit it again
     this.showHighlight();
@@ -682,7 +651,7 @@ class HomeApp {
 
   aimCamera() {
     if (!this.L) return;
-    const span = Math.max(this.L.W, this.L.D);
+    const span = Math.max(this.L.W - this.L.X0, this.L.D - this.L.Z0);
     this.controls.target.copy(this.center);
     if (this.arranging) {
       this.controls.minPolarAngle = 0;
@@ -902,11 +871,11 @@ class HomeApp {
       } else if (fig.room !== person.room || fig.spotKey !== `${spot.x},${spot.z}`) {
         const from = fig.room;
         let pts;
-        if (out) pts = [...route(L, from, "living", fig.root.position, L.front), L.front, L.outside];
+        if (out) pts = [...route(L, from, L.frontRoom, fig.root.position, L.front), L.front, L.outside];
         else if (from === "out") {
           fig.root.visible = true;
           fig.root.position.set(L.outside.x, 0, L.outside.z);
-          pts = [L.front, ...route(L, "living", person.room, L.front, spot)];
+          pts = [L.front, ...route(L, L.frontRoom, person.room, L.front, spot)];
         } else pts = route(L, from, person.room, fig.root.position, spot);
         fig.walkTo(pts);
         fig.room = person.room;
@@ -942,7 +911,7 @@ class HomeApp {
       this.camera.updateMatrixWorld();
       const inv = this.camera.matrixWorldInverse;
       let halfX = 0, halfY = 0;
-      for (const x of [-1, this.L.W + 1]) for (const z of [-1, this.L.D + 3]) for (const y of [0, 1.5]) {
+      for (const x of [this.L.X0 - 1, this.L.W + 1]) for (const z of [this.L.Z0 - 1, this.L.D + 3]) for (const y of [0, 1.5]) {
         const p = new THREE.Vector3(x, y, z).applyMatrix4(inv);
         halfX = Math.max(halfX, Math.abs(p.x));
         halfY = Math.max(halfY, Math.abs(p.y));

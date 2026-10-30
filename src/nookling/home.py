@@ -1,10 +1,11 @@
 """The members' home: its rooms, where each member is and what she is doing, and diary reads.
 
-    <data_dir>/home.json  {"rooms": [...], "pieces": [...], "types": {...}, "where": {member: Place},
-                           "looks": {member: {...}}, "diary_reads": [{member, day, ts, told_at}]}
+    <data_dir>/home.json  {"rooms": [...], "doors": [...], "floors": [...], "pieces": [...], "types": {...},
+                           "where": {member: Place}, "looks": {member: {...}}, "diary_reads": [...]}
 
-Rooms have a size in grid cells and doors; pieces are the furniture placed in them
-(see furniture.py and docs/furniture.md). A house without pieces gets the default set.
+Rooms have a position and size in grid cells on their floor (hallways are rooms too) and the
+doors join them (see floorplan.py and docs/floorplan.md); pieces are the furniture placed in
+them (see furniture.py and docs/furniture.md). A house without pieces gets the default set.
 
 Where a member is follows what she really does. A daily-life activity takes her to its room
 and she stays there afterwards; asleep she lies in her bedroom, busy she is out of the house.
@@ -22,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import furniture, models, owner
+from . import floorplan, furniture, models, owner
 from .furniture import BEDROOM_DOORS, BEDROOM_SIZE, BUILTIN_TYPES, SHARED_ROOMS, PlacementError
 from .games.spire_bridge import atomic_json
 
@@ -95,6 +96,8 @@ class Home:
         self.pieces: list[dict] | None = None  # None until furnished
         self.types: dict[str, dict] = {}  # the owner's own kinds of furniture (stage 2d)
         self.extras: list[str] = []  # built-in pieces added to houses made before them, once each
+        self.doors: list[dict] = []  # between rooms, or the front door to the outside
+        self.floors: list[dict] = [{"level": 0, "name": "一楼"}]
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -105,6 +108,8 @@ class Home:
                 self.pieces = list(raw["pieces"]) if "pieces" in raw else None
                 self.types = dict(raw.get("types") or {})
                 self.extras = list(raw.get("extras") or [])
+                self.doors = list(raw.get("doors") or [])
+                self.floors = list(raw.get("floors") or self.floors)
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -114,7 +119,8 @@ class Home:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.path, {"version": 2, "rooms": self.rooms, "pieces": self.pieces or [],
+        atomic_json(self.path, {"version": 3, "rooms": self.rooms, "doors": self.doors, "floors": self.floors,
+                                "pieces": self.pieces or [],
                                 "types": self.types, "extras": self.extras,
                                 "where": {m: asdict(p) for m, p in self.where.items()},
                                 "looks": self.looks, "diary_reads": self.diary_reads[-200:]})
@@ -155,7 +161,9 @@ class Home:
             if member not in self.where:
                 self.where[member] = Place(bedroom(member), "rest", "", self.now())
                 changed = True
-        furnish = [r for r in self.rooms if self.pieces is None or r["id"] in new_rooms]
+        if self._lay_out(new_rooms):
+            changed = True
+        furnish = [r for r in self.rooms if (self.pieces is None or r["id"] in new_rooms) and r.get("kind") != "hall"]
         if self.pieces is None:
             self.pieces = []
         for room in furnish:
@@ -168,12 +176,57 @@ class Home:
         if changed or new_rooms or furnish:
             self.save()
 
+    def _lay_out(self, new_rooms: list[str]) -> bool:
+        """Rooms without a position get one. A house from before positions is laid out the old
+        automatic way once (hallways become rooms), so it looks the same; a new bedroom goes at
+        the end of the bedroom row, a new shared room next to a hallway, each with a door."""
+        unplaced = [r for r in self.rooms if "at" not in r]
+        if not unplaced:
+            return False
+        if len(unplaced) == len(self.rooms):
+            halls, self.doors = floorplan.legacy_layout(self.rooms)
+            self.rooms.extend(halls)
+            return True
+        for room in unplaced:
+            room.pop("doors", None)
+            room.setdefault("kind", "room")
+            if room["id"].startswith("bed-"):
+                beds = [r for r in self.rooms if r["id"].startswith("bed-") and "at" in r and r.get("level", 0) == 0]
+                x = max((floorplan.box(r)[2] for r in beds), default=0)
+                room.update(at=[x, 0], level=0)
+                floorplan.stretch_hall_to(room, self.rooms)
+            else:
+                floorplan.place_room(room, [r for r in self.rooms if "at" in r], self.doors)
+            door = floorplan.auto_door(room, [r for r in self.rooms if "at" in r])
+            if door:
+                self.doors.append(door)
+        return True
+
+    def room_doors(self, room: dict) -> list[dict]:
+        """The doors on a room's walls, as the furniture checks want them: wall and centre cell."""
+        out = []
+        x0, z0, x1, z1 = floorplan.box(room)
+        for door in self.doors:
+            if room["id"] not in floorplan.door_sides(door, self.rooms):
+                continue
+            half = door.get("width", floorplan.DOOR) / 2
+            if door["line"] == "z":
+                out.append({"wall": "back" if door["at"][1] == z0 else "front", "at": door["at"][0] - x0 + half})
+            else:
+                out.append({"wall": "left" if door["at"][0] == x0 else "right", "at": door["at"][1] - z0 + half})
+        return out
+
+    def checked_room(self, rid: str) -> dict:
+        """A room with its doors attached, for checking furniture against them."""
+        room = self.room(rid)
+        return {**room, "doors": self.room_doors(room)}
+
     def _add_computer(self) -> None:
         rid, at, turn = furniture.COMPUTER
         piece = {"id": furniture.new_id(), "type": "base/computer", "room": rid, "at": list(at), "turn": turn,
                  "color": None, "name": None, "functions": ["chat.telegram"], "added_by": "owner", "owner": ""}
         try:
-            furniture.check(piece, self.room(rid), self.all_types(), self.pieces)
+            furniture.check(piece, self.checked_room(rid), self.all_types(), self.pieces)
         except PlacementError:  # the owner put something there: wherever it fits
             spot = self.free_spot("base/computer", [rid] + [r["id"] for r in self.rooms if r.get("shared")])
             if spot is None:
@@ -200,7 +253,7 @@ class Home:
             raise PlacementError(f"没有这种家具：{piece.get('type')}")
         piece = {"id": furniture.new_id(), "turn": 0, "color": None, "name": None,
                  "functions": list(ftype["functions"]), "added_by": "owner", "owner": "", **piece}
-        furniture.check(piece, self.room(piece.get("room", "")), self.all_types(), self.pieces or [])
+        furniture.check(piece, self.checked_room(piece.get("room", "")), self.all_types(), self.pieces or [])
         self.pieces.append(piece)
         self.save()
         return piece
@@ -211,7 +264,7 @@ class Home:
             raise PlacementError("没有这件家具")
         moved = {**piece, "room": room or piece["room"], "at": list(at) if at is not None else piece["at"],
                  "turn": piece["turn"] if turn is None else turn}
-        furniture.check(moved, self.room(moved["room"]), self.all_types(), self.pieces)
+        furniture.check(moved, self.checked_room(moved["room"]), self.all_types(), self.pieces)
         piece.update(moved)
         self.save()
         return piece
@@ -301,7 +354,7 @@ class Home:
             trial = {**self.all_types(), tid: made}
             for piece in [p for p in self.pieces or [] if p["type"] == tid]:
                 try:
-                    furniture.check(piece, self.room(piece["room"]), trial, self.pieces)
+                    furniture.check(piece, self.checked_room(piece["room"]), trial, self.pieces)
                 except PlacementError as e:
                     raise PlacementError(f"改了以后，{self.room(piece['room'])['name']}里的那件放不下：{e}") from None
         self.types[tid] = made
@@ -325,8 +378,12 @@ class Home:
         if size not in ROOM_SIZES:
             raise PlacementError("房间大小只能是小、中、大")
         room = {"id": "room-" + furniture.new_id()[2:], "name": name, "icon": "🚪", "shared": True,
-                "size": list(ROOM_SIZES[size]), "doors": [{"wall": "back"}]}
+                "kind": "room", "size": list(ROOM_SIZES[size])}
+        floorplan.place_room(room, self.rooms, self.doors)
         self.rooms.append(room)
+        door = floorplan.auto_door(room, self.rooms)
+        if door:
+            self.doors.append(door)
         self.save()
         return room
 
@@ -381,6 +438,7 @@ class Home:
             raise PlacementError("房间里还有家具，先搬走或删掉")
         if any(place.room == rid for place in self.where.values()):
             raise PlacementError("有人在这个房间里")
+        self.doors = [d for d in self.doors if rid not in floorplan.door_sides(d, self.rooms)]
         self.rooms.remove(room)
         self.save()
 
@@ -477,7 +535,7 @@ class Home:
                 for x in range(w):
                     try:
                         furniture.check({"id": "", "type": type_id, "room": rid, "at": [x, z], "turn": 0},
-                                        room, self.all_types(), self.pieces or [])
+                                        self.checked_room(rid), self.all_types(), self.pieces or [])
                     except PlacementError:
                         continue
                     return rid, (x, z)
@@ -553,7 +611,7 @@ class Home:
     def prompt_section(self, member: str) -> str:
         if member not in self.where:
             return ""
-        shared = "、".join(r["name"] for r in self.rooms if r.get("shared"))
+        shared = "、".join(r["name"] for r in self.rooms if r.get("shared") and r.get("kind") != "hall")
         return (f"[家] 你和朋友们住在同一个家里：{shared}，每人还有自己的卧室（你的叫「{self.room_name(bedroom(member))}」）。"
                 f"你做日常活动时会去对应的房间，比如看东西在书房、玩游戏在娱乐室。{DIARY_NOTE.format(owner=owner.name())}[/家]")
 
@@ -578,7 +636,10 @@ class Home:
                            "room_name": self.room_name(place.room), "look": self.looks.get(member, {}),
                            "phone_at": phone.get(member, 0.0)})
         reads = [r for r in self.diary_reads if r["member"] in members][-30:]
-        return {"rooms": self.rooms, "pieces": self.pieces or [], "types": self.all_types(),
+        doors = [{**d, "rooms": floorplan.door_sides(d, self.rooms)} for d in self.doors]
+        return {"rooms": self.rooms, "doors": doors, "floors": self.floors,
+                "unreachable": floorplan.unreachable(self.doors, self.rooms),
+                "pieces": self.pieces or [], "types": self.all_types(),
                 "available": sorted(available or ()), "function_names": furniture.FUNCTIONS,
                 "templates": {k: {"name": v[0], "size": list(v[1]), "height": v[2], "color": v[3]}
                               for k, v in furniture.TEMPLATES.items() if k != "parcel"},

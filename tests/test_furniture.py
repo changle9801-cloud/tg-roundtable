@@ -18,10 +18,10 @@ def house(tmp_path):
 def test_the_default_house_is_furnished_and_every_piece_fits(tmp_path):
     home = house(tmp_path)
     types = home.all_types()
-    rooms = {r["id"] for r in home.rooms}
-    assert {p["room"] for p in home.pieces} == rooms  # nothing left empty
+    rooms = {r["id"] for r in home.rooms if r.get("kind") != "hall"}
+    assert {p["room"] for p in home.pieces} == rooms  # nothing left empty (hallways stay bare)
     for piece in home.pieces:
-        check(piece, home.room(piece["room"]), types, home.pieces)  # no overlap, no blocked door, inside
+        check(piece, home.checked_room(piece["room"]), types, home.pieces)  # no overlap, no blocked door, inside
     beds = [p for p in home.pieces if p["type"] == "base/bed"]
     assert {p["owner"] for p in beds} == set(MEMBERS)
     tv = next(p for p in home.pieces if p["type"] == "base/tv")

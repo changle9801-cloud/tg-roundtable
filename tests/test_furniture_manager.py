@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from nookling import models
+from nookling import floorplan, models
 from nookling.furniture import PlacementError
 from nookling.home import Home, bedroom
 from test_web import admin, login  # noqa: F401  (the admin fixture)
@@ -95,7 +95,8 @@ def test_pieces_go_where_they_fit_and_only_plain_ones_can_be_deleted(tmp_path):
 def test_rooms_can_be_added_renamed_and_deleted_when_empty(tmp_path):
     home = house(tmp_path)
     room = home.add_room("阳光房", "small")
-    assert room["size"] == [10, 10] and room["shared"] and room["doors"] == [{"wall": "back"}]
+    assert room["size"] == [10, 10] and room["shared"] and "at" in room
+    assert any(room["id"] in floorplan.door_sides(d, home.rooms) for d in home.doors)  # it got a door
     assert home.rename_room(room["id"], "一个特别长的房间名字")["name"] == "一个特别长的房间"
     with pytest.raises(PlacementError, match="大小"):
         home.add_room("x", "huge")
