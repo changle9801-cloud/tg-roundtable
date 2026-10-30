@@ -183,9 +183,10 @@ export function renderEditor(app) {
     b.onclick = () => app.setArrangeTop(top);
     view.append(b);
   }
-  const out = [el("h2", "", "布置"), modes, view, el("p", "muted small",
-    "从家具栏拖家具进来（手机上点卡片、再点位置）。拖家具：挪动；右键或 R：转 90°（加 Shift 反着转）；Esc：放下不动、取消选中。"
-    + "拖空地：转镜头；Shift+拖：平移；滚轮：缩放。橙色箭头指着家具的正面。放不下、挡门、叠在一起的会退回原处。")];
+  const out = [el("h2", "", "布置"), modes, view, ...(app.shelfInStage() ? [] : [app.shelf])];
+  const help = el("p", "muted small",
+    "从家具栏拖家具进画面（手机上点卡片、再点位置）。拖家具：挪动；右键或 R：转 90°（加 Shift 反着转）；Esc：放下不动、取消选中。"
+    + "拖空地：转镜头；Shift+拖：平移；滚轮：缩放。橙色箭头指着家具的正面。放不下、挡门、叠在一起的会退回原处。");
 
   // ---- the selected piece ----
   const piece = d.pieces.find((p) => p.id === app.selectedPiece);
@@ -229,6 +230,8 @@ export function renderEditor(app) {
     out.push(section(`选中：${piece.name || type.name}`, apps, el("p", "muted small", `${type.name} · ${rooms[piece.room]?.name || piece.room}`),
       name, row, pic, el("p", "muted small", "挂的功能（成员用这些功能时会走到这件家具跟前）："), fns));
   }
+
+  out.push(help);
 
   // ---- the owner's own kinds ----
   const mine = Object.values(d.types).filter((t) => t.id.startsWith("mine/"));

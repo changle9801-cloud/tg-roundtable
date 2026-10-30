@@ -38,6 +38,8 @@ export function close() {
 
 const CELL = 0.5;
 const STOREY = 3; // units from one floor to the next
+// A window this narrow has the side panel below the picture: the furniture shelf is then a strip over the picture.
+const NARROW = "(max-width: 860px)";
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 
 function layout(data, level = 0) {
@@ -1415,12 +1417,25 @@ class HomeApp {
     this.renderShelf();
   }
 
+  // Where the shelf goes: in the side panel beside the picture (renderEditor puts it there), or, when the
+  // window is narrow and the panel is below, as a strip along the bottom of the picture.
+  shelfInStage() {
+    return matchMedia(NARROW).matches;
+  }
+
   renderShelf() {
-    const on = this.arranging && !this.planMode && this.data;
-    this.shelf.hidden = !on || !this.shelfOpen;
-    this.shelfTab.hidden = !on || this.shelfOpen;
-    if (this.stage.classList.contains("shelf-open") !== !this.shelf.hidden) {
-      this.stage.classList.toggle("shelf-open", !this.shelf.hidden);
+    const on = this.arranging && !this.planMode && this.data, strip = this.shelfInStage();
+    if (strip && this.shelf.parentNode !== this.stage) this.stage.append(this.shelf);
+    this.shelf.classList.toggle("in-panel", !strip);
+    if (on && !strip && this.shelf.parentNode !== this.panel) {
+      this.editorKey = "";
+      this.renderPanel();
+    }
+    this.shelf.hidden = !on || (strip && !this.shelfOpen);
+    this.shelfTab.hidden = !on || !strip || this.shelfOpen;
+    const covers = strip && !this.shelf.hidden;
+    if (this.stage.classList.contains("shelf-open") !== covers) {
+      this.stage.classList.toggle("shelf-open", covers);
       this.resize();
     }
     if (!on) return;
@@ -1804,11 +1819,13 @@ class HomeApp {
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     const aspect = w / h;
-    // The shelf covers the left of the picture while arranging (the bottom on a narrow screen):
-    // fit the house into what is left beside it.
-    const shelf = this.shelf && !this.shelf.hidden, strip = shelf && matchMedia("(max-width: 600px)").matches;
-    const left = shelf && !strip ? Math.min(this.shelf.offsetWidth + 12, w * 0.6) : 0;
-    const below = strip ? Math.min(this.shelf.offsetHeight + 12, h * 0.6) : 0;
+    // On a narrow window the shelf is a strip over the bottom of the picture: fit the house above it.
+    const left = 0, below = this.stage.classList.contains("shelf-open") ? Math.min(this.shelf.offsetHeight + 12, h * 0.6) : 0;
+    const strip = this.shelfInStage();
+    if (strip !== this.wasStrip) { // the window crossed the line: the shelf moves between the panel and the picture
+      this.wasStrip = strip;
+      queueMicrotask(() => this.renderShelf());
+    }
     let view = 14;
     if (this.bounds) {
       // Fit the whole house: the corners of the ground, seen from the camera, decide the frame.
@@ -1928,10 +1945,12 @@ class HomeApp {
     if (this.arranging) {
       // Only when the house changed: a rebuild every poll would drop what is picked in the panel.
       const key = JSON.stringify([d.rooms, d.floors, d.doors, d.unreachable, d.pieces, d.types, d.available, this.selectedPiece, this.view,
-                                  this.arrangeTop]);
+                                  this.arrangeTop, this.shelfInStage()]);
       if (key !== this.editorKey) {
         this.editorKey = key;
+        const list = this.shelf.querySelector(".home-shelf-list"), top = list?.scrollTop; // the shelf is moved, not rebuilt
         this.panel.replaceChildren(...renderEditor(this));
+        if (list) list.scrollTop = top;
       }
       return;
     }
