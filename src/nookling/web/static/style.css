@@ -407,6 +407,20 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
 .home-talk-thinking { min-height: 1.3em; margin: 4px 0 0; }
 .home-talk-form { display: flex; gap: 6px; margin-top: 6px; align-items: flex-end; }
 .home-talk-form textarea { flex: 1; min-width: 0; resize: vertical; min-height: 2.6em; font: inherit; }
+.home-bubble { /* what someone just said, over her name tag */
+  pointer-events: auto; cursor: pointer; white-space: normal !important; width: max-content; max-width: 200px; z-index: 1;
+  font-size: 12px; line-height: 1.35; padding: 5px 9px; border-radius: 12px; color: #1c2027; background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.22); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.home-bubble.private { background: #fff8e1; }
+.home-bubble.group { opacity: 0.72; background: #eef3f8; }
+.home-owner-line {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 2; max-width: min(70%, 520px);
+  background: var(--accent); color: var(--accent-text); border-radius: 12px; padding: 6px 12px; font-size: 13px;
+  cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+.home-owner-line[hidden] { display: none; }
+.home-talk-line.flash { outline: 2px solid #f0a020; }
 .home-hover-tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; color: #fff; background: rgba(40, 36, 32, 0.78); }
 .home-tag.stale { opacity: 0.6; }
 .home-panel h2 { margin-bottom: 8px; }

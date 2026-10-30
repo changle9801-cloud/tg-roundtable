@@ -6,7 +6,7 @@ from nookling.apps.house import HouseSink
 from nookling.conversation import Conversation
 from nookling.home import Home
 from nookling.moderator import RuleModerator
-from nookling.runtime import TALK_LINGER
+from nookling.runtime import SAID_WINDOW, TALK_LINGER
 from test_web import admin, login  # noqa: F401  (the admin fixture)
 
 MEMBERS = {"codex": "Codex", "grok": "Grok"}
@@ -83,3 +83,18 @@ async def test_after_a_quiet_while_they_go_back(admin):  # noqa: F811
     runtime.house_talk().messages[-1] = replace(runtime.house_talk().messages[-1], ts=time.time() - TALK_LINGER - 1)
     runtime._talk_tick()
     assert runtime.home.where["codex"].verb != "talk"
+
+
+async def test_the_page_is_told_what_was_just_said(admin):  # noqa: F811
+    await login(admin)
+    runtime = admin.runtime
+    runtime.home.ensure({"codex": "Codex", "grok": "Grok"})
+    runtime.say_at_home("开饭啦")
+    old = runtime.life.new_thread("codex", "grok", "旧事")
+    runtime.life.add_message(old, "codex", "上周那个")
+    old["messages"][-1]["ts"] = time.time() - SAID_WINDOW - 5  # long said: no bubble for it
+    thread = runtime.life.new_thread("codex", "grok", "看电影")
+    runtime.life.add_message(thread, "codex", "今晚看什么")
+    said = (await (await admin.get("/api/home")).json())["said"]
+    assert [(s["kind"], s["who"], s["text"]) for s in said] == [("home", "user", "开饭啦"), ("private", "codex", "今晚看什么")]
+    assert said[0]["owner"] and said[1]["peer"] == "grok"

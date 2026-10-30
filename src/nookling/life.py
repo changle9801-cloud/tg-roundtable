@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from . import owner
 from .config import ConfigError
 from .diary import DiaryStore
 from .prompts import LIGHT_READING, now_line
@@ -760,7 +761,8 @@ sources 中的 excerpt 只写可分享的内容摘记，不放自己的私事或
         speaker, other = peer, member
         looked_up = False
         for _ in range(MAX_PRIVATE_MESSAGES - 1):
-            prompt = now_line() + f"\n这是你与 {self.names[other]} 的私聊，其他成员看不到，不会自动发群里。\n"
+            prompt = now_line() + (f"\n这是你与 {self.names[other]} 的私聊，其他成员看不到，不会自动发群里；"
+                                   f"在家里说的话{owner.name()}在家的页面上看得到（说话时头上会冒气泡）。\n")
             prompt += self.mine(speaker)
             prompt += "\n眼前这段私聊：\n" + "\n".join(f"{self.names[m['sender']]}：{m['text']}" for m in thread["messages"])
             prompt += '\n想接就自然接一句，没有想说的可以结束。可以聊各自喜好、追问或吐槽，不要为了凑轮数反复总结。这一步不使用工具。'

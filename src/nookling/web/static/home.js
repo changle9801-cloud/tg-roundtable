@@ -1956,6 +1956,7 @@ class HomeApp {
     if (this.drag || this.plan) return; // the redraw would snatch the piece or room from under the pointer
     this.data = data;
     if (data.talk?.busy || data.talk?.thinking?.length) this.fastUntil = Math.max(this.fastUntil || 0, Date.now() + 10000);
+    this.takeSaid(data);
     const key = JSON.stringify([data.rooms, data.doors, data.floors, data.unreachable, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
@@ -2103,6 +2104,7 @@ class HomeApp {
         placed.push([x, y, w]);
       }
       node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
+      return [x, y, node];
     };
     const placed = [];
     const shut = new Set(this.data.unreachable || []);
@@ -2118,7 +2120,27 @@ class HomeApp {
       const p = fig.person;
       const head = fig.root.position.clone().add(new THREE.Vector3(0, fig.pose === "lie" ? 0.9 : fig.pose === "sit" ? 1.6 : 1.9, 0));
       const words = fig.path.length ? "走过去…" : fig.stale ? "好久没动了" : p.verb === "sleep" ? "💤" : fig.phoning && p.verb !== "phone" ? "在看手机" : p.words;
-      put("who:" + p.id, `home-tag${this.selected === p.id ? " selected" : ""}${fig.stale ? " stale" : ""}`, `${p.name} · ${words}`, head, p.detail || "");
+      const [x, y, tag] = put("who:" + p.id, `home-tag${this.selected === p.id ? " selected" : ""}${fig.stale ? " stale" : ""}`,
+        `${p.name} · ${words}`, head, p.detail || "");
+      const said = this.bubbles?.get(p.id);
+      if (said && said.until > performance.now()) {
+        const people = this.data.people;
+        const phone = p.verb === "phone" || (said.kind === "private" && people.find((o) => o.id === said.peer)?.verb === "phone");
+        const key = "say:" + p.id;
+        want.add(key);
+        let node = this.labels.get(key);
+        if (!node) {
+          node = el("div", "home-bubble");
+          node.onclick = () => this.openSaid(this.bubbles.get(p.id));
+          this.labels.set(key, node);
+          this.labelLayer.append(node);
+        }
+        const text = (said.kind === "group" || phone ? "📱 " : "") + said.text;
+        if (node.textContent !== text) node.textContent = text;
+        node.className = `home-bubble ${said.kind}`;
+        node.title = said.kind === "group" ? `在群里说：${said.text}` : said.kind === "private" ? `私聊：${said.text}` : said.text;
+        node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y - (tag.offsetHeight || 20) - 6)}px) translate(-50%, -100%)`;
+      } else if (said) this.bubbles.delete(p.id);
     }
     for (const [key, node] of this.labels) {
       if (!want.has(key)) { node.remove(); this.labels.delete(key); }
@@ -2209,6 +2231,55 @@ class HomeApp {
     this.panel.replaceChildren(...[this.panelTabs(), el("h2", "", "家里"), warning, list, detail].filter(Boolean));
   }
 
+  // ---- bubbles: what was just said, over the speaker's head (docs/house-talk.md, 3b) ----
+
+  // New lines from the server become bubbles, each once; what was said before the page opened does not.
+  takeSaid(data) {
+    this.saidSince ??= (data.now || Date.now() / 1000) - 10;
+    this.shownSaid ||= new Set();
+    this.bubbles ||= new Map();
+    for (const line of data.said || []) {
+      const key = `${line.kind}:${line.who}:${line.ts}`;
+      if (this.shownSaid.has(key) || line.ts < this.saidSince) continue;
+      this.shownSaid.add(key);
+      const seconds = Math.min(10, Math.max(4, 2 + line.text.length / 8));
+      const bubble = { ...line, until: performance.now() + seconds * 1000 };
+      if (line.owner) this.showOwnerLine(bubble);
+      else this.bubbles.set(line.who, bubble); // a newer line from the same person takes the old one's place
+    }
+  }
+
+  showOwnerLine(line) {
+    if (!this.ownerLine) {
+      this.ownerLine = el("div", "home-owner-line");
+      this.ownerLine.onclick = () => this.openSaid(this.ownerLineSaid);
+      this.stage.append(this.ownerLine);
+    }
+    this.ownerLineSaid = line;
+    this.ownerLine.textContent = `你：${line.text}`;
+    this.ownerLine.title = line.text;
+    this.ownerLine.hidden = false;
+    clearTimeout(this.ownerLineTimer);
+    this.ownerLineTimer = setTimeout(() => (this.ownerLine.hidden = true), line.until - performance.now());
+  }
+
+  // A bubble clicked: the line it came from. The talk at home is in 聊天; private chats are in 日常.
+  openSaid(line) {
+    if (!line) return;
+    if (line.kind === "home") {
+      this.panelPage = "talk";
+      this.renderPanel();
+      const row = this.talkUI?.list.querySelector(`[data-ts="${line.ts}"]`);
+      if (row) {
+        row.scrollIntoView({ block: "nearest" });
+        row.classList.add("flash");
+        setTimeout(() => row.classList.remove("flash"), 1600);
+      }
+    } else if (line.kind === "private") {
+      document.querySelector('.tabs button[data-tab="life"]')?.click();
+    }
+  }
+
   // The side panel's two pages: who is where, and the talk at home (docs/house-talk.md, 3a).
   panelTabs() {
     const talk = this.data.talk || { messages: [] };
@@ -2267,6 +2338,7 @@ class HomeApp {
       const people = Object.fromEntries(d.people.map((p) => [p.id, p]));
       ui.list.replaceChildren(...(talk.messages.length ? talk.messages.map((m) => {
         const line = el("div", "home-talk-line" + (m.owner ? " mine" : ""));
+        line.dataset.ts = m.ts;
         const who = el("span", "who", m.owner ? "你" : m.name);
         if (!m.owner && people[m.who]) who.style.color = people[m.who].look.color;
         line.append(who, el("span", "when", clock(m.ts)), el("p", "", m.text));

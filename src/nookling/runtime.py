@@ -113,6 +113,7 @@ class LogBuffer(logging.Handler):
 
 
 TALK_LINGER = 180  # seconds of quiet at home before those who came to talk go back
+SAID_WINDOW = 90  # seconds: how far back the page is told what was said, for its bubbles
 
 class Runtime:
     def __init__(self, store: SettingsStore, log_buffer: LogBuffer | None = None):
@@ -872,7 +873,27 @@ class Runtime:
         for m in convo.messages if convo else ():
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
-        return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view()}
+        return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view(),
+                "said": self._recent_said(convo)}
+
+    def _recent_said(self, group: Conversation | None) -> list[dict]:
+        """What was said lately, for the bubbles over people's heads (docs/house-talk.md, 3b): the talk at home,
+        two members' private chats (the owner sees them in 日常 anyway), and the group (on their phones)."""
+        since = time.time() - SAID_WINDOW
+        said = []
+        talk = self.conversations.get(HOUSE_TALK)
+        for m in talk.messages if talk else ():
+            if m.ts >= since:
+                said.append({"kind": "home", "who": m.speaker_id, "owner": m.from_user, "text": m.text, "ts": m.ts})
+        for thread in self.life.threads[-10:]:
+            for m in thread["messages"]:
+                if m["ts"] >= since:
+                    peer = next((x for x in thread["members"] if x != m["sender"]), "")
+                    said.append({"kind": "private", "who": m["sender"], "peer": peer, "text": m["text"], "ts": m["ts"]})
+        for m in group.messages if group else ():
+            if m.ts >= since and not m.from_user:
+                said.append({"kind": "group", "who": m.speaker_id, "text": m.text, "ts": m.ts})
+        return sorted(said, key=lambda s: s["ts"])
 
     def home_text(self) -> str:
         """`/家` in the group: who is where, in fixed words anyone there may see."""
