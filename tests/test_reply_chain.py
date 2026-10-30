@@ -77,8 +77,8 @@ async def test_a_friend_talks_back(make, store):
     # The user asks Codex to redo Grok's card; one says no, the other does it anyway: each answers back once.
     grok = make("grok", ["别加，就这样", "我说了不要"])
     codex = make("codex", ["嗯，这次补齐", "行吧"])
-    room, sink = room_for([grok, codex], store, chance=0.0, decay=0.0)
-    room.moderator.rng.random = lambda: 0.3  # under the comeback chance (0.6), over the usual one (0)
+    room, sink = room_for([grok, codex], store, chance=0.5, decay=0.4)
+    room.moderator.rng.random = lambda: 0.2  # under a comeback after one line (0.27), over nothing to say (0.05)
     room.add_user_message("me", "@Codex 给 @Grok 重做一张")
     await room.wait_idle()
     order = [pid for pid, _ in sink.posts]
@@ -87,11 +87,11 @@ async def test_a_friend_talks_back(make, store):
 
 async def test_naming_a_friend_draws_her_in(make, store):
     a, b, c = make("a", ["哈哈"]), make("b", ["在这"]), make("c", ["不该接"])
-    room, sink = room_for([a, b, c], store, chance=0.0, decay=0.0)
-    room.moderator.rng.random = lambda: 0.3
+    room, sink = room_for([a, b, c], store, chance=0.5, decay=0.4)
+    room.moderator.rng.random = lambda: 0.6  # under being named (1.0), over a plain reply to the post (0.55)
     await room.start_proactive(a, lambda unseen: "", 1, prepared_text="早，B 你那张卡呢")
     await room.wait_idle()
-    assert [pid for pid, _ in sink.posts] == ["a", "b", "a"]  # B answers, A gets a word back; C stays out
+    assert [pid for pid, _ in sink.posts] == ["a", "b"]  # B answers; C needn't
 
 
 async def test_a_new_user_message_starts_a_fresh_chain(make, store):

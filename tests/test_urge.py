@@ -8,7 +8,7 @@ from conftest import FakeSink
 
 from roundtable.moderator import RuleModerator
 from roundtable.room import ChatRoom
-from roundtable.urge import Urge, join_in, pick_weight, talk_back
+from roundtable.urge import Urge, pick_weight, wants_to_speak
 
 
 class Member:
@@ -25,13 +25,24 @@ def test_parts_add_up_and_factors_multiply():
     assert Urge("x", [("a", 2.0)], [("对上兴趣", 3)], cap=None).value == 6.0  # a pick weight does not
 
 
-def test_todays_numbers():
+def wants(p, **kw):
+    args = dict(pending=False, replies=0, answering=False, to_all=False, named=False, follows=False,
+                interested=False, said=0, busy=False, liveliness=1.0, crowding=0.4)
+    return wants_to_speak(p, **{**args, **kw})
+
+
+def test_what_makes_her_want_to_speak():
     grok, claude = Member("Grok", "high"), Member("Claude", "low")
-    assert join_in(grok, 0, to_all=False, busy=False, chance=0.5, decay=0.4) is None  # the first reply always comes
-    assert join_in(claude, 1, to_all=False, busy=False, chance=0.5, decay=0.4).value == 0.25
-    assert round(join_in(grok, 2, to_all=True, busy=True, chance=0.5, decay=0.4).value, 3) == round(0.9 * 0.55 * 1.5 * 0.4, 3)
-    assert talk_back(grok, named=False, busy=False).value == 0.6 * 1.5
-    assert "被朋友点名" in talk_back(grok, named=True, busy=False).explain()
+    first = wants(claude, pending=True, replies=0)
+    third = wants(claude, pending=True, replies=2)
+    assert round(first.value, 3) == round((0.2 + 0.05) * 0.6, 3) and third.value < first.value  # crowded
+    assert wants(claude, pending=True, to_all=True).value > first.value
+    comeback = wants(grok, follows=True, said=1)
+    assert round(comeback.value, 3) == round(0.45 * 1.3 * 0.6, 3) and "接她的话" in comeback.explain()
+    assert "被朋友喊名字" in wants(grok, named=True, follows=True).explain()  # named counts, not both
+    assert wants(grok, pending=True, liveliness=0).value == 0  # only owed answers
+    assert wants(claude, liveliness=2).value == 1 and "拉满" in wants(claude, liveliness=2).explain()
+    assert wants(grok, pending=True, busy=True).value < wants(grok, pending=True).value
     assert pick_weight(Member("D", "normal", "宇宙，游戏"), "聊聊游戏").value == 3.0
     assert pick_weight(Member("D", "low"), "聊聊游戏").value == 0.5
 
@@ -44,5 +55,6 @@ async def test_the_room_keeps_why_it_rolled(make, store):
     room = ChatRoom("chat", [a, b], FakeSink(), cfg, store, RuleModerator(random.Random(1)))
     room.add_user_message("me", "hi")
     await room.wait_idle()
-    [roll, *_] = room.decisions
-    assert roll["what"] == "接话" and "第 2 个接话 0.5" in roll["why"] and isinstance(roll["hit"], bool)
+    rolls = list(room.decisions)
+    assert {r["what"] for r in rolls} == {"想说话"} and len(rolls) >= 2  # both rolled for the user's message
+    assert "还没回这条 0.2" in rolls[0]["why"] and isinstance(rolls[0]["hit"], bool)

@@ -73,14 +73,17 @@ class _RoundState:
     last_speaker: str | None = None
     passed: set[str] = field(default_factory=set)  # passed since the last real message
     failed: set[str] = field(default_factory=set)  # errored this round; not retried
-    started: int = 0  # replies started since the user last spoke
-    closed: bool = False  # the dice said nobody else joins in; only @-mentions now
+    started: int = 0  # replies started since the message that opened the round
+    spoke: set[str] = field(default_factory=set)  # answered the opening message already
+    said: dict[str, int] = field(default_factory=dict)  # lines each said this round
+    queue_for: int | None = None  # the message the line below was rolled for
+    queue: list[tuple[float, str]] = field(default_factory=list)  # (how much, who) wants to speak about it
+    floor: list[tuple[float, str]] = field(default_factory=list)  # everyone, for when nobody wants to
     # Owed an answer: @-mentioned and not yet spoken, or given an extra turn (e.g. to use a new sticker).
     granted: set[str] = field(default_factory=set)
     called: set[str] = field(default_factory=set)  # @-ed by the user: wakes up a sleeping member
     wake_tried: bool = False  # nobody was up: the dice were rolled for waking someone
     wake_checked: set[int] = field(default_factory=set)  # members' messages already rolled for waking a friend
-    talk_back_checked: set[int] = field(default_factory=set)  # members' messages already rolled for a comeback
     talked_back: set[str] = field(default_factory=set)  # one comeback each per round, so two can't go on forever
     to_all: bool = False  # the user's message spoke to everyone ("你们", "大家") or showed a picture
     discussion_author: str | None = None
@@ -295,6 +298,9 @@ class ChatRoom:
             state.discussion_author = last_speaker
         if self.messages:
             state.granted.update(self.messages[-1].mentions)
+            if not self.messages[-1].from_user:  # a member's post opens the round: she has had her say
+                state.spoke.add(self.messages[-1].speaker_id)
+                state.said[self.messages[-1].speaker_id] = 1
             if self.messages[-1].from_user:
                 state.called.update((*self.messages[-1].mentions, *self.messages[-1].recheck_targets))
                 state.to_all = _draws_everyone(self.messages[-1])
@@ -336,7 +342,6 @@ class ChatRoom:
                     and p.id not in state.failed
                     and (p.id not in state.recheck_declined or p.id in forced)
                     and p.id not in speaking
-                    and (not state.closed or p.id in forced)
                     and self._unseen(p)
                 ]
                 candidates = self._awake(candidates, state, latest)
@@ -352,26 +357,22 @@ class ChatRoom:
                 if any((turn.recheck and turn.recheck_request is state.recheck_request)
                        or turn.speaker.id in state.recheck for turn in pending.values()):
                     room_for_more = False  # let the person being corrected check and answer first
+                speaker = None
                 if room_for_more and (not pending or loop.time() - last_start >= self.slow_after):
                     owed = [c for c in candidates if c.id in forced]  # whoever was @-ed goes first
-                    pool = owed or candidates
-                    if not owed and self.routines is not None:  # those not at work answer first
-                        pool = [c for c in pool if self.routines.status(c) != BUSY] or pool
-                    priority = next((p for pid in state.recheck for p in pool if p.id == pid), None)
-                    back = None
-                    if not (priority or owed or state.discussion_author) and id(latest) not in state.talk_back_checked:
-                        state.talk_back_checked.add(id(latest))
-                        back = self._talking_back([c for c in candidates if c.id not in state.talked_back], latest)
-                        if back is not None:
-                            state.talked_back.add(back.id)
-                    speaker = priority or back or (None if owed or state.started else self._answering(pool, latest)) \
-                        or self.moderator.pick(pool, latest, state.last_speaker)
-                    if speaker is not back and speaker.id not in forced and speaker.id != state.discussion_next \
-                            and not self._joins_in(speaker, state.started, state.to_all):
-                        state.closed = True  # like a real group: most messages get one or two replies
-                        continue
+                    priority = next((p for pid in state.recheck for p in owed if p.id == pid), None)
+                    if priority or owed:
+                        speaker = priority or self.moderator.pick(owed, latest, state.last_speaker)
+                    elif state.discussion_next:
+                        speaker = candidates[0]  # the other one in a shared link's exchange
+                    else:
+                        speaker = self._eager(candidates, latest, state)
+                    room_for_more = speaker is not None  # else nobody wants to say anything about it
+                if speaker is not None:
                     focus = None
                     state.started += 1
+                    state.spoke.add(speaker.id)
+                    state.said[speaker.id] = state.said.get(speaker.id, 0) + 1
                     state.granted.discard(speaker.id)
                     recheck_request = state.recheck_request if speaker.id in state.recheck else None
                     if speaker.id in state.recheck:
@@ -445,24 +446,65 @@ class ChatRoom:
                 log.info("[%s] %s 被 %s 吵醒了", self.key, p.name, message.speaker_name)
         return woken
 
-    def _talking_back(self, candidates: list[Participant], latest: Message) -> Participant | None:
-        """A member's message names a friend, or goes right after (and maybe against) what she said:
-        that friend often answers back, which is how friends bicker."""
-        if latest.from_user:
-            return None
-        i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
-        before = self.messages[i - 1] if i > 0 else None
-        named = find_mentions(latest.text, candidates, from_user=True)
-        called = set(named)
-        if before is not None and not before.from_user:
-            named.append(before.speaker_id)
-        target = next((p for pid in named for p in candidates if p.id == pid and pid != latest.speaker_id), None)
-        if target is None:
-            return None
-        chance = urge.talk_back(target, named=target.id in called, busy=self._busy(target))
-        return target if self._roll(chance, "回嘴") else None
+    def _eager(self, candidates: list[Participant], latest: Message, state: _RoundState) -> Participant | None:
+        """Whoever wants to say something about the latest message, most eager first (docs/urge-to-speak.md).
 
-    def _answering(self, pool: list[Participant], latest: Message) -> Participant | None:
+        Everyone who may speak rolls once per message, and those who want to line up. When a new
+        message lands, everyone rolls again for it. The message that opened the round always gets
+        an answer: if nobody wants to, the most eager one speaks anyway.
+        """
+        if state.queue_for != id(latest):
+            state.queue_for = id(latest)
+            state.queue, state.floor = self._line_up(candidates, latest, state)
+        speaker = self._most_eager(state.queue, candidates, latest, state)
+        if speaker is not None:
+            state.queue = [(n, pid) for n, pid in state.queue if pid != speaker.id]
+            return speaker
+        if not state.started:
+            speaker = self._most_eager(state.floor, candidates, latest, state)
+            if speaker is not None:
+                log.debug("[%s] 没人想说，%s 先回一句", self.key, speaker.name)
+            return speaker
+        return None
+
+    def _most_eager(self, scored: list[tuple[float, str]], candidates: list[Participant], latest: Message,
+                    state: _RoundState) -> Participant | None:
+        """The one who wants to most; between equals the moderator picks (and avoids the last speaker)."""
+        by_id = {c.id: c for c in candidates}
+        here = [(n, pid) for n, pid in scored if pid in by_id]
+        if not here:
+            return None
+        top = max(n for n, _ in here)
+        return self.moderator.pick([by_id[pid] for n, pid in here if n >= top - 1e-9], latest, state.last_speaker)
+
+    def _line_up(self, candidates: list[Participant], latest: Message,
+                 state: _RoundState) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
+        """Roll for everyone who may speak: ((how much, who) for those who want to, the same for everyone)."""
+        i = next((k for k in range(len(self.messages) - 1, -1, -1) if self.messages[k] is latest), -1)
+        before = self.messages[i - 1] if i > 0 and not latest.from_user else None
+        named = set() if latest.from_user else set(find_mentions(latest.text, candidates, from_user=True))
+        answering = self._answering(latest)
+        text = " ".join([latest.text, *[str(s.get(k, "")) for s in latest.sources for k in ("title", "excerpt")]]).casefold()
+        liveliness = self.follow_up_chance / urge.DEFAULT_LIVELINESS
+        wants, everyone = [], []
+        for p in candidates:
+            if p.id == latest.speaker_id:
+                continue
+            comeback = not latest.from_user and p.id not in state.talked_back
+            follows = comeback and before is not None and not before.from_user and before.speaker_id == p.id
+            chance = urge.wants_to_speak(
+                p, pending=p.id not in state.spoke, replies=state.started, answering=p.id == answering,
+                to_all=state.to_all, named=comeback and p.id in named, follows=follows,
+                interested=urge.interested(p.cfg, text), said=state.said.get(p.id, 0), busy=self._busy(p),
+                liveliness=liveliness, crowding=self.follow_up_decay)
+            everyone.append((chance.raw, p.id))
+            if self._roll(chance, "想说话"):
+                wants.append((chance.raw, p.id))
+                if comeback and (follows or p.id in named):
+                    state.talked_back.add(p.id)
+        return wants, everyone
+
+    def _answering(self, latest: Message) -> str | None:
         """Who the user is most likely talking to without an @ or a reply: whoever spoke just
         before the user's latest message(s), a moment ago. Usually that one answers first."""
         if not latest.from_user or latest.mentions:
@@ -482,17 +524,7 @@ class ChatRoom:
             streak += 1
             while k >= 0 and self.messages[k].from_user:
                 k -= 1
-        if streak >= ANSWERING_STREAK:
-            return None
-        if not self._roll(urge.answering(self.messages[i].speaker_name), "先回阿明"):
-            return None
-        return next((p for p in pool if p.id == self.messages[i].speaker_id), None)
-
-    def _joins_in(self, speaker: Participant, already: int, to_all: bool = False) -> bool:
-        """Whether one more member chimes in after ``already`` replies to the same message."""
-        chance = urge.join_in(speaker, already, to_all=to_all, busy=self._busy(speaker),
-                              chance=self.follow_up_chance, decay=self.follow_up_decay)
-        return chance is None or self._roll(chance, "接话")  # the first reply always comes
+        return None if streak >= ANSWERING_STREAK else who
 
     def _fresh_turns(self) -> dict[str, int]:
         """Turns per member for a new round: its own limit, or the group's."""

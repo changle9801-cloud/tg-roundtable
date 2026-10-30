@@ -176,21 +176,28 @@ async def test_no_one_keeps_the_first_answer_forever(make, round_cfg, store):
         room._append(Message(who, who, text, (), now + k))
     latest = Message("user", "me", "really?", (), now + 5)
     room._append(latest)
-    assert room._answering([a, b], latest) is b  # answered first once so far
+    assert room._answering(latest) == "b"  # answered first once so far
     room._append(Message("b", "b", "yes", (), now + 6))
     latest = Message("user", "me", "sure?", (), now + 7)
     room._append(latest)
-    assert room._answering([a, b], latest) is None  # twice running: back to a random pick
+    assert room._answering(latest) is None  # twice running: no one is favoured
 
 
-async def test_talking_to_everyone_brings_more_replies(make, round_cfg, store):
-    a, b = make("a", []), make("b", [])
-    room, _ = room_with([a, b], round_cfg, store)
-    room.follow_up_chance, room.follow_up_decay = 0.5, 0.4
-    room.moderator.rng.random = lambda: 0.7  # between the usual chance (0.5) and the boosted one (0.9)
-    assert not room._joins_in(b, 1)
-    assert room._joins_in(b, 1, to_all=True)
-    assert not room._joins_in(b, 2, to_all=True)  # 0.9 * 0.55: still fewer for each further one
+async def test_talking_to_everyone_brings_more_replies(make, store):
+    from roundtable.config import RoundConfig
+
+    def second_replies(text):
+        a, b = make("a", ["嗯"]), make("b", ["嗯"])
+        cfg = RoundConfig(max_turns_per_model=1, call_timeout=5, follow_up_chance=0.5, follow_up_decay=0.4)
+        room = ChatRoom("chat", [a, b], FakeSink(), cfg, store, RuleModerator(random.Random(0)))
+        room.moderator.rng.random = lambda: 0.4  # between a plain second reply (0.25) and one to everyone (0.55)
+        room.add_user_message("me", text)
+        return room
+
+    for text, both in (("今天好冷", False), ("你们觉得冷吗", True)):
+        room = second_replies(text)
+        await room.wait_idle()
+        assert len(room.sink.posts) == (2 if both else 1)
 
 
 async def test_a_cut_off_round_picks_up_again(make, round_cfg, store):

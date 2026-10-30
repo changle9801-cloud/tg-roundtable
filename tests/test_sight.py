@@ -87,7 +87,7 @@ async def test_a_picture_brings_more_friends_over(make, store, round_cfg, tmp_pa
     a, b = make("a", ["是我"]), make("b", ["哈哈"])
     room = ChatRoom("chat", [a, b], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
     room.follow_up_chance, room.follow_up_decay = 0.5, 0.4
-    room.moderator.rng.random = lambda: 0.7  # between the usual chance (0.5) and the boosted one (0.9)
+    room.moderator.rng.random = lambda: 0.4  # between a plain second reply (0.25) and one to a picture (0.55)
     room.add_user_message("阿明", "@A 你看", images=[str(tmp_path / "card.jpg")])
     await room.wait_idle()
     assert [pid for pid, _ in room.sink.posts] == ["a", "b"]
@@ -95,7 +95,7 @@ async def test_a_picture_brings_more_friends_over(make, store, round_cfg, tmp_pa
     c, d = make("c", ["嗯"]), make("d", ["不该接"])
     plain = ChatRoom("chat2", [c, d], FakeSink(), round_cfg, store, InOrder(random.Random(0)))
     plain.follow_up_chance, plain.follow_up_decay = 0.5, 0.4
-    plain.moderator.rng.random = lambda: 0.7
+    plain.moderator.rng.random = lambda: 0.4
     plain.add_user_message("阿明", "@C 你看")
     await plain.wait_idle()
     assert [pid for pid, _ in plain.sink.posts] == ["c"]
