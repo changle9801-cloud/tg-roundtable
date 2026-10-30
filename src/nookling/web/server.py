@@ -199,6 +199,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def get_home(request):
         return web.json_response(runtime.home_view())
 
+    async def home_talk(request):
+        body = await request.json()
+        return web.json_response(runtime.say_at_home(str(body.get("text") or "")))
+
     async def home_diary(request):
         return web.json_response(runtime.diary_book(request.match_info["pid"], request.query.get("day", "")))
 
@@ -607,6 +611,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=100 * 1024 * 1024)
     app.router.add_get("/api/life", get_life)
     app.router.add_get("/api/home", get_home)
+    app.router.add_post("/api/home/talk", home_talk)
     app.router.add_get("/api/home/diary/{pid}", home_diary)
     app.router.add_put("/api/home/looks/{pid}", home_look)
     app.router.add_post("/api/home/looks/{pid}/choose", home_choose_look)

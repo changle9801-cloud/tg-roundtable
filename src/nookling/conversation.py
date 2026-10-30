@@ -167,6 +167,7 @@ class Conversation:
         has_experience: Callable[[str, str], bool] | None = None,
         on_tool: Callable[[Participant, str], None] | None = None,
         house: Callable[[str], str] | None = None,
+        scene: Callable[[], str] | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -192,6 +193,7 @@ class Conversation:
         self.routines = routines  # who is asleep or busy right now; None: everyone is always up
         self.on_tool = on_tool  # a member called a tool server (its id): she walks to its furniture
         self.house = house  # member id -> 「家里现在」, given with every turn (docs/house-talk.md, 3c)
+        self.scene = scene  # where this talk happens, when it is not a group chat (the house: 3a)
         self.has_experience = has_experience  # own memory relevance only; no private text enters the room
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
@@ -624,6 +626,8 @@ class Conversation:
             prompt += "\n（群里发的图片附在这条消息里了，你能直接看到。）"
         if self.house is not None:
             prompt += "\n\n" + self.house(speaker.id)
+        if self.scene is not None:
+            prompt += "\n" + self.scene()
         if self.routines is not None:
             if self.routines.status(speaker) == ASLEEP:  # the user @-ed it
                 self.routines.wake(speaker)

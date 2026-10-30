@@ -40,6 +40,7 @@ from .prompts import (
     tools_section,
     search_instructions,
 )
+from .apps.house import HOUSE_TALK, HouseSink
 from .conversation import Conversation
 from .recall import chat_query
 from .settings import SettingsStore, build_config, normalize_settings, prune_secrets
@@ -111,6 +112,8 @@ class LogBuffer(logging.Handler):
             self.lines.append(self.format(record))
 
 
+TALK_LINGER = 180  # seconds of quiet at home before those who came to talk go back
+
 class Runtime:
     def __init__(self, store: SettingsStore, log_buffer: LogBuffer | None = None):
         self.store = store
@@ -176,6 +179,7 @@ class Runtime:
         self._background: set[asyncio.Task] = set()
         self.telegram = TelegramApp(self)  # the first chat app on the house computer
         self.sink = self.telegram.sink
+        self.house_sink = HouseSink(on_speak=self.home.talk)  # the family's talk at home (docs/house-talk.md)
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
         self._rebuild_participants()
@@ -397,19 +401,68 @@ class Runtime:
             keys |= {p.stem for p in chats_dir.glob("*.jsonl")}
         return sorted(k for k in keys if not k.startswith("__"))
 
+    def _new_conversation(self, key: str, sink, **extra) -> Conversation:
+        return Conversation(
+            key, self.participants, sink, self.config.round, self.sessions,
+            stickers=self.stickers, sticker_limit=self.sticker_limit,
+            log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
+            on_draw=self._on_draw, routines=self.routines,
+            on_tool=lambda p, server: self._tool_used(p.id, server, during_chat=True),
+            house=self._house_note,
+            has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
+                                                  or self.game_memories.recall(pid, text)),
+            **extra,
+        )
+
+    def house_talk(self) -> Conversation:
+        """The family's conversation at home, where the owner speaks from the house page (docs/house-talk.md, 3a).
+        Same rules as a group chat; what is said shows on the page, not in Telegram."""
+        if HOUSE_TALK not in self.conversations:
+            self.conversations[HOUSE_TALK] = self._new_conversation(HOUSE_TALK, self.house_sink, reactions=False,
+                                                                    scene=self._house_scene)
+        return self.conversations[HOUSE_TALK]
+
+    def _house_scene(self) -> str:
+        owner_name = self.config.owner_name
+        return (f"（这次不是 Telegram 群，是在家里当面说话：{owner_name}在家的页面上对大家说话，"
+                f"你们说的话会记在家里的聊天记录里，{owner_name}在页面上看得到。在家、醒着的家人都听得到；"
+                "开口说话的人会走到客厅来。想接就接，没想说的就只回复 [PASS]。）")
+
+    def say_at_home(self, text: str) -> dict:
+        """The owner says something in the house, from the house page."""
+        text = str(text or "").strip()
+        if not text:
+            raise ConfigError("要说点什么")
+        if len(text) > 2000:
+            raise ConfigError("一次说的话太长了（最多 2000 字）")
+        self.house_talk().add_user_message(self.config.owner_name, text)
+        return self.home_talk_view()
+
+    def home_talk_view(self) -> dict:
+        """The house conversation for the page: the latest lines, and who is working on a reply."""
+        convo = self.conversations.get(HOUSE_TALK)
+        log_path = self.chat_log_path(HOUSE_TALK)
+        if convo is None and log_path is not None and log_path.exists():  # said before a restart
+            convo = self.house_talk()
+        lines = [{"who": m.speaker_id, "name": m.speaker_name, "text": m.text, "ts": m.ts, "owner": m.from_user}
+                 for m in (convo.messages[-80:] if convo else [])]
+        return {"messages": lines, "thinking": sorted(self.house_sink.thinking), "busy": bool(convo and convo.busy)}
+
+    def _talk_tick(self) -> None:
+        """Quiet at home for a while: those who came to the living room to talk go back to what they were doing."""
+        convo = self.conversations.get(HOUSE_TALK)
+        if convo is not None and (convo.busy or time.time() - convo.last_activity < TALK_LINGER):
+            return
+        for pid, place in list(self.home.where.items()):
+            if place.verb == "talk":
+                self.home.end_talk(pid)
+
     def conversation(self, chat_id: int | str) -> Conversation:
         key = str(chat_id)
+        if key == HOUSE_TALK:
+            return self.house_talk()
         if key not in self.conversations:
-            self.conversations[key] = Conversation(
-                key, self.participants, self.sink, self.config.round, self.sessions,
-                stickers=self.stickers, sticker_limit=self.sticker_limit,
-                log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
-                on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
-                on_tool=lambda p, server: self._tool_used(p.id, server, during_chat=True),
-                house=self._house_note,
-                has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
-                                                      or self.game_memories.recall(pid, text)),
-            )
+            self.conversations[key] = self._new_conversation(key, self.sink, reactions=self.config.reactions_enabled)
             # Old life shares predate the explicit origin field. Match public records,
             # without rewriting the transcript or exposing any private activity.
             convo = self.conversations[key]
@@ -697,6 +750,7 @@ class Runtime:
     async def _proactive_tick(self) -> None:
         if self.journal.forget_expired():
             self.refresh_prompts()
+        self._talk_tick()
         self._chronicle_tick()
         self._memory_tick()
         if self.telegram.connected:
@@ -705,6 +759,8 @@ class Runtime:
         for p in list(self.participants):
             if self._asleep(p):  # no browsing, daily life or posts in its sleep
                 continue
+            if getattr(self.home.where.get(p.id), "verb", "") == "talk":
+                continue  # talking in the living room: her daily life waits until the talk is over
             if self._life_enabled(p.id):
                 if self._life_task is None and self.life_schedule.due(self._life_policy(p)) and self._life_idle():
                     self.start_life(p.id)
@@ -816,7 +872,7 @@ class Runtime:
         for m in convo.messages if convo else ():
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
-        return self.home.view(self._residents(), phone, self.available_functions())
+        return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view()}
 
     def home_text(self) -> str:
         """`/家` in the group: who is where, in fixed words anyone there may see."""

@@ -8,6 +8,7 @@ import { RoomEnvironment } from "/static/vendor/RoomEnvironment.js";
 import { openTelegram, renderEditor, renderShelf, say, send } from "/static/home-edit.js";
 
 const POLL_MS = 5000;
+const FAST_POLL_MS = 1500; // while a talk at home is going on
 const STALE_SECONDS = 3 * 3600; // awake but nothing happened for this long: she is dimmed, not faked busy
 const PHONE_SECONDS = 45; // spoke in the group this recently: phone in hand
 const WALK_SPEED = 2.4; // units per second
@@ -789,14 +790,18 @@ class HomeApp {
   start() {
     if (this.running) return;
     this.running = true;
-    this.poll();
-    this.timer = setInterval(() => this.poll(), POLL_MS);
+    const tick = () => { // quicker while someone at home is answering, or the owner just spoke
+      if (!this.running) return;
+      this.poll();
+      this.timer = setTimeout(tick, Date.now() < (this.fastUntil || 0) ? FAST_POLL_MS : POLL_MS);
+    };
+    tick();
     if (this.renderer) this.frame();
   }
 
   stop() {
     this.running = false;
-    clearInterval(this.timer);
+    clearTimeout(this.timer);
   }
 
   async poll() {
@@ -1931,6 +1936,7 @@ class HomeApp {
       play: () => sit.filter((s) => this.facesScreen(s)).concat(sit),
       watch: () => sit.filter((s) => this.facesScreen(s)).concat(sit),
       rest: () => sit.filter((s) => !(s.piece.functions || []).includes("web.read")).concat(sit),
+      talk: () => sit.filter((s) => !(s.piece.functions || []).length).concat(sit),
     };
     pick.browse = pick.write = pick.read;
     const options = pick[person.verb] ? pick[person.verb]() : [];
@@ -1949,6 +1955,7 @@ class HomeApp {
   apply(data) {
     if (this.drag || this.plan) return; // the redraw would snatch the piece or room from under the pointer
     this.data = data;
+    if (data.talk?.busy || data.talk?.thinking?.length) this.fastUntil = Math.max(this.fastUntil || 0, Date.now() + 10000);
     const key = JSON.stringify([data.rooms, data.doors, data.floors, data.unreachable, data.pieces, data.available, data.types]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
@@ -2139,6 +2146,7 @@ class HomeApp {
   renderPanel() {
     const d = this.data;
     if (!d) return;
+    if (!this.arranging && this.panelPage === "talk") { this.renderTalk(); return; } // keeps what is being typed
     const focus = document.activeElement;
     if (focus && this.panel.contains(focus) && /INPUT|SELECT/.test(focus.tagName)) return; // editing a look
     if (this.arranging) {
@@ -2198,7 +2206,77 @@ class HomeApp {
     } else {
       detail.append(el("p", "muted small", "点一个人看她在干什么；点卧室桌上的红本子翻日记。拖动旋转，滚轮缩放。"));
     }
-    this.panel.replaceChildren(...[el("h2", "", "家里"), warning, list, detail].filter(Boolean));
+    this.panel.replaceChildren(...[this.panelTabs(), el("h2", "", "家里"), warning, list, detail].filter(Boolean));
+  }
+
+  // The side panel's two pages: who is where, and the talk at home (docs/house-talk.md, 3a).
+  panelTabs() {
+    const talk = this.data.talk || { messages: [] };
+    if (this.talkSeen === undefined) this.talkSeen = talk.messages.at(-1)?.ts || 0; // what was said before the page opened is not new
+    const fresh = talk.messages.filter((m) => !m.owner && m.ts > this.talkSeen).length;
+    const row = el("div", "home-tabs");
+    for (const [id, label] of [["home", "家里"], ["talk", fresh && this.panelPage !== "talk" ? `聊天（${fresh}）` : "聊天"]]) {
+      const b = el("button", (this.panelPage || "home") === id ? "on" : "", label);
+      b.type = "button";
+      b.onclick = () => { this.panelPage = id; this.renderPanel(); if (id === "talk") this.talkUI?.input.focus(); };
+      row.append(b);
+    }
+    return row;
+  }
+
+  // The talk at home: what was said, who is working on a reply, and a box to say something in the house.
+  renderTalk() {
+    const d = this.data, talk = d.talk || { messages: [], thinking: [] };
+    if (!this.talkUI) {
+      const list = el("div", "home-talk-list"), thinking = el("p", "home-talk-thinking muted small");
+      const input = el("textarea");
+      input.rows = 2;
+      input.maxLength = 2000;
+      input.placeholder = "在家里说话…（Enter 说出来，Shift+Enter 换行）";
+      const speak = el("button", "primary", "说");
+      speak.type = "button";
+      const go = async () => {
+        const text = input.value.trim();
+        if (!text || speak.disabled) return;
+        speak.disabled = true;
+        try {
+          this.data.talk = await send("POST", "/api/home/talk", { text });
+          input.value = "";
+          this.fastUntil = Date.now() + 90000;
+          this.renderTalk();
+        } catch (e) { say(e.message, true); }
+        speak.disabled = false;
+        input.focus();
+      };
+      speak.onclick = go;
+      input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } };
+      const form = el("div", "home-talk-form");
+      form.append(input, speak);
+      const root = el("div", "home-talk");
+      root.append(el("p", "muted small", "在这里说的话，就是在家里说出来的：在家、醒着的家人听得到，接话的人会走到客厅来。"),
+        list, thinking, form);
+      this.talkUI = { root, list, thinking, input };
+    }
+    const ui = this.talkUI;
+    if (!this.panel.contains(ui.root)) this.panel.replaceChildren(this.panelTabs(), el("h2", "", "聊天"), ui.root);
+    else this.panel.firstChild.replaceWith(this.panelTabs());
+    const key = JSON.stringify([talk.messages.length, talk.messages.at(-1)?.ts]);
+    if (key !== this.talkKey) {
+      const first = this.talkKey === undefined, atEnd = ui.list.scrollHeight - ui.list.scrollTop - ui.list.clientHeight < 40;
+      this.talkKey = key;
+      const people = Object.fromEntries(d.people.map((p) => [p.id, p]));
+      ui.list.replaceChildren(...(talk.messages.length ? talk.messages.map((m) => {
+        const line = el("div", "home-talk-line" + (m.owner ? " mine" : ""));
+        const who = el("span", "who", m.owner ? "你" : m.name);
+        if (!m.owner && people[m.who]) who.style.color = people[m.who].look.color;
+        line.append(who, el("span", "when", clock(m.ts)), el("p", "", m.text));
+        return line;
+      }) : [el("p", "muted small", "还没人在家里说过话。")]));
+      if (first || atEnd) ui.list.scrollTop = ui.list.scrollHeight;
+    }
+    this.talkSeen = Math.max(this.talkSeen || 0, talk.messages.at(-1)?.ts || 0);
+    const names = (talk.thinking || []).map((id) => d.people.find((p) => p.id === id)?.name || id);
+    ui.thinking.textContent = names.length ? `${names.join("、")} 正在想…` : "";
   }
 
   lookEditor(p) {

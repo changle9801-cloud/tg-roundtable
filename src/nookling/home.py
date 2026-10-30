@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -44,7 +44,7 @@ SPARE_COLORS = ("#8a5a9e", "#b7791f", "#2c7a7b", "#c05680", "#4a5568")
 VERBS = {
     "browse": "在看东西", "read": "在看东西", "write": "在写东西", "watch": "在看视频", "play": "在玩游戏", "use": "在用东西",
     "phone": "在打电话", "visit": "在找朋友聊天", "share": "在看手机", "rest": "在歇着",
-    "sleep": "在睡觉", "out": "出门了",
+    "sleep": "在睡觉", "out": "出门了", "talk": "在客厅聊天",
 }
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 # Where she goes when she just wants to rest, from the words of her own reason.
@@ -112,6 +112,7 @@ class Home:
         self.doors: list[dict] = []  # between rooms, or the front door to the outside
         self.floors: list[dict] = [{"level": 0, "name": "一楼"}]
         self.moves: dict[str, list[dict]] = {}  # member -> where she went and what she did there, latest last
+        self._before_talk: dict[str, Place] = {}  # member -> what she was doing when she came to talk
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -897,6 +898,24 @@ class Home:
             self._move(member, Place(place.back, "rest", place.detail, self.now()))
         else:
             self._move(member, Place(place.room, place.verb, place.detail, place.since, False, place.peer, piece=place.piece))
+
+    def talk(self, member: str) -> None:
+        """She speaks up in the house conversation: she comes to the living room, where the owner's
+        voice is, and what she was doing waits for her (docs/house-talk.md, 3a)."""
+        here = self.where.get(member)
+        if here is None or here.verb in ("talk", "out"):
+            return
+        room = "living" if any(r["id"] == "living" for r in self.rooms) and "living" not in self.shut_rooms() else here.room
+        self._before_talk[member] = here
+        self._move(member, Place(room, "talk", "", self.now(), True, back=here.room))
+
+    def end_talk(self, member: str) -> None:
+        """The talk has gone quiet: back to where she was, and what she was doing there."""
+        place = self.where.get(member)
+        if place is None or place.verb != "talk":
+            return
+        before = self._before_talk.pop(member, None)
+        self._move(member, replace(before, active=False) if before else Place(place.back or place.room, "rest", "", self.now()))
 
     def settle(self, member: str, routine: str) -> None:
         """Follow her routine: "asleep", "busy" or "online". Safe to call on every tick."""

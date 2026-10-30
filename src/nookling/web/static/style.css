@@ -391,6 +391,22 @@ code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); 
   background: rgba(255,255,255,0.92); box-shadow: 0 1px 3px rgba(0,0,0,0.18);
 }
 .home-tag.selected { outline: 2px solid var(--accent); }
+.home-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.home-tabs button {
+  flex: 1; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  cursor: pointer; font: inherit; font-size: 13px; color: var(--text);
+}
+.home-tabs button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.home-talk-list { max-height: min(52vh, 460px); overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+.home-talk-line { align-self: flex-start; max-width: 92%; background: var(--surface-2); border-radius: 10px; padding: 6px 10px; }
+.home-talk-line.mine { align-self: flex-end; background: var(--accent); color: var(--accent-text); }
+.home-talk-line .who { font-weight: 600; font-size: 12px; }
+.home-talk-line .when { margin-left: 6px; font-size: 11px; color: var(--muted); }
+.home-talk-line.mine .when { color: inherit; opacity: 0.75; }
+.home-talk-line p { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word; }
+.home-talk-thinking { min-height: 1.3em; margin: 4px 0 0; }
+.home-talk-form { display: flex; gap: 6px; margin-top: 6px; align-items: flex-end; }
+.home-talk-form textarea { flex: 1; min-width: 0; resize: vertical; min-height: 2.6em; font: inherit; }
 .home-hover-tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; color: #fff; background: rgba(40, 36, 32, 0.78); }
 .home-tag.stale { opacity: 0.6; }
 .home-panel h2 { margin-bottom: 8px; }
