@@ -2010,6 +2010,21 @@ function renderStatus(s) {
       h("ul", { class: "room-msgs" }, ...r.recent.map((m) => h("li", {}, h("b", {}, m.speaker + ":"), m.text))))) :
     [h("div", { class: "muted" }, "重启后还没有群里的消息。")]));
 
+  const events = s.events || [];
+  const when = (ts) => new Date(ts * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const labels = { error: "出错", warning: "警告", down: "停机" };
+  $("#status-events").replaceChildren(...(events.length ? events.map((e) =>
+    h("div", { class: "event " + e.level },
+      h("span", { class: "muted small" }, when(e.last || e.ts)),
+      h("span", { class: "pill" }, labels[e.level] || e.level),
+      h("span", { class: "muted small" }, e.source),
+      h("span", { class: "msg" }, e.text + (e.count > 1 ? `（${e.count} 次）` : "")))) :
+    [h("div", { class: "muted" }, "最近没出问题。")]));
+  $("#events-clear").onclick = async () => {
+    await api("DELETE", "/api/events");
+    $("#status-events").replaceChildren(h("div", { class: "muted" }, "最近没出问题。"));
+  };
+
   const logs = $("#status-logs");
   const atBottom = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 30;
   logs.textContent = (s.logs || []).join("\n");

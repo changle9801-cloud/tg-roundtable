@@ -103,6 +103,7 @@ async def serve(store: SettingsStore, port: int | None, open_browser: bool, log_
     from .web.server import start_web
 
     runtime = Runtime(store, log_buffer)
+    logging.getLogger().addHandler(runtime.events)
     if notice:
         runtime.notices.append(notice)
     port = port or runtime.settings["web"]["port"]

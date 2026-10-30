@@ -67,6 +67,7 @@ from .game_memories import (
 from .sources import source_key
 from .chronicle import MIN_MESSAGES as CHRONICLE_MIN_MESSAGES, Chronicle
 from .chronicle import build_prompt as build_chronicle_prompt, parse_reply as parse_chronicle
+from .events import EventLog
 from .feedback import FeedbackStore, plain_text
 from .followups import FollowUpStore, build_followup_prompt
 from .memes import MEME_INSTRUCTIONS, MemeLibrary
@@ -151,6 +152,7 @@ class Runtime:
         self._memory_running = False
         self.routines = Routines()
         self.feedback = FeedbackStore(store.data_dir)
+        self.events = EventLog(store.data_dir)  # problems for the status page and the owner
         self._routine_last: dict[str, str] = {}  # member id -> asleep/busy/online at the last check
         self._routine_events: list[tuple[str, str, float]] = []  # (member id, "wake"/"sleep", when)
         self.proactive = ProactiveScheduler(store.data_dir / "proactive.json")
@@ -484,6 +486,7 @@ class Runtime:
         self.bot_profiles[p.id] = (p.name, p.cfg.tagline)
 
     async def start(self) -> None:
+        self.events.started()
         await self._sync_bots()
 
     # ---- admin actions ----
@@ -717,10 +720,22 @@ class Runtime:
     async def proactive_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
+            self.events.beat()
             try:
+                await self._alert_owner()
                 await self._proactive_tick()
             except Exception:
                 log.exception("主动发言检查出错")
+
+    async def _alert_owner(self) -> None:
+        """Several problems, or an error: tell the owner privately (the user may not watch the logs)."""
+        text = self.events.alert_text()
+        if not text or self.controller is None:
+            return
+        self.events.mark_alerted()  # even if it can't be sent: not again every 30 seconds
+        for uid in self.config.telegram.allowed_user_ids:
+            with suppress(Exception):  # never opened a private chat with the bot
+                await self.controller.send_message(uid, text)
 
     async def _proactive_tick(self) -> None:
         if self.journal.forget_expired():
@@ -1689,6 +1704,7 @@ class Runtime:
                 for p in self.participants if p.cfg.browse
             },
             "notices": self.notices,
+            "events": self.events.recent(),
             "logs": list(self.log_buffer.lines)[-150:] if self.log_buffer else [],
         }
 

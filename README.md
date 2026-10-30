@@ -192,6 +192,18 @@ uv run roundtable --list-models ID # 列出某个 API 成员可用的模型
 uv run roundtable --import-config config.toml  # 从旧版配置文件导入
 ```
 
+在终端里运行时，关掉那个终端 bot 就停了。想让它一直在后台运行（关掉终端、编辑器或 Claude 应用都不影响），在 PowerShell 里用：
+
+```powershell
+.\scripts\start-bot.ps1            # 后台启动；数据目录按 ROUNDTABLE_HOME
+.\scripts\start-bot.ps1 -Restart   # 改了代码后重启
+.\scripts\stop-bot.ps1             # 停止
+```
+
+输出写在数据目录的 `logs\roundtable-<时间>.stderr.log`，只留最近 10 次。想登录 Windows 时自动启动，运行一次 `.\scripts\install-autostart.ps1`（在「启动」文件夹放一个快捷方式；加 `-Remove` 取消）。
+
+出错、警告和 bot 没在运行的时段会记在管理页面「状态」里的「出过的问题」，重启后也留着（`events.json`）。接连出几次问题或者出错时，总控 bot 会私聊告诉你，最多半小时一次；要先私聊总控 bot 发过一次 `/start`，它才能给你发消息。
+
 ## 注意
 
 - **额度和费用**：在群里聊天和你平时直接用 Claude Code、Codex 消耗的是同一份订阅额度，API 模型则按 token 计费。你说一句话，最多会触发 `成员数 × 每轮次数` 次调用。

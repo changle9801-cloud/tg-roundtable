@@ -237,6 +237,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     async def try_proactive(request):
         return web.json_response(await runtime.try_proactive(request.match_info["pid"]))
 
+    async def clear_events(request):
+        runtime.events.clear()
+        return web.json_response({"events": []})
+
     async def test_member(request):
         return web.json_response(await runtime.test_participant(request.match_info["pid"]))
 
@@ -519,6 +523,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/preview", preview)
     app.router.add_post("/api/members/{pid}/test", test_member)
     app.router.add_post("/api/members/{pid}/proactive", try_proactive)
+    app.router.add_delete("/api/events", clear_events)
     app.router.add_post("/api/members/{pid}/browse", try_browse)
     app.router.add_get("/api/journal", get_journal)
     app.router.add_delete("/api/journal/{eid}", delete_journal_entry)

@@ -172,6 +172,11 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
 .kv div:nth-child(odd) { color: var(--muted); }
 .status-member { display: flex; align-items: baseline; gap: 6px; padding: 4px 0; }
 .status-member .msg { color: var(--muted); font-size: 12px; }
+.event { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 13px; }
+.event .msg { flex: 1; min-width: 0; word-break: break-word; }
+.event.error .pill { color: var(--err); }
+.event.warning .pill, .event.down .pill { color: var(--warn); }
+#status-events { max-height: 320px; overflow-y: auto; }
 .room { border-top: 1px solid var(--border); padding: 12px 0; }
 .room:first-child { border-top: none; padding-top: 0; }
 .room-msgs { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; }
