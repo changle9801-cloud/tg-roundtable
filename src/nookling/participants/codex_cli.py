@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..tools import codex_overrides
-from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
+from .base import ActivityHook, Participant, ToolActivity, ParticipantError, resolve_command, run_cli
 
 
 # Chat only: remove every tool, not just sandbox it, so no prompt can talk Codex into
@@ -78,7 +78,8 @@ class CodexCLI(Participant):
                 on_activity("正在联网搜索")
             elif '"mcp_tool_call"' in line:
                 server = str((json.loads(line).get("item") or {}).get("server", ""))
-                on_activity(f"正在用{names.get(server, server or '工具')}")
+                text = f"正在用{names.get(server, server or '工具')}"
+                on_activity(ToolActivity(text, server) if server else text)
 
         out = await run_cli(self.build_command(session_id, images), prompt, self.work_dir, self.timeout, on_line=watch)
         text, thread_id = parse_events(out)

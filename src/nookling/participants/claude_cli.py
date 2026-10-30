@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..tools import claude_allowed, claude_config
-from .base import ActivityHook, Participant, ParticipantError, image_data, resolve_command, run_cli
+from .base import ActivityHook, Participant, ToolActivity, ParticipantError, image_data, resolve_command, run_cli
 
 
 class ClaudeCLI(Participant):
@@ -98,7 +98,7 @@ def _activity_reader(on_activity: ActivityHook | None, tool_names: dict[str, str
                 on_activity(f"正在联网搜索：{query}" if query else "正在联网搜索")
             elif name.startswith("mcp__"):
                 server = name.split("__")[1]
-                on_activity(f"正在用{(tool_names or {}).get(server, server)}")
+                on_activity(ToolActivity(f"正在用{(tool_names or {}).get(server, server)}", server))
 
     return read
 

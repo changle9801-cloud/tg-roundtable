@@ -112,6 +112,17 @@ class SessionStore:
 ActivityHook = Callable[[str], None]
 
 
+class ToolActivity(str):
+    """An activity notice ("正在用看视频") that also says which tool server is being used."""
+
+    server: str
+
+    def __new__(cls, text: str, server: str) -> "ToolActivity":
+        obj = super().__new__(cls, text)
+        obj.server = server
+        return obj
+
+
 IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
 
 

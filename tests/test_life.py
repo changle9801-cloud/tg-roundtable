@@ -389,7 +389,7 @@ async def test_background_actor_keeps_assigned_tools_and_separate_sessions(tmp_p
         def __init__(self, cfg, sessions, work, timeout):
             seen.update(sessions=sessions, work=work)
         def set_system_prompt(self, prompt): pass
-        async def reply(self, key, prompt):
+        async def reply(self, key, prompt, on_activity=None):
             seen.update(key=key, tools=self.tools); return "{}"
         def reset(self, key): seen["reset"] = key
     monkeypatch.setattr("nookling.runtime.participant_class", lambda cfg: Actor)

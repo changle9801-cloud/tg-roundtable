@@ -193,3 +193,13 @@ async def test_admin_lists_tools(admin, tmp_path):  # noqa: F811
     assert (await resp.json())["tools"][0]["name"] == "secret_word"
     state = await (await admin.get("/api/state")).json()
     assert state["meta"]["video_tool"].endswith("video.py") and state["settings"]["tools"] == []
+
+
+def test_built_in_servers_from_before_the_rename_still_start():
+    win = "D:" + "\\".join(["", "github", "telegram", "src", "roundtable", "mcp_servers", "video.py"])
+    tool = normalize_tool({"id": "video", "name": "看视频", "command": "uv", "args": ["run", "--script", win]})
+    assert tool["args"][-1].endswith("\\".join(["src", "nookling", "mcp_servers", "video.py"]))
+    unix = normalize_tool({"id": "r", "name": "r", "command": "uv", "args": ["/x/src/roundtable/mcp_servers/reader.py"]})
+    assert unix["args"] == ["/x/src/nookling/mcp_servers/reader.py"]
+    other = normalize_tool({"id": "o", "name": "o", "command": "npx", "args": ["roundtable-tools"]})
+    assert other["args"] == ["roundtable-tools"]

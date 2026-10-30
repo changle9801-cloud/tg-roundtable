@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..tools import grok_rules, write_grok_config
-from .base import ActivityHook, Participant, ParticipantError, resolve_command, run_cli
+from .base import ActivityHook, Participant, ParticipantError, ToolActivity, resolve_command, run_cli
 
 # Every built-in tool, removed so Grok can only chat. Unknown names only cause a warning.
 DISALLOWED_TOOLS = ",".join([
@@ -97,8 +97,12 @@ def describe_tool(event: dict) -> str:
     if event.get("type") != "tool_call":
         return ""
     name = str(event.get("toolName") or event.get("title") or "")
-    if name in ("use_tool", "search_tool"):  # an MCP tool
-        return "正在用工具"
+    if name in ("use_tool", "search_tool"):  # an MCP tool; which one, when Grok says so
+        raw = event.get("rawInput") or {}
+        server = str(raw.get("server") or raw.get("serverName") or raw.get("server_name") or "")
+        if not server and "__" in str(raw.get("name") or raw.get("tool") or ""):
+            server = str(raw.get("name") or raw.get("tool")).split("__")[-2]
+        return ToolActivity("正在用工具", server) if server else "正在用工具"
     variant = str((event.get("rawInput") or {}).get("variant", ""))
     if "XSearch" in variant or name.lower().startswith("x search"):
         return "正在 X 上搜索"

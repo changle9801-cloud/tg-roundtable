@@ -54,6 +54,7 @@ from .drawing import (
 )
 from .journal import JournalStore, browse_once
 from . import owner
+from . import furniture
 from .home import ACCESSORIES, Home
 from .life import LifeEngine, LifeStore, object_reply
 from .life_work import LifeWorkbench
@@ -286,6 +287,7 @@ class Runtime:
         self.participants = built
         self.participant_errors = errors
         self.home.ensure({pc.id: pc.name for pc in self.config.enabled_participants})
+        self._sync_parcels()
         self.refresh_prompts()
         for convo in self.conversations.values():
             convo.update(built, self.config.round, self.sticker_limit, self.config.no_coding, self.config.reactions_enabled)
@@ -403,6 +405,7 @@ class Runtime:
                 stickers=self.stickers, sticker_limit=self.sticker_limit,
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
+                on_tool=lambda p, server: self._tool_used(p.id, server, during_chat=True),
                 has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
                                                       or self.game_memories.recall(pid, text)),
             )
@@ -812,7 +815,7 @@ class Runtime:
         for m in convo.messages if convo else ():
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
-        return self.home.view(self._residents(), phone)
+        return self.home.view(self._residents(), phone, self.available_functions())
 
     def home_text(self) -> str:
         """`/家` in the group: who is where, in fixed words anyone there may see."""
@@ -1199,6 +1202,36 @@ class Runtime:
         elif action != "play":  # a game moves her when it really starts
             self.home.begin(pid, action, title or ("随便看看" if action == "browse" else ""))
 
+    def _tool_used(self, pid: str, server: str, during_chat: bool = False) -> None:
+        """She called a tool: she walks to the furniture that carries what it does."""
+        tool = next((t for t in self.config.tools if t.id == server), None)
+        if tool is None:
+            return
+        self.home.use_tool(pid, furniture.tool_functions(self.config.functions, server), tool.name, during_chat=during_chat)
+
+    def available_functions(self) -> set[str]:
+        """Functions some enabled thing can do right now; furniture carrying none of them is grey."""
+        ok = {name for name, providers in self.config.functions.items() for pr in providers if self._provider_ok(pr)}
+        for tool in self.config.tools:
+            if tool.enabled and tool.members and tool.allowed:
+                ok.update(furniture.tool_functions(self.config.functions, tool.id))
+        ok.update(f for f, pr in furniture.BUILTIN_PROVIDERS.items() if self._provider_ok(pr))
+        return ok
+
+    def _provider_ok(self, provider: str) -> bool:
+        if provider.startswith("tool:"):
+            tool = next((t for t in self.config.tools if t.id == provider[5:]), None)
+            return bool(tool and tool.enabled and tool.members and tool.allowed)
+        if provider == "app:telegram":
+            return self.telegram.connected
+        return provider.startswith("builtin:")
+
+    def _sync_parcels(self) -> None:
+        """Every enabled tool nobody linked to a function waits in a box in the storage room."""
+        unlinked = {t.id: t.name for t in self.config.tools
+                    if t.enabled and furniture.tool_functions(self.config.functions, t.id) == [furniture.unlinked_name(t.id)]}
+        self.home.sync_parcels(unlinked)
+
     def _life_can_browse(self, pid: str) -> bool:
         p = self._member(pid)
         return bool(p.tools) or (p.cfg.web_search and supports_web_search(p.cfg))
@@ -1214,8 +1247,12 @@ class Runtime:
         actor.tools = tools_for(p.cfg, self.config.tools)
         actor.set_system_prompt(self.system_prompt_for(p.cfg, background=True))
         key = "__life_" + uuid.uuid4().hex
+        def on_activity(text: str) -> None:
+            if getattr(text, "server", ""):
+                self._tool_used(pid, text.server)
+
         try:
-            return await actor.reply(key, prompt)
+            return await actor.reply(key, prompt, on_activity)
         finally:
             self.life_sessions.clear_one(key, pid)
             actor.reset(key)

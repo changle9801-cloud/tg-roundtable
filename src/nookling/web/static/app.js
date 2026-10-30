@@ -1259,6 +1259,10 @@ function removeTool(t) {
   if (!confirm(`删除工具「${t.name}」？`)) return;
   draft.tools = draft.tools.filter((x) => x !== t);
   for (const m of draft.participants) if (m.tool_notes) delete m.tool_notes[t.id];
+  for (const f of Object.keys(draft.functions || {})) {
+    draft.functions[f] = draft.functions[f].filter((pr) => pr !== `tool:${t.id}`);
+    if (!draft.functions[f].length) delete draft.functions[f];
+  }
   delete pending.tools[t.id];
   changed();
   renderTools();
@@ -1383,10 +1387,47 @@ function toolCard(t) {
       field(t.transport === "stdio" ? "环境变量" : "请求头", toolSecrets(t, t.transport === "stdio" ? "env" : "headers"), "存在 secrets.json 里，不进 git"),
       field("单次调用最长（秒）", h("input", { type: "number", min: 10, max: 3600, value: t.timeout,
         oninput: (e) => update("timeout", Number(e.target.value)) }), "看视频这类慢工具要给长一点")),
+    h("h3", { class: "section-title" }, "家里的功能"),
+    functionPicker(t),
     h("h3", { class: "section-title" }, "允许用的工具 ", listBtn),
     h("div", { class: "tool-list" }, toolRows),
     h("h3", { class: "section-title" }, "给谁用"),
     h("div", {}, memberRows));
+}
+
+// Which furniture function a tool does. Unlinked, it waits as a box in the storage room.
+function functionPicker(t) {
+  draft.functions ||= {};
+  const mine = `tool:${t.id}`;
+  const linked = Object.keys(draft.functions).filter((f) => draft.functions[f].includes(mine));
+  const names = { ...server.meta.function_names };
+  for (const f of Object.keys(draft.functions)) names[f] ||= f;
+  const select = h("select", {
+    onchange: (e) => {
+      let target = e.target.value;
+      if (target === "__new__") {
+        target = (prompt("新功能名，像 music.play 这样：小写字母开头，中间一个点") || "").trim();
+        if (!/^[a-z][a-z0-9-]{0,23}\.[a-z][a-z0-9-]{0,23}$/.test(target) || target.startsWith("tool.")) {
+          if (target) toast("功能名要像 music.play 这样", true);
+          renderTools();
+          return;
+        }
+      }
+      for (const f of Object.keys(draft.functions)) {
+        draft.functions[f] = draft.functions[f].filter((pr) => pr !== mine);
+        if (!draft.functions[f].length) delete draft.functions[f];
+      }
+      if (target) (draft.functions[target] ||= []).push(mine);
+      changed();
+      renderTools();
+    },
+  },
+    h("option", { value: "", selected: !linked.length }, "还没连（在储物间的纸箱里）"),
+    ...Object.entries(names).map(([f, label]) => h("option", { value: f, selected: linked[0] === f }, `${label}（${f}）`)),
+    h("option", { value: "__new__" }, "新功能名…"));
+  return h("div", {}, select, h("p", { class: "muted small" },
+    linked.length > 1 ? `还连着：${linked.slice(1).join("、")}。` : "",
+    "成员用这个工具时，会走到挂着这个功能的家具跟前；没连的工具在储物间里是一个纸箱，连上就拆箱。"));
 }
 
 function renderTools() {

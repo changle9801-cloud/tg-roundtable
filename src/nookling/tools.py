@@ -27,6 +27,8 @@ ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")  # no "_": the CLIs join server an
 TRANSPORTS = ("stdio", "http", "sse")
 # What each kind of member can use; Codex has no SSE client.
 SUPPORTED = {"claude_cli": set(TRANSPORTS), "codex_cli": {"stdio", "http"}, "grok_cli": set(TRANSPORTS)}
+# The built-in servers lived in src/roundtable/ before the project was renamed Nookling.
+LEGACY_SERVERS = re.compile(r"([\\/])roundtable([\\/])mcp_servers([\\/])")
 LIST_TIMEOUT = 120  # the first start of an npx/uvx server may download packages
 
 
@@ -62,6 +64,7 @@ def normalize_tool(raw: dict) -> dict:
         args = args.split()
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         raise ConfigError(f"工具 {name} 的参数格式不对")
+    args = [LEGACY_SERVERS.sub(r"\1nookling\2mcp_servers\3", a) for a in args]
     out = {
         "id": tid,
         "name": name,

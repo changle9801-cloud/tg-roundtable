@@ -178,6 +178,14 @@ const TEMPLATES = {
     g.add(box(W * 0.8, H, D * 0.5, c, 0, 0, 0));
     for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(box(0.42, 0.45, 0.42, 0x8d6e63, dx * W / 4, 0, dz * (D / 2 - 0.25)));
   },
+  parcel: (g, W, D, H, c, piece, clickable) => {
+    const body = box(W * 0.8, H, D * 0.8, c, 0, 0, 0);
+    body.userData = { parcel: piece.id };
+    clickable.push(body);
+    g.add(body);
+    g.add(box(W * 0.82, 0.02, 0.12, 0xe8d7b0, 0, H, 0));
+    g.add(box(0.12, 0.02, D * 0.82, 0xe8d7b0, 0, H, 0));
+  },
   boxes: (g, W, D, H, c) => {
     [[-0.4, -0.4, 0.6], [0.4, -0.4, 0.7], [-0.4, 0.4, 0.8]].forEach(([dx, dz, h]) => g.add(box(0.7, h, 0.7, c, dx, 0, dz)));
     g.add(box(0.7, 0.5, 0.7, shade(c, 0.85), -0.4, 0.6, -0.4));
@@ -199,11 +207,21 @@ function useSpot(rect, piece, type, use) {
   };
 }
 
-function drawPiece(parent, rect, piece, type, clickable) {
+function drawPiece(parent, rect, piece, type, clickable, available) {
   const g = new THREE.Group();
   const [w, d] = type.size;
   const draw = TEMPLATES[type.template] || TEMPLATES.table;
   draw(g, w * CELL, d * CELL, type.height, piece.color || type.color, piece, clickable);
+  // Furniture whose functions nothing can do right now (its tool is off) is drawn grey.
+  const fns = piece.functions || [];
+  if (fns.length && !fns.some((f) => available.has(f))) {
+    g.traverse((o) => {
+      if (!o.material) return;
+      o.material = o.material.clone();
+      const c = o.material.color, grey = c.r * 0.3 + c.g * 0.59 + c.b * 0.11;
+      c.setRGB(grey, grey, grey);
+    });
+  }
   const [tw, td] = turnedSize(type.size, piece.turn);
   g.rotation.y = (-piece.turn * Math.PI) / 180;
   g.position.set(rect.x + (piece.at[0] + tw / 2) * CELL, 0, rect.z + (piece.at[1] + td / 2) * CELL);
@@ -485,7 +503,7 @@ class HomeApp {
     for (const piece of data.pieces) {
       const type = data.types[piece.type], r = L.rects[piece.room];
       if (!type || !r) continue;
-      drawPiece(this.house, r, piece, type, this.clickable);
+      drawPiece(this.house, r, piece, type, this.clickable, new Set(data.available || []));
       (type.uses || []).forEach((use, i) => {
         (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...useSpot(r, piece, type, use) });
       });
@@ -557,7 +575,7 @@ class HomeApp {
 
   apply(data) {
     this.data = data;
-    const key = JSON.stringify([data.rooms, data.pieces]);
+    const key = JSON.stringify([data.rooms, data.pieces, data.available]);
     if (key !== this.layoutKey && this.renderer) {
       this.layoutKey = key;
       this.build(data);
@@ -713,8 +731,9 @@ class HomeApp {
     const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     this.ray.setFromCamera(mouse, this.camera);
     const hits = this.ray.intersectObjects([...this.clickable, ...this.people.children], true);
-    const hit = hits.find((h) => h.object.userData.diary || h.object.userData.person);
+    const hit = hits.find((h) => h.object.userData.diary || h.object.userData.person || h.object.userData.parcel);
     if (!hit) return;
+    if (hit.object.userData.parcel) { this.selectedPiece = hit.object.userData.parcel; this.selected = ""; this.renderPanel(); return; }
     if (hit.object.userData.diary) this.openDiary(hit.object.userData.diary);
     else { this.selected = hit.object.userData.person; this.renderPanel(); }
   }
@@ -729,7 +748,7 @@ class HomeApp {
     const rows = d.people.map((p) => {
       const row = el("button", "home-row" + (this.selected === p.id ? " selected" : ""));
       row.type = "button";
-      row.onclick = () => { this.selected = this.selected === p.id ? "" : p.id; this.renderPanel(); };
+      row.onclick = () => { this.selected = this.selected === p.id ? "" : p.id; this.selectedPiece = ""; this.renderPanel(); };
       const dot = el("span", "home-dot");
       dot.style.background = p.look.color;
       const stale = !p.active && !["sleep", "out"].includes(p.verb) && d.now - p.since > STALE_SECONDS;
@@ -743,7 +762,14 @@ class HomeApp {
     list.append(...rows);
     const detail = el("div", "home-detail");
     const p = d.people.find((x) => x.id === this.selected);
-    if (p) {
+    const parcel = !p && d.pieces.find((x) => x.id === this.selectedPiece);
+    if (parcel) {
+      detail.append(el("h3", "", parcel.name || "纸箱"),
+        el("p", "muted small", "新接的工具还没连到家里的功能。到「工具」页面，在这个工具的「家里的功能」里选一个，纸箱就拆开了：成员用它时会走到挂着那个功能的家具跟前。"));
+      const go = el("button", "", "去工具页");
+      go.onclick = () => { location.hash = "#tools"; document.querySelector('.tabs button[data-tab="tools"]')?.click(); };
+      detail.append(go);
+    } else if (p) {
       detail.append(el("h3", "", p.name));
       detail.append(el("p", "", `${p.room_name}，${p.active ? "正在" : "最近"}：${p.detail || p.words}`));
       if (p.peer) detail.append(el("p", "muted small", `和 ${d.people.find((x) => x.id === p.peer)?.name || p.peer} 有关`));

@@ -14,7 +14,7 @@ import shutil
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import owner
+from . import furniture, owner
 from .config import (
     KNOWN_KINDS,
     Config,
@@ -349,6 +349,7 @@ def normalize_settings(raw: dict) -> dict:
             raise ConfigError("被动私聊次数要在 0 到 12 之间；0 表示不限次数")
         life["passive_member_days"][pid] = days
     tool_ids = {t["id"] for t in tools}
+    functions = normalize_functions(raw.get("functions"), tools)
     for p in participants:  # preferences for tools that are gone
         p["tool_notes"] = {k: v for k, v in p["tool_notes"].items() if k in tool_ids}
 
@@ -361,10 +362,41 @@ def normalize_settings(raw: dict) -> dict:
         "proactive": proactive,
         "vision": vision,
         "tools": tools,
+        "functions": functions,
         "life": life,
         "web": web,
         "participants": participants,
     }
+
+
+def normalize_functions(raw, tools: list[dict]) -> dict[str, list[str]]:
+    """Which tools do which furniture function: {"video.watch": ["tool:video"], ...}.
+
+    Never set before: link tools that obviously read pages or watch videos. Links to tools
+    that are gone are dropped; a function name must look like "area.verb".
+    """
+    if raw is None:
+        return furniture.default_links(tools)
+    if not isinstance(raw, dict):
+        raise ConfigError("功能连接格式不对")
+    tool_ids = {t["id"] for t in tools}
+    out: dict[str, list[str]] = {}
+    for name, providers in raw.items():
+        name = str(name).strip()
+        if not furniture.FUNCTION_RE.match(name):
+            raise ConfigError(f"功能名 {name!r} 不对：要像 video.watch 这样，小写字母开头，中间一个点")
+        if name.startswith("tool."):
+            continue  # an unlinked tool's own name is never stored
+        kept = []
+        for provider in providers if isinstance(providers, list) else []:
+            provider = str(provider)
+            if provider.startswith("tool:") and provider[5:] not in tool_ids:
+                continue
+            if provider.startswith(("tool:", "builtin:", "app:")) and provider not in kept:
+                kept.append(provider)
+        if kept:
+            out[name] = kept
+    return out
 
 
 # ---- store ----
@@ -481,6 +513,7 @@ def build_config(settings: dict, secrets: dict, data_dir: Path) -> Config:
         proactive_chat_id=settings["proactive"]["chat_id"],
         vision_member=settings["vision"]["member"],
         tools=build_tools(settings["tools"], secrets),
+        functions=settings["functions"],
         life=LifeConfig(**settings["life"]),
         stickers_enabled=settings["stickers"]["enabled"],
         max_stickers=settings["stickers"]["max_per_message"],

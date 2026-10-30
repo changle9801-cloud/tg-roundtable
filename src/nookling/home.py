@@ -41,7 +41,7 @@ DEFAULT_LOOKS = {
 SPARE_COLORS = ("#8a5a9e", "#b7791f", "#2c7a7b", "#c05680", "#4a5568")
 # What a member is doing, in the fixed words guests may see. Details stay on the admin page.
 VERBS = {
-    "browse": "在看东西", "read": "在看东西", "write": "在写东西", "watch": "在看视频", "play": "在玩游戏",
+    "browse": "在看东西", "read": "在看东西", "write": "在写东西", "watch": "在看视频", "play": "在玩游戏", "use": "在用东西",
     "phone": "在打电话", "visit": "在找朋友聊天", "share": "在看手机", "rest": "在歇着",
     "sleep": "在睡觉", "out": "出门了",
 }
@@ -232,6 +232,68 @@ class Home:
                   and (not p["room"].startswith("bed-") or p["room"] == mine)]
         return min(pieces, key=lambda p: (p["room"] != here, p["room"] == mine), default=None)
 
+    def use_tool(self, member: str, functions: list[str], tool_name: str, *, during_chat: bool = False) -> None:
+        """She called a tool that does these functions: she goes to the piece that carries one.
+
+        Called while she answers in the group, she stays there afterwards but is not busy; in a
+        daily-life step the step's end settles her. Out of the house or asleep, she stays put.
+        """
+        here = self.where.get(member)
+        if here is None or here.verb in ("out", "sleep"):
+            return
+        for function in functions:
+            piece = self.carrier(member, function, here.room)
+            if piece is None:
+                continue
+            verb = {"video.watch": "watch", "web.read": "read", "game.play": "play"}.get(function, "use")
+            if here.piece == piece["id"] and here.verb == verb:
+                return
+            self._move(member, Place(piece["room"], verb, tool_name, self.now(), not during_chat, piece=piece["id"]))
+            return
+
+    def sync_parcels(self, unlinked: dict[str, str]) -> None:
+        """One box in the storage room for each tool not linked to any function yet ({id: name})."""
+        boxes = {p.get("tool"): p for p in self.pieces or [] if p["type"] == "base/parcel"}
+        changed = False
+        for tool_id, box in boxes.items():
+            if tool_id not in unlinked:
+                self.pieces.remove(box)
+                changed = True
+            elif box["name"] != f"还没拆箱：{unlinked[tool_id]}":
+                box["name"] = f"还没拆箱：{unlinked[tool_id]}"
+                changed = True
+        for tool_id, name in unlinked.items():
+            if tool_id in boxes:
+                continue
+            spot = self.free_spot("base/parcel", ["storage"] + [r["id"] for r in self.rooms if r.get("shared")])
+            if spot is None:
+                log.warning("没地方放「%s」的纸箱", name)
+                continue
+            self.pieces.append({"id": furniture.new_id(), "type": "base/parcel", "room": spot[0], "at": list(spot[1]),
+                                "turn": 0, "color": None, "name": f"还没拆箱：{name}",
+                                "functions": [furniture.unlinked_name(tool_id)], "added_by": "owner", "owner": "",
+                                "tool": tool_id})
+            changed = True
+        if changed:
+            self.save()
+
+    def free_spot(self, type_id: str, rooms: list[str]) -> tuple[str, tuple[int, int]] | None:
+        """The first cell, room by room, where a piece of this type fits without turning it."""
+        for rid in dict.fromkeys(rooms):
+            room = next((r for r in self.rooms if r["id"] == rid), None)
+            if room is None:
+                continue
+            w, d = room["size"]
+            for z in range(d):
+                for x in range(w):
+                    try:
+                        furniture.check({"id": "", "type": type_id, "room": rid, "at": [x, z], "turn": 0},
+                                        room, self.all_types(), self.pieces or [])
+                    except PlacementError:
+                        continue
+                    return rid, (x, z)
+        return None
+
     def end(self, member: str) -> None:
         """The activity is over: she stays where she is, or goes back home from a visit."""
         place = self.where.get(member)
@@ -313,8 +375,10 @@ class Home:
             return "外面"
         return next((r["name"] for r in self.rooms if r["id"] == rid), rid)
 
-    def view(self, members: dict[str, str], phone: dict[str, float] | None = None) -> dict:
-        """Everything the admin page draws. ``phone``: when each member last spoke in the group."""
+    def view(self, members: dict[str, str], phone: dict[str, float] | None = None,
+             available: set[str] | None = None) -> dict:
+        """Everything the admin page draws. ``phone``: when each member last spoke in the group;
+        ``available``: functions something can do right now (pieces carrying none are grey)."""
         phone = phone or {}
         people = []
         for member, name in members.items():
@@ -326,6 +390,7 @@ class Home:
                            "phone_at": phone.get(member, 0.0)})
         reads = [r for r in self.diary_reads if r["member"] in members][-30:]
         return {"rooms": self.rooms, "pieces": self.pieces or [], "types": self.all_types(),
+                "available": sorted(available or ()), "function_names": furniture.FUNCTIONS,
                 "people": people, "accessories": ACCESSORIES, "verbs": VERBS,
                 "diary_reads": reads, "now": self.now()}
 
@@ -337,7 +402,7 @@ class Home:
             if place is None:
                 continue
             words = VERBS.get(place.verb, "在歇着")
-            if not place.active and place.verb in ("browse", "read", "write", "watch", "play", "phone", "visit", "share"):
+            if not place.active and place.verb in ("browse", "read", "write", "watch", "play", "use", "phone", "visit", "share"):
                 words = "在歇着"
             lines.append(f"{name} · 出门了" if place.verb == "out" else f"{name} · {self.room_name(place.room)} · {words}")
         return "\n".join(lines) or "家里现在没人。"

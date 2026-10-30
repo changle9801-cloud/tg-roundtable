@@ -22,6 +22,7 @@ from ..participants import ParticipantError
 from ..participants.api import PROVIDERS
 from ..prompts import DEFAULT_SYSTEM_PROMPT, PLACEHOLDERS
 from ..settings import apply_secret_changes, masked_secrets
+from ..furniture import FUNCTIONS
 from ..memory import LEARN_INSTRUCTIONS
 from ..kaomoji import STARTER as KAOMOJI_STARTER, parse_lines
 from ..stickers import KINDS as STICKER_KINDS
@@ -141,6 +142,7 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
                 "data_dir": str(runtime.store.data_dir),
                 "video_tool": str(VIDEO_TOOL),
                 "reader_tool": str(READER_TOOL),
+                "function_names": FUNCTIONS,
             },
         }
 

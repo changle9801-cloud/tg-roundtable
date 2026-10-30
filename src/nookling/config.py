@@ -123,6 +123,7 @@ class Config:
     # (that member describes every picture for everyone first), or "off".
     vision_member: str = "help"
     tools: list = field(default_factory=list)  # ToolServer: MCP servers the owner added
+    functions: dict = field(default_factory=dict)  # furniture function name -> providers ("tool:<id>", ...)
     life: LifeConfig = field(default_factory=LifeConfig)
     stickers_enabled: bool = True
     max_stickers: int = 1  # per message

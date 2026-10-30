@@ -165,6 +165,7 @@ class Conversation:
         reactions: bool = False,
         routines: Routines | None = None,
         has_experience: Callable[[str, str], bool] | None = None,
+        on_tool: Callable[[Participant, str], None] | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -188,6 +189,7 @@ class Conversation:
         self.on_draw = on_draw  # called when a member takes on a drawing request
         self.reactions = reactions  # members may react to messages with an emoji
         self.routines = routines  # who is asleep or busy right now; None: everyone is always up
+        self.on_tool = on_tool  # a member called a tool server (its id): she walks to its furniture
         self.has_experience = has_experience  # own memory relevance only; no private text enters the room
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
@@ -628,6 +630,8 @@ class Conversation:
         def on_activity(text: str) -> None:
             self._activities[speaker.id] = text
             self._spawn(self.sink.activity(self.key, speaker, text))
+            if self.on_tool is not None and getattr(text, "server", ""):
+                self.on_tool(speaker, text.server)
 
         async def speak() -> str:
             async with self.sink.typing(self.key, speaker):

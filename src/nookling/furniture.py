@@ -12,6 +12,7 @@ Turns are clockwise seen from above, 0 = the front faces the bottom of the room.
 from __future__ import annotations
 
 import math
+import re
 import uuid
 
 CELL = 0.5  # units per grid cell
@@ -167,3 +168,47 @@ def spot(piece: dict, ftype: dict, use: dict) -> tuple[float, float, float]:
     tw, td = turned_size(ftype["size"], piece["turn"])
     ox, oz = (piece["at"][0] + tw / 2) * CELL, (piece["at"][1] + td / 2) * CELL
     return ox + rx, oz + rz, (piece["turn"] + use.get("face", 0)) % 360
+
+
+# ---- functions: what a piece of furniture can do, by name (docs/furniture.md, 功能名) ----
+
+FUNCTIONS = {
+    "web.search": "联网搜索",
+    "web.read": "读网页",
+    "video.watch": "看视频",
+    "game.play": "玩游戏",
+    "draw.picture": "画画",
+    "chat.telegram": "用 Telegram 聊天",
+    "diary.write": "写日记",
+}
+BUILTIN_PROVIDERS = {  # who does a built-in function when nobody linked a tool to it
+    "web.search": "builtin:search", "game.play": "builtin:game", "draw.picture": "builtin:draw",
+    "chat.telegram": "app:telegram", "diary.write": "builtin:diary",
+}
+FUNCTION_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}\.[a-z][a-z0-9-]{0,23}$")
+# A tool's own tool names that make it the obvious provider of a built-in function.
+TOOL_HINTS = {"web.read": ("read_post", "read_feed"), "video.watch": ("watch_video", "search_videos")}
+
+
+def unlinked_name(tool_id: str) -> str:
+    """The function a tool has until the owner links it somewhere: its box in the storage room."""
+    return f"tool.{tool_id}"
+
+
+def default_links(tools: list[dict]) -> dict[str, list[str]]:
+    """Links for a house that never had any: tools that read pages or watch videos do just that."""
+    links: dict[str, list[str]] = {}
+    for tool in tools:
+        for function, hints in TOOL_HINTS.items():
+            if set(tool.get("allowed") or ()) & set(hints):
+                links.setdefault(function, []).append(f"tool:{tool['id']}")
+    return links
+
+
+def tool_functions(links: dict[str, list[str]], tool_id: str) -> list[str]:
+    """The functions a tool does: the ones it is linked to, else its own unlinked name."""
+    names = [f for f, providers in links.items() if f"tool:{tool_id}" in providers]
+    return names or [unlinked_name(tool_id)]
+
+
+BUILTIN_TYPES["base/parcel"] = _type("parcel", "纸箱", "parcel", (2, 2), 0.7, "#c8a26b", tags=["储物间"])
