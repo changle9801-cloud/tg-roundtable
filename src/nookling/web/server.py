@@ -235,6 +235,8 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def new_piece(request):
         body = await request.json()
+        if body.get("wall") is not None:
+            return house(lambda: runtime.home.place({k: body[k] for k in ("type", "room", "wall", "along", "y") if k in body}))
         if body.get("at") is not None:
             return house(lambda: runtime.home.place({k: body[k] for k in ("type", "room", "at", "turn") if k in body}))
         return house(lambda: runtime.home.put(str(body.get("type", "")), str(body.get("room", ""))))

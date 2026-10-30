@@ -3,7 +3,7 @@ import json
 import pytest
 
 from nookling import furniture
-from nookling.furniture import BUILTIN_TYPES, PlacementError, check, spot
+from nookling.furniture import BUILTIN_TYPES, PlacementError, check, check_wall, spot
 from nookling.home import Home, bedroom
 
 MEMBERS = {"codex": "Codex", "xiaolin": "小林"}
@@ -20,8 +20,8 @@ def test_the_default_house_is_furnished_and_every_piece_fits(tmp_path):
     types = home.all_types()
     rooms = {r["id"] for r in home.rooms if r.get("kind") != "hall"}
     assert {p["room"] for p in home.pieces} == rooms  # nothing left empty (hallways stay bare)
-    for piece in home.pieces:
-        check(piece, home.checked_room(piece["room"]), types, home.pieces)  # no overlap, no blocked door, inside
+    for piece in home.pieces:  # no overlap, no blocked door, inside (on its wall, for what hangs)
+        (check_wall if "wall" in piece else check)(piece, home.checked_room(piece["room"]), types, home.pieces)
     beds = [p for p in home.pieces if p["type"] == "base/bed"]
     assert {p["owner"] for p in beds} == set(MEMBERS)
     tv = next(p for p in home.pieces if p["type"] == "base/tv")

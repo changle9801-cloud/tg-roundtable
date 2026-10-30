@@ -111,7 +111,7 @@ function walkGrid(L, data, stairwells = []) {
   }
   for (const piece of data.pieces) {
     const type = data.types[piece.type], r = L.rects[piece.room];
-    if (!type || !type.blocks || !r) continue;
+    if (!type || !type.blocks || !r || piece.wall) continue;
     const [tw, td] = turnedSize(type.size, piece.turn);
     const [ax, az] = r.room.at;
     for (let i = 0; i < tw; i++) for (let j = 0; j < td; j++) blocked.set(cellKey(ax + piece.at[0] + i, az + piece.at[1] + j), piece.id);
@@ -299,11 +299,34 @@ const TEMPLATES = {
     g.add(box(0.02, H * 0.9, 0.02, shade(c, 0.6), 0, H * 0.05, D / 2 + 0.01));
     for (const side of [-1, 1]) g.add(box(0.04, 0.25, 0.04, 0xd4af37, side * 0.12, H * 0.5, D / 2 + 0.03));
   },
-  poster: (g, W, D, H, c, piece) => g.add(picture(box(W * 0.8, H, 0.03, c, 0, 0.9, -D / 2 + 0.05), piece)),
+  poster: (g, W, D, H, c, piece) => g.add(picture(box(W * 0.8, H, 0.03, c, 0, 0, -D / 2 + 0.02), piece)),
+  clock: (g, W, D, H, c) => {
+    const r = Math.min(W, H) / 2;
+    const face = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.05, 28), new THREE.MeshLambertMaterial({ color: c }));
+    face.rotation.x = Math.PI / 2;
+    face.position.set(0, r, -D / 2 + 0.03);
+    g.add(face);
+    const dial = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.85, r * 0.85, 0.02, 28), new THREE.MeshLambertMaterial({ color: 0xfafafa }));
+    dial.rotation.x = Math.PI / 2;
+    dial.position.set(0, r, -D / 2 + 0.06);
+    g.add(dial);
+    g.add(box(0.03, r * 0.6, 0.01, 0x263238, 0, r, -D / 2 + 0.075));
+    const minute = box(0.02, r * 0.75, 0.01, 0x263238, 0, 0, 0);
+    minute.rotation.z = -Math.PI / 3;
+    minute.position.set(r * 0.32, r + r * 0.18, -D / 2 + 0.08);
+    g.add(minute);
+  },
+  "wall-shelf": (g, W, D, H, c) => {
+    g.add(box(W, 0.05, D * 0.6, c, 0, 0, -D / 2 + D * 0.3));
+    for (const side of [-1, 1]) g.add(box(0.04, 0.12, D * 0.5, shade(c, 0.7), side * (W / 2 - 0.15), -0.12, -D / 2 + D * 0.25));
+    const things = [[0x5c6bc0, 0.22], [0xef9a9a, 0.18], [0x81c784, 0.25], [0xffcc80, 0.15]];
+    things.forEach(([color, h], i) => g.add(box(0.07, h, D * 0.4, color, -W / 2 + 0.3 + i * 0.09, 0.05, -D / 2 + D * 0.25)));
+    g.add(cylinder(0.08, 0.16, 0x8d6e63, W / 2 - 0.4, 0.05, -D / 2 + D * 0.3));
+  },
   table: (g, W, D, H, c) => g.add(box(W, H, D, c, 0, 0, 0)),
   frame: (g, W, D, H, c, piece) => {
-    g.add(box(W * 0.8, H, 0.05, 0xffffff, 0, 0.95, -D / 2 + 0.05));
-    g.add(picture(box(W * 0.66, H - 0.14, 0.02, c, 0, 1.02, -D / 2 + 0.08), piece));
+    g.add(box(W * 0.8, H, 0.05, 0xffffff, 0, 0, -D / 2 + 0.03));
+    g.add(picture(box(W * 0.66, H - 0.14, 0.02, c, 0, 0.07, -D / 2 + 0.06), piece));
   },
   fridge: (g, W, D, H, c) => {
     g.add(box(W * 0.9, H, D * 0.8, c, 0, 0, 0));
@@ -414,6 +437,16 @@ function greyOut(g) {
   });
 }
 
+// A piece hung on a wall: its middle on the floor plan (against the wall's inner face) and the way it faces.
+const WALL_FACE = 0.12; // the walls' inner face, from the room's edge
+const WALL_TURN = { back: 0, right: 90, front: 180, left: 270 };
+function wallSpot(r, piece, type) {
+  const along = (piece.along + type.size[0] / 2) * CELL, out = WALL_FACE + (type.size[1] * CELL) / 2;
+  const [x, z] = { back: [r.x + along, r.z + out], front: [r.x + along, r.z + r.d - out],
+                   left: [r.x + out, r.z + along], right: [r.x + r.w - out, r.z + along] }[piece.wall];
+  return { x, z, turn: WALL_TURN[piece.wall] };
+}
+
 function drawPiece(parent, rect, piece, type, clickable, available) {
   const g = new THREE.Group();
   g.userData.pieceId = piece.id;
@@ -433,9 +466,15 @@ function drawPiece(parent, rect, piece, type, clickable, available) {
       if (grey) greyOut(g);
     }).catch(() => { /* a model that won't load: the template stays */ });
   }
-  const [tw, td] = turnedSize(type.size, piece.turn);
-  g.rotation.y = (-piece.turn * Math.PI) / 180;
-  g.position.set(rect.x + (piece.at[0] + tw / 2) * CELL, 0, rect.z + (piece.at[1] + td / 2) * CELL);
+  if (piece.wall) {
+    const spot = wallSpot(rect, piece, type);
+    g.rotation.y = (-spot.turn * Math.PI) / 180;
+    g.position.set(spot.x, piece.y, spot.z);
+  } else {
+    const [tw, td] = turnedSize(type.size, piece.turn);
+    g.rotation.y = (-piece.turn * Math.PI) / 180;
+    g.position.set(rect.x + (piece.at[0] + tw / 2) * CELL, 0, rect.z + (piece.at[1] + td / 2) * CELL);
+  }
   parent.add(g);
   return g;
 }
@@ -879,13 +918,15 @@ class HomeApp {
         const type = data.types[piece.type], r = Lx.rects[piece.room];
         if (!type || !r) continue;
         drawPiece(fg, r, piece, type, lv === this.view ? this.clickable : [], new Set(data.available || []));
-        (type.uses || []).forEach((use, i) => {
+        if (!piece.wall) (type.uses || []).forEach((use, i) => {
           const spot = useSpot(r, piece, type, use);
           (this.seats[piece.room] ||= []).push({ key: `${piece.id}:${i}`, piece, type, ...spot, y: spot.y + base });
         });
-        const [tw, td] = turnedSize(type.size, piece.turn);
-        const centre = { id: piece.id, room: piece.room, x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL,
-                         y: base, turn: piece.turn, reach: ((piece.turn % 180 ? tw : td) / 2) * CELL };
+        const [tw, td] = piece.wall ? [0, 0] : turnedSize(type.size, piece.turn);
+        const centre = piece.wall
+          ? { id: piece.id, room: piece.room, ...wallSpot(r, piece, type), y: base, lift: piece.y, reach: (type.size[1] * CELL) / 2 }
+          : { id: piece.id, room: piece.room, x: r.x + (piece.at[0] + tw / 2) * CELL, z: r.z + (piece.at[1] + td / 2) * CELL,
+              y: base, turn: piece.turn, reach: ((piece.turn % 180 ? tw : td) / 2) * CELL };
         this.pieceAt[piece.id] = centre;
         if (type.screen) (this.screens[piece.room] ||= []).push(centre);
       }
@@ -1188,8 +1229,11 @@ class HomeApp {
       const piece = g.userData.pieceId && this.data.pieces.find((p) => p.id === g.userData.pieceId);
       const type = piece && this.data.types[piece.type], r = piece && this.rects[piece.room];
       if (!type || !r) continue;
-      const [tw, td] = turnedSize(type.size, piece.turn), x0 = r.x + piece.at[0] * CELL, z0 = r.z + piece.at[1] * CELL;
-      bounds.setFromObject(g).union(new THREE.Box3(new THREE.Vector3(x0, y, z0), new THREE.Vector3(x0 + tw * CELL, y + 0.05, z0 + td * CELL)));
+      bounds.setFromObject(g);
+      if (!piece.wall) {
+        const [tw, td] = turnedSize(type.size, piece.turn), x0 = r.x + piece.at[0] * CELL, z0 = r.z + piece.at[1] * CELL;
+        bounds.union(new THREE.Box3(new THREE.Vector3(x0, y, z0), new THREE.Vector3(x0 + tw * CELL, y + 0.05, z0 + td * CELL)));
+      }
       if (!this.ray.ray.intersectBox(bounds.expandByScalar(0.12), hit)) continue;
       const dist = hit.distanceTo(this.ray.ray.origin);
       if (dist < near) { near = dist; best = g.userData.pieceId; }
@@ -1217,6 +1261,14 @@ class HomeApp {
     const type = piece && this.data.types[piece.type];
     const g = type && this.furnitureLevels[this.view || 0].children.find((c) => c.userData.pieceId === piece.id);
     if (!g) return;
+    if (piece.wall) { // selected; dragging it along the walls is not there yet
+      this.selectedPiece = piece.id;
+      this.editorKey = "";
+      this.showHighlight();
+      this.renderPanel();
+      this.renderShelf();
+      return;
+    }
     const { point } = this.groundAt(e);
     this.controls.enabled = false;
     this.hover(null);
@@ -1279,6 +1331,7 @@ class HomeApp {
   async turnPiece(piece, step) {
     const type = this.data.types[piece.type], r = this.rects[piece.room];
     if (!type || !r) return;
+    if (piece.wall) { say("挂在墙上的东西不用转：它总是朝着房间里面", true); return; }
     const turn = (piece.turn + step + 360) % 360;
     const [w0, d0] = turnedSize(type.size, piece.turn), [w1, d1] = turnedSize(type.size, turn), [cols, rows] = r.room.size;
     const at = [Math.max(0, Math.min(cols - w1, piece.at[0] + Math.trunc((w0 - w1) / 2))),
@@ -1349,7 +1402,7 @@ class HomeApp {
       const taken = new Set(mine.map(([x, z]) => cellKey(x, z)));
       for (const o of this.data.pieces) {
         const ot = this.data.types[o.type];
-        if (o.id === piece.id || o.room !== piece.room || !ot?.blocks) continue;
+        if (o.id === piece.id || o.room !== piece.room || !ot?.blocks || o.wall) continue;
         if (house(o, ot).some(([x, z]) => taken.has(cellKey(x, z)))) return `${type.name}和${o.name || ot.name}叠在一起了`;
       }
       const wells = new Set(lv > 0 ? this.wells?.[lv] || [] : []);
@@ -1363,7 +1416,7 @@ class HomeApp {
       const well = new Set(mine.map(([x, z]) => cellKey(x, z)));
       for (const o of this.data.pieces) {
         const ot = this.data.types[o.type], q = this.Ls[lv + 1]?.rects[o.room];
-        if (!q || !ot?.blocks || o.id === piece.id) continue;
+        if (!q || !ot?.blocks || o.id === piece.id || o.wall) continue;
         if (pieceCells(o, ot).some(([x, z]) => well.has(cellKey(q.room.at[0] + x, q.room.at[1] + z)))) return "楼上楼梯口的位置摆着东西，先挪开";
       }
     }
@@ -1466,9 +1519,9 @@ class HomeApp {
     const { point } = this.groundAt(e);
     const spot = point && this.spotUnder(point, type, 0);
     if (!spot) return;
-    const piece = { type: type.id, room: spot.r.room.id, at: spot.at, turn: 0 };
-    const reason = this.fitCheck({ id: "", ...piece }, type);
-    this.showGhost(type, piece, !reason, true);
+    const piece = type.mount === "wall" ? { type: type.id, room: spot.r.room.id } : { type: type.id, room: spot.r.room.id, at: spot.at, turn: 0 };
+    const reason = type.mount === "wall" ? "" : this.fitCheck({ id: "", ...piece }, type);
+    if (type.mount !== "wall") this.showGhost(type, piece, !reason, true);
     if (reason) {
       say(reason, true);
       setTimeout(() => this.cardDrag || this.hideGhost(), 1200);
@@ -1517,7 +1570,8 @@ class HomeApp {
       if (ev.type === "pointercancel" || !drag.piece) return;
       if (drag.reason) { say(drag.reason, true); return; }
       try {
-        const piece = await send("POST", "/api/home/pieces", { type: type.id, room: drag.piece.room, at: drag.piece.at, turn: drag.piece.turn });
+        const piece = await send("POST", "/api/home/pieces", type.mount === "wall" ? { type: type.id, room: drag.piece.room }
+          : { type: type.id, room: drag.piece.room, at: drag.piece.at, turn: drag.piece.turn });
         this.selectedPiece = piece.id;
       } catch (err) { say(err.message, true); }
       this.layoutKey = "";
@@ -1536,6 +1590,13 @@ class HomeApp {
     const { point } = over === this.renderer.domElement ? this.groundAt(ev) : {};
     const spot = point && this.spotUnder(point, drag.type, drag.turn);
     if (!spot) { drag.piece = null; this.hideGhost(); return; }
+    if (drag.type.mount === "wall") { // it goes on the room's walls: no plate on the floor for it
+      drag.piece = { room: spot.r.room.id };
+      drag.reason = "";
+      if (this.ghost) this.ghost.visible = false;
+      this.hover(null);
+      return;
+    }
     drag.piece = { id: "", type: drag.type.id, room: spot.r.room.id, at: spot.at, turn: drag.turn };
     drag.reason = this.fitCheck(drag.piece, drag.type);
     this.showGhost(drag.type, drag.piece, !drag.reason, true);
@@ -1558,7 +1619,7 @@ class HomeApp {
 
   // A small still picture of a kind of furniture, for the shelf; kept in the browser until the kind's look changes.
   thumb(type) {
-    const key = "nookling-thumb:" + JSON.stringify([type.template, type.size, type.height, type.color, type.model]);
+    const key = "nookling-thumb:2:" + JSON.stringify([type.template, type.size, type.height, type.color, type.model]);
     this.thumbs ||= new Map();
     if (!this.thumbs.has(key)) {
       let saved = null;
@@ -1905,7 +1966,7 @@ class HomeApp {
     const hovered = this.arranging && !this.drag && this.hoverId && this.data.pieces.find((p) => p.id === this.hoverId);
     if (hovered && this.pieceAt[hovered.id]) {
       const at = this.pieceAt[hovered.id], type = this.data.types[hovered.type] || {};
-      put("hover", "home-hover-tag", hovered.name || type.name || "", new THREE.Vector3(at.x, at.y + (type.height || 0.5) + 0.3, at.z));
+      put("hover", "home-hover-tag", hovered.name || type.name || "", new THREE.Vector3(at.x, at.y + (at.lift || 0) + (type.height || 0.5) + 0.3, at.z));
     }
     for (const fig of this.figures.values()) {
       if (!fig.root.visible) continue;

@@ -66,6 +66,14 @@ ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
 ROOM_NAME_MAX = 8
 ROOM_CELLS = (3, 60)
 MAX_FLOORS = 5
+
+
+def _metres(value) -> float:
+    """A height given for a piece on a wall, in metres, to the nearest 10 cm."""
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        raise PlacementError("高度要写数字（米）") from None
 FLOOR_NAMES = ("一楼", "二楼", "三楼", "四楼", "五楼")  # a room or hallway is at least 3 cells across (a hallway's width), at most 60
 PICTURE_TEMPLATES = ("frame", "poster", "rug")  # pieces that can show a picture (a mural is a framed one)
 TILE_RANGE = (0.25, 5.0)  # units one floor tile or wallpaper image covers before it repeats
@@ -122,7 +130,7 @@ class Home:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.path, {"version": 3, "rooms": self.rooms, "doors": self.doors, "floors": self.floors,
+        atomic_json(self.path, {"version": 4, "rooms": self.rooms, "doors": self.doors, "floors": self.floors,
                                 "pieces": self.pieces or [],
                                 "types": self.types, "extras": self.extras,
                                 "where": {m: asdict(p) for m, p in self.where.items()},
@@ -171,6 +179,10 @@ class Home:
             self.pieces = []
         for room in furnish:
             self.pieces.extend(furniture.default_pieces(room, "bedroom" if room["id"].startswith("bed-") else room["id"]))
+        if "walls" not in self.extras:  # frames and posters that stood against a wall are hung on it
+            self._hang_old_pictures()
+            self.extras.append("walls")
+            changed = True
         if "computer" not in self.extras:  # chat apps moved onto a computer in the living room
             if not any(p["type"] == "base/computer" for p in self.pieces):
                 self._add_computer()
@@ -241,7 +253,7 @@ class Home:
     # ---- furniture ----
 
     def all_types(self) -> dict[str, dict]:
-        return {**BUILTIN_TYPES, **self.types}
+        return {**BUILTIN_TYPES, **{tid: {**t, "mount": furniture.mount_of(t)} for tid, t in self.types.items()}}
 
     def room(self, rid: str) -> dict:
         found = next((r for r in self.rooms if r["id"] == rid), None)
@@ -303,15 +315,39 @@ class Home:
                 raise PlacementError("这样楼梯上面就没有地方了；先挪楼梯")
 
     def place(self, piece: dict) -> dict:
-        """Put a new piece in a room, if it fits. Fills in the defaults from its type."""
+        """Put a new piece in a room (on the floor, or on a wall when ``wall`` is given), if it fits.
+        Fills in the defaults from its type."""
         ftype = self.all_types().get(piece.get("type"))
         if ftype is None:
             raise PlacementError(f"没有这种家具：{piece.get('type')}")
-        piece = {"id": furniture.new_id(), "turn": 0, "color": None, "name": None,
-                 "functions": list(ftype["functions"]), "added_by": "owner", "owner": "", **piece}
-        furniture.check(piece, self.checked_room(piece.get("room", "")), self.all_types(), self.pieces or [])
-        self._check_floors(piece, self.pieces or [])
+        base = {"id": furniture.new_id(), "color": None, "name": None,
+                "functions": list(ftype["functions"]), "added_by": "owner", "owner": ""}
+        if "wall" in piece:
+            piece = {**base, **piece}
+            piece["y"] = _metres(piece.get("y", furniture.WALL_Y.get(ftype["template"], 1.2)))
+            furniture.check_wall(piece, self.checked_room(piece.get("room", "")), self.all_types(), self.pieces or [])
+        else:
+            if furniture.mount_of(ftype) == "wall":
+                raise PlacementError(f"{ftype['name']}要挂在墙上")
+            piece = {**base, "turn": 0, **piece}
+            furniture.check(piece, self.checked_room(piece.get("room", "")), self.all_types(), self.pieces or [])
+            self._check_floors(piece, self.pieces or [])
         self.pieces.append(piece)
+        self.save()
+        return piece
+
+    def hang(self, pid: str, *, room: str | None = None, wall: str | None = None, along=None, y=None) -> dict:
+        """Hang a piece on a wall, or move it along, up or down, or to another wall or room."""
+        piece = self.piece(pid)
+        on_wall = "wall" in piece
+        ftype = self.all_types().get(piece["type"], {})
+        moved = {k: v for k, v in piece.items() if k not in ("at", "turn")}
+        moved.update(room=room or piece["room"], wall=wall or piece.get("wall"),
+                     along=along if along is not None else piece.get("along") if on_wall else None,
+                     y=_metres(y) if y is not None else piece.get("y", furniture.WALL_Y.get(ftype.get("template"), 1.2)))
+        furniture.check_wall(moved, self.checked_room(moved["room"]), self.all_types(), self.pieces)
+        piece.clear()
+        piece.update(moved)
         self.save()
         return piece
 
@@ -319,10 +355,18 @@ class Home:
         piece = next((p for p in self.pieces or [] if p["id"] == pid), None)
         if piece is None:
             raise PlacementError("没有这件家具")
-        moved = {**piece, "room": room or piece["room"], "at": list(at) if at is not None else piece["at"],
-                 "turn": piece["turn"] if turn is None else turn}
+        if "wall" in piece and turn is not None and at is None:
+            raise PlacementError("挂在墙上的东西不用转：它总是朝着房间里面")
+        if "wall" in piece and furniture.mount_of(self.all_types().get(piece["type"], {})) == "wall":
+            raise PlacementError("这件只能挂在墙上")
+        if "wall" in piece and at is None:
+            raise PlacementError("放到地上要说放在哪一格")
+        moved = {k: v for k, v in piece.items() if k not in ("wall", "along", "y")}  # off the wall, if it was on one
+        moved.update(room=room or piece["room"], at=list(at) if at is not None else piece["at"],
+                     turn=piece.get("turn", 0) if turn is None else turn)
         furniture.check(moved, self.checked_room(moved["room"]), self.all_types(), self.pieces)
         self._check_floors(moved, self.pieces)
+        piece.clear()
         piece.update(moved)
         self.save()
         return piece
@@ -349,7 +393,9 @@ class Home:
     def edit_piece(self, pid: str, changes: dict) -> dict:
         """The owner changes one piece: where it is, which way it faces, its colour, name, functions."""
         piece = self.piece(pid)
-        if any(k in changes for k in ("room", "at", "turn")):
+        if any(k in changes for k in ("wall", "along", "y")):
+            self.hang(pid, room=changes.get("room"), wall=changes.get("wall"), along=changes.get("along"), y=changes.get("y"))
+        elif any(k in changes for k in ("room", "at", "turn")):
             self.move(pid, room=changes.get("room"), at=changes.get("at"),
                       turn=None if changes.get("turn") is None else int(changes["turn"]))
         if "color" in changes:
@@ -381,7 +427,14 @@ class Home:
         return piece
 
     def put(self, type_id: str, room: str) -> dict:
-        """Add a piece of this kind where it first fits in a room (then the owner drags it)."""
+        """Add a piece of this kind where it first fits in a room (then the owner drags it): on the floor,
+        or for a kind that only hangs, on the first wall with room for it."""
+        ftype = self.all_types().get(type_id)
+        if ftype is not None and furniture.mount_of(ftype) == "wall":
+            spot = self.free_wall_spot(type_id, room)
+            if spot is None:
+                raise PlacementError(f"{self.room(room)['name']}的墙上挂不下了")
+            return self.place({"type": type_id, "room": room, **spot})
         spot = self.free_spot(type_id, [room])
         if spot is None:
             raise PlacementError(f"{self.room(room)['name']}里放不下了")
@@ -492,7 +545,10 @@ class Home:
         pieces = {p["id"]: dict(p) for p in self.pieces or [] if p["room"] == rid}
         if not moved:  # an edge was dragged: furniture keeps its place in the house
             for piece in pieces.values():
-                piece["at"] = [piece["at"][0] - dx, piece["at"][1] - dz]
+                if "wall" in piece:  # it stays on its wall, at the same place along the house
+                    piece["along"] -= dx if piece["wall"] in ("back", "front") else dz
+                else:
+                    piece["at"] = [piece["at"][0] - dx, piece["at"][1] - dz]
         rooms = [new if r["id"] == rid else r for r in self.rooms]
         self._stairs_ok(rooms)
         doors = []
@@ -513,14 +569,17 @@ class Home:
         trial.pieces = [pieces.get(p["id"], p) for p in self.pieces or []]
         for piece in pieces.values():
             try:
-                furniture.check(piece, trial.checked_room(rid), self.all_types(), trial.pieces)
+                if "wall" in piece:
+                    furniture.check_wall(piece, trial.checked_room(rid), self.all_types(), trial.pieces)
+                else:
+                    furniture.check(piece, trial.checked_room(rid), self.all_types(), trial.pieces)
             except PlacementError as e:
                 name = piece.get("name") or self.all_types().get(piece["type"], {}).get("name", "家具")
                 raise PlacementError(f"{name}会放不下（{e}）；先把它挪开") from None
         room.update(at=new["at"], size=new["size"])
         for p_ in self.pieces or []:
             if p_["id"] in pieces:
-                p_["at"] = pieces[p_["id"]]["at"]
+                p_.update(pieces[p_["id"]])
         self.doors = doors
         self.save()
         return room
@@ -582,7 +641,10 @@ class Home:
         for rid in sides:
             for piece in [p for p in self.pieces or [] if p["room"] == rid]:
                 try:
-                    furniture.check(piece, trial.checked_room(rid), self.all_types(), self.pieces)
+                    if "wall" in piece:
+                        furniture.check_wall(piece, trial.checked_room(rid), self.all_types(), self.pieces)
+                    else:
+                        furniture.check(piece, trial.checked_room(rid), self.all_types(), self.pieces)
                 except PlacementError:
                     name = piece.get("name") or self.all_types().get(piece["type"], {}).get("name", "家具")
                     raise PlacementError(f"门口被{name}挡着，先把它挪开") from None
@@ -779,6 +841,43 @@ class Home:
                     return rid, (x, z)
         return None
 
+    def free_wall_spot(self, type_id: str, rid: str, y: float | None = None) -> dict | None:
+        """The first place on a room's walls (back first) where a piece of this kind hangs at its usual height."""
+        ftype = self.all_types()[type_id]
+        room = self.checked_room(rid)
+        y = furniture.WALL_Y.get(ftype["template"], 1.2) if y is None else y
+        for wall in ("back", "left", "right", "front"):
+            for along in range(furniture.wall_length(room, wall)):
+                spot = {"wall": wall, "along": along, "y": y}
+                try:
+                    furniture.check_wall({"id": "", "type": type_id, "room": rid, **spot}, room, self.all_types(), self.pieces or [])
+                except PlacementError:
+                    continue
+                return spot
+        return None
+
+    def _hang_old_pictures(self) -> None:
+        """Frames and posters stood on the floor against a wall; now they hang on it, where they were.
+        One that does not fit there goes to the nearest free place on the walls of its room; one with no
+        room anywhere stays on the floor, as it was."""
+        types = self.all_types()
+        for piece in list(self.pieces or []):
+            ftype = types.get(piece["type"])
+            if not ftype or "wall" in piece or furniture.mount_of(ftype) != "wall":
+                continue
+            hung = furniture.onto_wall(piece, ftype)
+            others = [p for p in self.pieces if p is not piece]
+            try:
+                furniture.check_wall(hung, self.checked_room(piece["room"]), types, others)
+            except PlacementError:
+                spot = self.free_wall_spot(piece["type"], piece["room"])
+                if spot is None:
+                    log.warning("挂不上墙，留在地上：%s", piece["id"])
+                    continue
+                hung.update(spot)
+            piece.clear()
+            piece.update(hung)
+
     def end(self, member: str) -> None:
         """The activity is over: she stays where she is, or goes back home from a visit."""
         place = self.where.get(member)
@@ -879,7 +978,8 @@ class Home:
                 "unreachable": sorted(self.shut_rooms()),
                 "pieces": self.pieces or [], "types": self.all_types(),
                 "available": sorted(available or ()), "function_names": furniture.FUNCTIONS,
-                "templates": {k: {"name": v[0], "size": list(v[1]), "height": v[2], "color": v[3]}
+                "templates": {k: {"name": v[0], "size": list(v[1]), "height": v[2], "color": v[3],
+                                  "mount": furniture.TEMPLATE_MOUNT.get(k, "floor")}
                               for k, v in furniture.TEMPLATES.items() if k != "parcel"},
                 "room_sizes": {k: list(v) for k, v in ROOM_SIZES.items()},
                 "people": people, "accessories": ACCESSORIES, "verbs": VERBS,

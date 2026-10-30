@@ -21,10 +21,11 @@ DOOR_CLEAR = 2  # cells in front of a door that must stay free
 TURNS = (0, 90, 180, 270)
 
 
-def _type(tid, name, template, size, height, color, *, uses=(), screen=None, blocks=True, functions=(), tags=()):
+def _type(tid, name, template, size, height, color, *, uses=(), screen=None, blocks=True, functions=(), tags=(),
+          mount="floor"):
     return {"id": f"base/{tid}", "name": name, "template": template, "size": list(size), "height": height,
             "color": color, "model": None, "blocks": blocks, "uses": [dict(u) for u in uses],
-            "screen": screen, "functions": list(functions), "tags": list(tags)}
+            "screen": screen, "functions": list(functions), "tags": list(tags), "mount": mount}
 
 
 def _sit(x, z, face=0, y=0.0):
@@ -44,14 +45,16 @@ BUILTIN_TYPES = {t["id"]: t for t in (
     _type("bookshelf", "书架", "bookshelf", (5, 1), 2.0, "#8d6e63", tags=["书房"]),
     _type("plant", "盆栽", "plant", (1, 1), 1.1, "#66bb6a", tags=["装饰"]),
     _type("big-plant", "大盆栽", "plant", (2, 2), 1.4, "#43a047", tags=["装饰"]),
-    _type("tv", "电视", "tv", (6, 1), 1.85, "#212121", screen={"face": 0},
+    _type("tv", "电视", "tv", (6, 1), 1.85, "#212121", screen={"face": 0}, mount="either",
           functions=["video.watch", "game.play"], tags=["娱乐"]),
     _type("sofa-3", "三人沙发", "sofa", (6, 2), 0.9, "#5c6bc0",
           uses=[_sit(1, 0.9, 0, 0.05), _sit(3, 0.9, 0, 0.05), _sit(5, 0.9, 0, 0.05)], tags=["客厅", "娱乐"]),
     _type("beanbag", "懒人沙发", "beanbag", (2, 2), 0.4, "#ff8a65", uses=[_sit(1, 1, 180, 0.05)], tags=["娱乐"]),
     _type("rug-large", "大地毯", "rug", (5, 4), 0.02, "#b39ddb", blocks=False, tags=["装饰"]),
     _type("coffee-table", "茶几", "table", (4, 2), 0.4, "#bcaaa4", tags=["客厅"]),
-    _type("frame", "画框", "frame", (2, 1), 0.6, "#90caf9", blocks=False, tags=["装饰"]),
+    _type("frame", "画框", "frame", (2, 1), 0.6, "#90caf9", blocks=False, tags=["装饰"], mount="wall"),
+    _type("clock", "挂钟", "clock", (2, 1), 0.5, "#8d6e63", blocks=False, tags=["装饰"], mount="wall"),
+    _type("wall-shelf", "墙上的架子", "wall-shelf", (4, 1), 0.35, "#a1887f", blocks=False, tags=["装饰"], mount="wall"),
     _type("fridge", "冰箱", "fridge", (2, 2), 1.9, "#eceff1", tags=["厨房"]),
     _type("counter", "橱柜", "counter", (8, 1), 0.9, "#b0bec5", tags=["厨房"]),
     _type("dining-table", "餐桌和四把椅子", "dining-table", (4, 4), 0.72, "#d7ccc8",
@@ -108,6 +111,8 @@ def turned_size(size, turn: int) -> tuple[int, int]:
 
 
 def footprint(piece: dict, ftype: dict) -> set[tuple[int, int]]:
+    if "wall" in piece:  # hung on a wall: it takes no floor
+        return set()
     w, d = turned_size(ftype["size"], piece["turn"])
     x, z = piece["at"]
     return {(x + i, z + j) for i in range(w) for j in range(d)}
@@ -155,6 +160,83 @@ def check(piece: dict, room: dict, types: dict, others: list[dict]) -> None:
             raise PlacementError(f"{ftype['name']}和{other.get('name') or otype['name']}叠在一起了")
 
 
+# ---- pieces hung on a wall (docs/arrange.md, B2) ----
+# A piece on a wall has, instead of a place on the floor (at, turn): the wall (back, front, left, right),
+# how many cells along it from its start (left end, or back end for a side wall), and how high (y, metres).
+
+WALLS = ("back", "front", "left", "right")
+WALL_TALL = 2.6  # the full height of a wall
+LINTEL = 2.1  # the top of a doorway
+WALL_TURN = {"back": 0, "right": 90, "front": 180, "left": 270}  # the way a piece on that wall faces
+WALL_Y = {"frame": 1.0, "poster": 0.9, "clock": 1.8, "wall-shelf": 1.4, "tv": 0.9}  # how high, when not said
+
+
+def mount_of(ftype: dict) -> str:
+    return ftype.get("mount") or TEMPLATE_MOUNT.get(ftype.get("template", ""), "floor")
+
+
+def wall_length(room: dict, wall: str) -> int:
+    return room["size"][0] if wall in ("back", "front") else room["size"][1]
+
+
+def door_span(room: dict, wall: str) -> list[tuple[int, int]]:
+    """The cells along a wall that its doors take, [start, end)."""
+    along = wall_length(room, wall)
+    out = []
+    for door in room.get("doors", ()):
+        if door["wall"] != wall:
+            continue
+        centre = door.get("at", along / 2)
+        cols = [i for i in range(along) if i < centre + DOOR_WIDTH / 2 and i + 1 > centre - DOOR_WIDTH / 2]
+        if cols:
+            out.append((cols[0], cols[-1] + 1))
+    return out
+
+
+def check_wall(piece: dict, room: dict, types: dict, others: list[dict]) -> None:
+    """Raise PlacementError unless a piece fits on its wall: on the wall, under its top, clear of doorways,
+    not on another piece on the same wall."""
+    ftype = types.get(piece.get("type"))
+    if ftype is None:
+        raise PlacementError(f"没有这种家具：{piece.get('type')}")
+    name = ftype["name"]
+    if mount_of(ftype) == "floor":
+        raise PlacementError(f"{name}不能挂在墙上")
+    if room.get("kind") == "hall" and not room.get("walls"):
+        raise PlacementError("走廊没有墙，挂不了东西")
+    wall, along, y = piece.get("wall"), piece.get("along"), piece.get("y")
+    if wall not in WALLS:
+        raise PlacementError("要说挂在哪面墙上：back、front、left、right")
+    if not isinstance(along, int) or isinstance(along, bool) or not isinstance(y, (int, float)) or isinstance(y, bool):
+        raise PlacementError("挂的位置要写成第几格（整数）和多高（米）")
+    w, h = ftype["size"][0], ftype["height"]
+    if along < 0 or along + w > wall_length(room, wall):
+        raise PlacementError(f"{name}挂不下：超出了这面墙")
+    if y < 0 or y + h > WALL_TALL + 1e-6:
+        raise PlacementError(f"{name}挂不下：墙只有 {WALL_TALL} 米高")
+    if y < LINTEL and any(a < along + w and along < b for a, b in door_span(room, wall)):
+        raise PlacementError(f"{name}挡住门了")
+    for other in others:
+        if other["id"] == piece.get("id") or other["room"] != piece["room"] or other.get("wall") != wall:
+            continue
+        otype = types.get(other["type"])
+        if otype is None:
+            continue
+        if other["along"] < along + w and along < other["along"] + otype["size"][0] \
+                and other["y"] < y + h and y < other["y"] + otype["height"]:
+            raise PlacementError(f"{name}和{other.get('name') or otype['name']}叠在一起了")
+
+
+def onto_wall(piece: dict, ftype: dict) -> dict:
+    """A piece that stood against a wall, as one hung on that wall: the wall its back is to, where it was along
+    it, at its usual height. (Its floor place goes.)"""
+    wall = {0: "back", 90: "right", 180: "front", 270: "left"}[piece.get("turn", 0)]
+    along = piece["at"][0] if wall in ("back", "front") else piece["at"][1]
+    hung = {k: v for k, v in piece.items() if k not in ("at", "turn")}
+    hung.update(wall=wall, along=along, y=WALL_Y.get(ftype.get("template", ""), 1.2))
+    return hung
+
+
 def default_pieces(room: dict, kind: str) -> list[dict]:
     pieces = []
     for tid, at, turn, extra in DEFAULT_LAYOUT.get(kind, ()):
@@ -162,7 +244,8 @@ def default_pieces(room: dict, kind: str) -> list[dict]:
                  "color": None, "name": None, "functions": list(BUILTIN_TYPES[f"base/{tid}"]["functions"]),
                  "added_by": "owner", "owner": room.get("owner", "")}
         piece.update(extra)
-        pieces.append(piece)
+        ftype = BUILTIN_TYPES[f"base/{tid}"]
+        pieces.append(onto_wall(piece, ftype) if mount_of(ftype) == "wall" else piece)
     return pieces
 
 
@@ -243,10 +326,15 @@ TEMPLATES = {  # name, default size (cells), height, colour, blocks the way, is 
     "rug": ("地毯", (4, 3), 0.02, "#d7ccc8", False, False),
     "frame": ("画框", (2, 1), 0.6, "#90caf9", False, False),
     "poster": ("海报", (2, 1), 0.9, "#ef9a9a", False, False),
+    "clock": ("挂钟", (2, 1), 0.5, "#8d6e63", False, False),
+    "wall-shelf": ("墙上的架子", (4, 1), 0.35, "#a1887f", False, False),
     "boxes": ("纸箱堆", (3, 3), 1.2, "#bcaaa4", True, False),
     "parcel": ("纸箱", (2, 2), 0.7, "#c8a26b", True, False),
     "stairs": ("楼梯", (3, 6), 3.0, "#a1887f", True, False),
 }
+# Where a template goes: on the floor, on a wall, or either (docs/arrange.md, B2). Others: the floor.
+TEMPLATE_MOUNT = {"frame": "wall", "poster": "wall", "clock": "wall", "wall-shelf": "wall", "tv": "either"}
+MOUNTS = ("floor", "wall", "either")
 MAX_SIZE = 24  # cells, either way
 MAX_TYPES = 200
 
@@ -303,9 +391,12 @@ def make_type(raw: dict, tid: str, base: dict | None = None) -> dict:
     if model is not None:
         model = {"file": model["file"], "turn": int(model.get("turn", 0)) % 360,
                  "scale": min(3.0, max(0.2, float(model.get("scale", 1))))}
+    mount = str(raw.get("mount") or old.get("mount") or TEMPLATE_MOUNT.get(template, "floor"))
+    if mount not in MOUNTS:
+        raise PlacementError("要选摆在地上、挂在墙上或者都可以")
     same_shape = old and old.get("template") == template and old.get("size") == size
     uses = old["uses"] if same_shape and old.get("uses") is not None else auto_uses(template, size)
     return {"id": tid, "name": name, "template": template, "size": size, "height": round(height, 3),
             "color": color.lower(), "model": model, "blocks": tblocks, "uses": uses,
             "screen": {"face": 0} if tscreen else None, "functions": list(dict.fromkeys(functions)),
-            "tags": [str(t)[:8] for t in (raw.get("tags") or old.get("tags") or [])][:6]}
+            "tags": [str(t)[:8] for t in (raw.get("tags") or old.get("tags") or [])][:6], "mount": mount}

@@ -201,8 +201,9 @@ export function renderEditor(app) {
     color.type = "color";
     color.value = piece.color || type.color || "#888888";
     color.onchange = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { color: color.value }));
-    const turn = el("button", "", "转 90°");
-    turn.onclick = () => app.turnPiece(piece, 90);
+    const turn = piece.wall ? el("span", "muted small", `挂在${{ back: "后", front: "前", left: "左", right: "右" }[piece.wall]}墙上，离地 ${piece.y} 米`)
+      : el("button", "", "转 90°");
+    if (!piece.wall) turn.onclick = () => app.turnPiece(piece, 90);
     const remove = el("button", "danger", "删掉");
     remove.onclick = () => act(async () => { await send("DELETE", `/api/home/pieces/${piece.id}`); app.selectedPiece = ""; });
     const row = el("div", "home-look");
@@ -487,7 +488,7 @@ function openKind(app, existing) {
     for (const [k, t] of Object.entries(d.templates)) { const o = el("option", "", t.name); o.value = k; o.selected = k === draft.template; template.append(o); }
     template.onchange = () => {
       const t = d.templates[template.value];
-      Object.assign(draft, { template: template.value, size: [...t.size], height: t.height, color: t.color });
+      Object.assign(draft, { template: template.value, size: [...t.size], height: t.height, color: t.color, mount: t.mount });
       render();
     };
     const num = (value, min, max, step, set) => {
@@ -531,11 +532,19 @@ function openKind(app, existing) {
       row.append(turn, el("span", "muted small", "大小"), num(draft.model.scale, 0.2, 3, 0.1, (v) => (draft.model.scale = v)), drop);
       model.append(row);
     }
+    const mount = el("select");
+    for (const [k, label] of [["floor", "摆在地上"], ["wall", "挂在墙上"], ["either", "都可以"]]) {
+      const o = el("option", "", label);
+      o.value = k;
+      o.selected = k === (draft.mount || d.templates[draft.template]?.mount || "floor");
+      mount.append(o);
+    }
+    mount.onchange = () => (draft.mount = mount.value);
     const save = el("button", "primary", existing ? "保存" : "做好了");
     save.onclick = async () => {
       try {
         const payload = { name: draft.name, template: draft.template, size: draft.size, height: draft.height,
-                          color: draft.color, functions: draft.functions, model: draft.model };
+                          color: draft.color, functions: draft.functions, model: draft.model, mount: mount.value };
         if (existing) await send("PUT", `/api/home/types/${existing.id}`, payload);
         else await send("POST", "/api/home/types", payload);
         app.modal.hidden = true;
@@ -543,7 +552,7 @@ function openKind(app, existing) {
       } catch (e) { say(e.message, true); }
     };
     body.append(el("h2", "", existing ? `改：${existing.name}` : "新做一种家具"),
-      field("名字", name), field("样子", template), field("占地", sizes),
+      field("名字", name), field("样子", template), field("放在哪", mount), field("占地（挂墙的：宽 × 厚）", sizes),
       field("高度（米）", num(draft.height, 0.01, 3, 0.05, (v) => (draft.height = v))), field("颜色", color),
       preview, field("模型", model),
       field("默认挂的功能（摆出来时带上，之后每件可以改）", checkboxes(functionNames(d), draft.functions, (next) => { draft.functions = next; render(); })),
