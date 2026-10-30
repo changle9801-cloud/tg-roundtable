@@ -66,6 +66,8 @@ ROOM_SIZES = {"small": (10, 10), "medium": (14, 12), "large": (18, 12)}
 ROOM_NAME_MAX = 8
 ROOM_CELLS = (3, 60)
 MAX_FLOORS = 5
+MOVES_KEPT = 50  # per member: where she went, for 「家里现在」 (docs/house-talk.md, 3c)
+MOVES_TOLD = 8  # of today's, the latest she is told about
 
 
 def _metres(value) -> float:
@@ -109,6 +111,7 @@ class Home:
         self.extras: list[str] = []  # built-in pieces added to houses made before them, once each
         self.doors: list[dict] = []  # between rooms, or the front door to the outside
         self.floors: list[dict] = [{"level": 0, "name": "一楼"}]
+        self.moves: dict[str, list[dict]] = {}  # member -> where she went and what she did there, latest last
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -121,6 +124,7 @@ class Home:
                 self.extras = list(raw.get("extras") or [])
                 self.doors = list(raw.get("doors") or [])
                 self.floors = list(raw.get("floors") or self.floors)
+                self.moves = {m: list(v) for m, v in (raw.get("moves") or {}).items()}
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -134,7 +138,7 @@ class Home:
                                 "pieces": self.pieces or [],
                                 "types": self.types, "extras": self.extras,
                                 "where": {m: asdict(p) for m, p in self.where.items()},
-                                "looks": self.looks, "diary_reads": self.diary_reads[-200:]})
+                                "looks": self.looks, "diary_reads": self.diary_reads[-200:], "moves": self.moves})
 
     # ---- who lives here ----
 
@@ -723,7 +727,13 @@ class Home:
     # ---- moving with what she really does ----
 
     def _move(self, member: str, place: Place) -> None:
+        before = self.where.get(member)
         self.where[member] = place
+        if before is None or (before.room, before.verb, before.piece) != (place.room, place.verb, place.piece):
+            log_ = self.moves.setdefault(member, [])  # only real changes: not an activity simply ending in place
+            log_.append({"ts": place.since or self.now(), "room": place.room, "verb": place.verb, "piece": place.piece,
+                         "peer": place.peer})
+            del log_[:-MOVES_KEPT]
         self.save()
 
     def begin(self, member: str, action: str, detail: str = "", *, peer: str = "", peer_home: bool = False) -> None:
@@ -984,6 +994,58 @@ class Home:
                 "room_sizes": {k: list(v) for k, v in ROOM_SIZES.items()},
                 "people": people, "accessories": ACCESSORIES, "verbs": VERBS,
                 "diary_reads": reads, "now": self.now()}
+
+    def house_note(self, member: str, members: dict[str, str]) -> str:
+        """「家里现在」 for one member: the floors and rooms, what in each room can be used and for what,
+        where everyone is, and where she has been today. All from the house as it really is; short, and
+        fresh every time (docs/house-talk.md, 3c)."""
+        types = self.all_types()
+        rooms = [r for r in self.rooms if r.get("kind") != "hall"]
+        lines = ["[家里现在]"]
+        for floor in sorted(self.floors, key=lambda f: f["level"]):
+            here = [r["name"] for r in rooms if r.get("level", 0) == floor["level"]]
+            if here:
+                lines.append(f"{floor['name']}：" + "、".join(here))
+        usable = []
+        for room in rooms:
+            if room["id"].startswith("bed-") and room["id"] != bedroom(member):
+                continue  # other people's bedrooms: only their names above
+            counts: dict[str, int] = {}
+            for piece in self.pieces or []:
+                ftype = types.get(piece["type"])
+                if piece["room"] != room["id"] or not ftype or piece["type"] == "base/parcel":
+                    continue
+                does = [furniture.FUNCTIONS[f] for f in piece.get("functions", []) if f in furniture.FUNCTIONS]
+                if not does and not ftype.get("uses"):
+                    continue  # just to look at
+                label = (piece.get("name") or ftype["name"]) + (f"（{'、'.join(does)}）" if does else "")
+                counts[label] = counts.get(label, 0) + 1
+            if counts:
+                usable.append(f"- {room['name']}：" + "、".join(k if n == 1 else f"{k}×{n}" for k, n in counts.items()))
+        if usable:
+            lines += ["能用的家具：", *usable]
+        lines.append("大家现在：")
+        for mid, name in members.items():
+            place = self.where.get(mid)
+            if place is None:
+                continue
+            who = "你" if mid == member else name
+            words = VERBS.get(place.verb, "在歇着")
+            lines.append(f"- {who}：出门了" if place.verb == "out" else f"- {who}：{self.room_name(place.room)} · {words}")
+        midnight = time.mktime(time.localtime(self.now())[:3] + (0, 0, 0, 0, 0, -1))
+        today = [m for m in self.moves.get(member, []) if m["ts"] >= midnight][-MOVES_TOLD:]
+        if today:
+            lines.append("你今天去过：")
+            pieces = {p["id"]: p for p in self.pieces or []}
+            for m in today:
+                where = "外面" if m["verb"] == "out" else self.room_name(m["room"])
+                piece = pieces.get(m.get("piece") or "")
+                at = f"的{piece.get('name') or types.get(piece['type'], {}).get('name', '')}旁" if piece else ""
+                peer = f"（找{members.get(m['peer'], m['peer'])}）" if m.get("peer") and m["verb"] in ("visit", "phone") else ""
+                lines.append(f"- {time.strftime('%H:%M', time.localtime(m['ts']))} {where}{at} · {VERBS.get(m['verb'], '在歇着')}{peer}")
+        lines.append("这些是家里此刻的真实情况。说到家里的事以这里为准；这里没有的，就说不知道，不要编。")
+        lines.append("[/家里现在]")
+        return "\n".join(lines)
 
     def guest_lines(self, members: dict[str, str]) -> str:
         """The short text anyone in the group may see: room and a fixed word, nothing more."""

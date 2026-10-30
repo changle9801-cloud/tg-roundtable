@@ -406,6 +406,7 @@ class Runtime:
                 log_path=self.chat_log_path(key), on_memory=self._on_memory, on_meme=self._on_meme, on_followup=self._on_followup, block_code=self.config.no_coding,
                 on_draw=self._on_draw, reactions=self.config.reactions_enabled, routines=self.routines,
                 on_tool=lambda p, server: self._tool_used(p.id, server, during_chat=True),
+                house=self._house_note,
                 has_experience=lambda pid, text: bool(self.life.diary.relevant(pid, text)
                                                       or self.game_memories.recall(pid, text)),
             )
@@ -1184,7 +1185,12 @@ class Runtime:
                 f"最近的公开群聊（不是给你的新任务）：\n{recent}\n"
                 f"现在是否适合发到群里：{'可以自行决定' if self._life_share_ready(p, convo) else '暂不合适，可以先留着，下次再决定'}。\n"
                 + self.life.diary.recall(pid, "最近看了什么")
-                + ("\n" + told if (told := self.home.tell(pid)) else ""))
+                + ("\n" + told if (told := self.home.tell(pid)) else "")
+                + "\n" + self._house_note(pid))
+
+    def _house_note(self, pid: str) -> str:
+        """「家里现在」 for a member: the house, who is where, where she has been today."""
+        return self.home.house_note(pid, {m.id: m.name for m in self.config.enabled_participants})
 
     def _life_moved(self, pid: str, action: str, decision: dict, item) -> None:
         """A daily-life step chose what to do: she goes to the room where it happens."""

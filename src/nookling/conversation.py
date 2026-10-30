@@ -166,6 +166,7 @@ class Conversation:
         routines: Routines | None = None,
         has_experience: Callable[[str, str], bool] | None = None,
         on_tool: Callable[[Participant, str], None] | None = None,
+        house: Callable[[str], str] | None = None,
     ):
         self.key = key
         self.participants = list(participants)
@@ -190,6 +191,7 @@ class Conversation:
         self.reactions = reactions  # members may react to messages with an emoji
         self.routines = routines  # who is asleep or busy right now; None: everyone is always up
         self.on_tool = on_tool  # a member called a tool server (its id): she walks to its furniture
+        self.house = house  # member id -> 「家里现在」, given with every turn (docs/house-talk.md, 3c)
         self.has_experience = has_experience  # own memory relevance only; no private text enters the room
         self._tg_ids: dict[tuple[str, float], int] = {}  # (speaker, ts) -> Telegram message id
         self.messages: list[Message] = self._load_log()
@@ -620,6 +622,8 @@ class Conversation:
         images = self._images_for(speaker, seen)
         if images:
             prompt += "\n（群里发的图片附在这条消息里了，你能直接看到。）"
+        if self.house is not None:
+            prompt += "\n\n" + self.house(speaker.id)
         if self.routines is not None:
             if self.routines.status(speaker) == ASLEEP:  # the user @-ed it
                 self.routines.wake(speaker)
@@ -898,6 +902,8 @@ class Conversation:
                 if prepared_text is None:
                     unseen = self._catch_up(speaker)
                     prompt = make_prompt(unseen)
+                    if self.house is not None:
+                        prompt += "\n\n" + self.house(speaker.id)
                     images = [] if show_images_since is None else self._images_for(
                         speaker, [m for m in unseen if m.ts >= show_images_since])
                     if images:
