@@ -24,11 +24,13 @@ def test_prompt_for_a_member_without_search():
 
 def test_searchers_help_friends_and_look_up_new_things():
     text = search_instructions(covers_x=False)
-    assert "新游戏" in text and "朋友请你帮忙查" in text and "@对方" in text
+    assert "朋友请你帮忙查" in text and "@对方" in text
+    assert "不用去查" in text and "闲聊里不贴链接" in text  # "靠谱吗" is chat, not a lookup
 
 
 def test_rules_say_do_not_fake_knowing():
-    assert "别装懂" in FRIEND_RULES
+    assert "别把没根据的细节说成事实" in FRIEND_RULES  # guessing is fine, passing it off as fact is not
+    assert "我看悬" in FRIEND_RULES and "别把猜的讲成事实" in FRIEND_RULES
 
 
 def test_each_member_gets_the_right_section(tmp_path):

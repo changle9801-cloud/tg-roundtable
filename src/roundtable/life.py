@@ -392,7 +392,8 @@ class LifeStore:
                             "progress": item.progress[:1000], "sources": source_list(item.sources)[:3]})
         return ("[与你眼前聊天相关的较新经历]\n" + json.dumps(records, ensure_ascii=False)
                 + "\n按时间区分旧猜测、旧草稿和后来的查证；阅读范围以来源记录为准，计划不等于完成。"
-                  "这只是记忆，按眼前的话接着聊，不用重新交代背景或汇报成果。[/较新经历]")
+                  "这只是你碰巧知道的事：按眼前的话接着聊，顺口提一两点、用你自己的话就够，"
+                  "不复述文章、不报出处、不贴链接（有人要再给）；也可以照样凭感觉下判断。[/较新经历]")
 
     def chat_summary(self, member: str) -> str:
         """What happened, without turning the private work plan into a speaking script."""

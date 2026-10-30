@@ -183,4 +183,4 @@ def test_seen_cache_is_bounded():
 
 
 def test_rules_ask_for_plain_talk():
-    assert "硬凹比喻" in FRIEND_RULES and "别编细节" in FRIEND_RULES
+    assert "硬凹比喻" in FRIEND_RULES and "别编数字和出处" in FRIEND_RULES
