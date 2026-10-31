@@ -41,7 +41,7 @@ from .prompts import (
     search_instructions,
 )
 from .apps.house import HOUSE_TALK, HouseSink
-from . import redecorate, wishes
+from . import packs, redecorate, wishes
 from .furniture import PlacementError
 from .conversation import Conversation
 from .recall import chat_query
@@ -183,6 +183,7 @@ class Runtime:
         self.telegram = TelegramApp(self)  # the first chat app on the house computer
         self.sink = self.telegram.sink
         self.house_sink = HouseSink(on_speak=self.home.talk)  # the family's talk at home (docs/house-talk.md)
+        self.pack_staging = packs.Staging()  # packs uploaded for a look before they are installed (docs/packs.md)
         self._changed = asyncio.Event()
         self._lock = asyncio.Lock()
         self._rebuild_participants()
@@ -877,6 +878,35 @@ class Runtime:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
         return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view(),
                 "said": self._recent_said(convo), "changes": redecorate.view(self.home), "wishes": wishes.view(self.home)}
+
+    # ---- packs (docs/packs.md) ----
+
+    def packs_view(self) -> dict:
+        mine = [{"id": tid, "name": t["name"], "template": t["template"], "model": bool(t.get("model"))}
+                for tid, t in self.home.types.items()]
+        return {"installed": packs.installed(self.store.data_dir), "mine": mine, "licenses": packs.LICENSES}
+
+    def pack_preview(self, data: bytes) -> dict:
+        manifest, files = packs.open_pack(data)
+        token = self.pack_staging.add(manifest, files)
+        return {"token": token, **packs.preview(manifest, files, self.available_functions())}
+
+    def pack_install(self, token: str) -> dict:
+        manifest, files = self.pack_staging.take(token)
+        entry = packs.install(self.home, self.store.data_dir, manifest, files)
+        return {**self.packs_view(), "pack": entry}
+
+    def pack_uninstall(self, uid: str) -> dict:
+        result = packs.uninstall(self.home, self.store.data_dir, uid)
+        return {**result, **self.packs_view()}
+
+    def pack_export(self, body: dict) -> bytes:
+        picture = None
+        url = str(body.get("picture") or "")
+        if url.startswith("data:image/") and ";base64," in url:
+            import base64
+            picture = base64.b64decode(url.split(",", 1)[1])
+        return packs.export_furniture(self.home, self.store.data_dir, list(body.get("types") or []), body, picture)
 
     def undo_change(self, cid: str) -> dict:
         """The owner undoes a change the family made (docs/redecorate.md, 4b)."""

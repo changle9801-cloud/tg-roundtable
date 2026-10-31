@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from aiohttp import web
 
@@ -198,6 +198,30 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def get_home(request):
         return web.json_response(runtime.home_view())
+
+    async def get_packs(request):
+        return web.json_response(runtime.packs_view())
+
+    async def preview_pack(request):
+        data = await request.read()
+        return house(lambda: runtime.pack_preview(data))
+
+    async def install_pack(request):
+        body = await request.json()
+        return house(lambda: runtime.pack_install(str(body.get("token") or "")))
+
+    async def uninstall_pack(request):
+        return house(lambda: runtime.pack_uninstall(request.match_info["uid"]))
+
+    async def export_pack(request):
+        body = await request.json()
+        try:
+            data = runtime.pack_export(body)
+        except (PlacementError, models.ModelError) as e:
+            raise ConfigError(str(e)) from None
+        name = quote((str(body.get("name") or "pack").strip() or "pack") + ".nookpack")
+        return web.Response(body=data, content_type="application/zip",
+                            headers={"Content-Disposition": f"attachment; filename=\"pack.nookpack\"; filename*=UTF-8''{name}"})
 
     async def answer_wish(request):
         body = await request.json()
@@ -621,6 +645,11 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
     app.router.add_post("/api/home/talk", home_talk)
     app.router.add_post("/api/home/changes/{cid}/undo", undo_change)
     app.router.add_post("/api/home/wishes/{wid}/answer", answer_wish)
+    app.router.add_get("/api/packs", get_packs)
+    app.router.add_post("/api/packs/preview", preview_pack)
+    app.router.add_post("/api/packs/install", install_pack)
+    app.router.add_post("/api/packs/export", export_pack)
+    app.router.add_delete("/api/packs/{uid}", uninstall_pack)
     app.router.add_get("/api/home/diary/{pid}", home_diary)
     app.router.add_put("/api/home/looks/{pid}", home_look)
     app.router.add_post("/api/home/looks/{pid}/choose", home_choose_look)

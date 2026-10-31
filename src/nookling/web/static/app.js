@@ -2210,6 +2210,7 @@ function showTab(name) {
   if (name === "memory" && server) loadChats();
   if (name === "journal" && server) loadJournal();
   if (name === "life" && server) loadLife();
+  if (name === "packs" && server) loadPacks();
   // The 3D house loads only when its tab opens, and stops drawing when you leave it.
   if (name === "home") import("/static/home.js").then((m) => m.open($("#home-root"))).catch((e) => toast(e.message, true));
   else if (homeLoaded) import("/static/home.js").then((m) => m.close());
@@ -2247,6 +2248,116 @@ load()
     if (location.hash === "#memory") loadChats();
     if (location.hash === "#journal") loadJournal();
     if (location.hash === "#life") loadLife();
+    if (location.hash === "#packs") loadPacks();
   })
   .catch((e) => toast(e.message, true));
 setInterval(pollStatus, 4000);
+
+
+// ---------- 包: sharing furniture as a file (docs/packs.md) ----------
+
+let packsData = null;
+let packStaged = null; // a pack chosen for installing, shown before it is installed
+
+async function loadPacks() {
+  try { packsData = await api("GET", "/api/packs"); renderPacks(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function rawPost(path, body) {
+  const res = await fetch(path, { method: "POST", body });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty body */ }
+  if (!res.ok) throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
+  return data;
+}
+
+function renderPacks() {
+  const root = $("#packs");
+  const d = packsData;
+  if (!d) return;
+  const licenseSelect = (value) => h("select", {}, ...Object.entries(d.licenses).map(([k, label]) => h("option", { value: k, selected: k === value }, label)));
+
+  // import: choose a file, look at it, install it
+  const file = h("input", { type: "file", accept: ".nookpack,.zip" });
+  file.onchange = async () => {
+    const f = file.files[0];
+    if (!f) return;
+    try { packStaged = await rawPost("/api/packs/preview", await f.arrayBuffer()); renderPacks(); }
+    catch (e) { toast(e.message, true); file.value = ""; }
+  };
+  const importCard = h("div", { class: "card" }, h("h2", {}, "装一个包"), file);
+  if (packStaged) {
+    const p = packStaged;
+    const mount = { floor: "放地上", wall: "挂墙", either: "放地上或挂墙" };
+    importCard.append(h("div", { class: "pack-preview" },
+      p.picture ? h("img", { src: p.picture, alt: "" }) : null,
+      h("div", {},
+        h("b", {}, p.name), h("span", { class: "muted small" }, ` · 版本 ${p.version}${p.author ? " · " + p.author : ""}`),
+        h("p", { class: "small" }, `许可证：${p.license_name}`),
+        p.description ? h("p", { class: "small" }, p.description) : null)),
+      h("p", { class: "small" }, `里面有 ${p.furniture.length} 种家具，共 ${(p.bytes / 1048576).toFixed(1)} MB：`),
+      h("ul", { class: "small" }, ...p.furniture.map((k) => h("li", {}, `${k.name}（${k.size[0]}×${k.size[1]} 格，${mount[k.mount] || ""}`
+        + `${k.model ? `，带模型 ${(k.model / 1048576).toFixed(1)} MB` : ""}${k.functions.length ? `，功能：${k.functions.join("、")}` : ""}）`))),
+      p.missing.length ? h("p", { class: "home-warn small" }, `这些功能还没连上工具：${p.missing.join("、")}。装上以后带这些功能的家具是灰的，到「工具」页连上就能用。`) : null,
+      h("div", { class: "row-gap" },
+        h("button", { class: "primary", onclick: async () => {
+          try {
+            const r = await api("POST", "/api/packs/install", { token: p.token });
+            packsData = r; packStaged = null;
+            toast(`装好了：${r.pack.name}，在「家」的家具栏「我做的」里`);
+            renderPacks();
+          } catch (e) { toast(e.message, true); }
+        } }, "装上"),
+        h("button", { onclick: () => { packStaged = null; renderPacks(); } }, "不装")));
+  }
+
+  // export: some of the owner's own kinds, as one pack
+  const picked = new Set();
+  const boxes = d.mine.length ? d.mine.map((k) => h("label", { class: "check" },
+    h("input", { type: "checkbox", onchange: (e) => (e.target.checked ? picked.add(k.id) : picked.delete(k.id)) }),
+    ` ${k.name}${k.model ? "（带模型）" : ""}`)) : [h("p", { class: "muted small" }, "还没有自己做的家具。在「家」→「布置家具」里新做一种，或者复制一种内置的改一改。")];
+  const name = h("input", { placeholder: "包的名字（不填就用第一件家具的名字）", maxlength: 40 });
+  const author = h("input", { placeholder: "作者（你想署的名字）", maxlength: 40 });
+  const license = licenseSelect("CC-BY-4.0");
+  const about = h("textarea", { placeholder: "说明（可空）", maxlength: 500, rows: 2 });
+  const exportBtn = h("button", { class: "primary", disabled: !d.mine.length, onclick: async () => {
+    if (!picked.size) { toast("先勾几种家具", true); return; }
+    exportBtn.disabled = true;
+    try {
+      let picture = null;
+      try { // a picture of the first one, drawn the way the shelf draws it
+        const types = (await api("GET", "/api/home")).types;
+        picture = await (await import("/static/home.js")).pictureOf(types[[...picked][0]]);
+      } catch { /* no WebGL here: a pack without a picture */ }
+      const res = await fetch("/api/packs/export", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ types: [...picked], name: name.value, author: author.value, license: license.value, description: about.value, picture }) });
+      if (!res.ok) { let e = {}; try { e = await res.json(); } catch { /* not JSON */ } throw new Error(e.error || `导出失败（HTTP ${res.status}）`); }
+      const url = URL.createObjectURL(await res.blob());
+      const a = h("a", { href: url, download: `${name.value.trim() || d.mine.find((k) => picked.has(k.id))?.name || "pack"}.nookpack` });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast("导出好了");
+    } catch (e) { toast(e.message, true); }
+    exportBtn.disabled = false;
+  } }, "导出");
+  const exportCard = h("div", { class: "card" }, h("h2", {}, "导出家具"), h("div", { class: "pack-kinds" }, ...boxes),
+    field("包的名字", name), field("作者", author), field("许可证", license, "别人能怎么用"), field("说明", about), exportBtn);
+
+  // installed: what came from which pack; uninstall takes away what is not in use
+  const rows = d.installed.length ? d.installed.map((p) => h("div", { class: "pack-row" },
+    h("div", {}, h("b", {}, p.name), h("span", { class: "muted small" },
+      ` · 版本 ${p.version}${p.author ? " · " + p.author : ""} · ${d.licenses[p.license] || p.license} · ${new Date(p.installed_at * 1000).toLocaleDateString("zh-CN")} 装的 · ${p.types.length} 种家具`)),
+    h("button", { onclick: async () => {
+      if (!confirm(`卸载「${p.name}」？它带来的、家里没在用的家具种类会去掉；正在用的留下。`)) return;
+      try {
+        const r = await api("DELETE", `/api/packs/${p.uid}`);
+        packsData = r;
+        toast(`卸载了${r.removed.length ? "：去掉 " + r.removed.join("、") : ""}${r.kept.length ? "；还在用、留下的：" + r.kept.join("、") : ""}`);
+        renderPacks();
+      } catch (e) { toast(e.message, true); }
+    } }, "卸载"))) : [h("p", { class: "muted small" }, "还没装过包。")];
+  const installedCard = h("div", { class: "card" }, h("h2", {}, "装过的包"), ...rows);
+
+  root.replaceChildren(importCard, exportCard, installedCard);
+}

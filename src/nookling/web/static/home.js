@@ -536,6 +536,44 @@ function walls(g, r, look, rooms, uppers) {
   for (const door of r.doors.filter((dp) => dp.outside)) g.add(box(1.2, 1.9, 0.12, 0x6d4c41, door.x, 0, door.z));
 }
 
+// A small still picture of a kind of furniture (120×90, as webp): the shelf's cards, and a pack's preview.
+let pictureScene = null;
+async function pictureOf(type) {
+  if (!pictureScene) {
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(2);
+    renderer.setSize(120, 90, false);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a99f, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(-4, 8, 6);
+    scene.add(sun);
+    const holder = new THREE.Group();
+    scene.add(holder);
+    pictureScene = { renderer, scene, holder, camera: new THREE.OrthographicCamera(-1, 1, 1, -1, -50, 50) };
+  }
+  const { renderer, scene, holder, camera } = pictureScene;
+  holder.clear();
+  const t = { ...type, model: null };
+  const W = type.size[0] * CELL, D = type.size[1] * CELL, H = Math.max(0.05, type.height || 0.5);
+  const plain = () => drawPiece(holder, { x: 0, z: 0 }, { id: "thumb", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set());
+  if (type.model) {
+    try {
+      const g = new THREE.Group();
+      g.add(fitModel(await loadModel(type.model.file), W, D, H, type.model));
+      holder.add(g);
+    } catch { plain(); }
+  } else plain();
+  holder.children[0].position.set(0, 0, 0);
+  const reach = Math.max(W, D, H) * 0.62 + 0.15;
+  camera.left = -reach * 4 / 3; camera.right = reach * 4 / 3; camera.top = reach; camera.bottom = -reach;
+  camera.position.set(4, 3.4 + H / 2, 4);
+  camera.lookAt(0, H / 2, 0);
+  camera.updateProjectionMatrix();
+  renderer.render(scene, camera);
+  return renderer.domElement.toDataURL("image/webp", 0.85);
+}
+
 // ---------- a blocky member ----------
 
 function accessoryMesh(kind, color) {
@@ -1793,41 +1831,8 @@ class HomeApp {
     return this.thumbs.get(key);
   }
 
-  async drawThumb(type) {
-    if (!this.thumbScene) {
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-      renderer.setPixelRatio(2);
-      renderer.setSize(120, 90, false);
-      const scene = new THREE.Scene();
-      scene.add(new THREE.HemisphereLight(0xffffff, 0xb0a99f, 1.6));
-      const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-      sun.position.set(-4, 8, 6);
-      scene.add(sun);
-      const holder = new THREE.Group();
-      scene.add(holder);
-      this.thumbScene = { renderer, scene, holder, camera: new THREE.OrthographicCamera(-1, 1, 1, -1, -50, 50) };
-    }
-    const { renderer, scene, holder, camera } = this.thumbScene;
-    holder.clear();
-    const t = { ...type, model: null };
-    const W = type.size[0] * CELL, D = type.size[1] * CELL, H = Math.max(0.05, type.height || 0.5);
-    if (type.model) {
-      try {
-        const g = new THREE.Group();
-        g.add(fitModel(await loadModel(type.model.file), W, D, H, type.model));
-        holder.add(g);
-      } catch { drawPiece(holder, { x: 0, z: 0 }, { id: "thumb", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set()); }
-    } else {
-      drawPiece(holder, { x: 0, z: 0 }, { id: "thumb", at: [0, 0], turn: 0, color: null, functions: [] }, t, [], new Set());
-    }
-    holder.children[0].position.set(0, 0, 0);
-    const reach = Math.max(W, D, H) * 0.62 + 0.15;
-    camera.left = -reach * 4 / 3; camera.right = reach * 4 / 3; camera.top = reach; camera.bottom = -reach;
-    camera.position.set(4, 3.4 + H / 2, 4);
-    camera.lookAt(0, H / 2, 0);
-    camera.updateProjectionMatrix();
-    renderer.render(scene, camera);
-    return renderer.domElement.toDataURL("image/webp", 0.85);
+  drawThumb(type) {
+    return pictureOf(type);
   }
 
   async endDrag() {
@@ -2635,4 +2640,4 @@ async function sendJSON(method, path, body) {
   return data;
 }
 
-export { layout, walkGrid, walkPath, route, app }; // for checking walks from the browser console
+export { layout, walkGrid, walkPath, route, app, pictureOf }; // walks: for the browser console; pictureOf: for packs

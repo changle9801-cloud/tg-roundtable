@@ -449,6 +449,11 @@ body.home-mode main { max-width: none; padding: 0; }
 .home-wish.declined, .home-wish.done { opacity: 0.75; }
 .home-wish-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
 .home-wish-form input, .home-wish-form select { width: 100%; }
+.pack-preview { display: flex; gap: 12px; align-items: flex-start; margin: 12px 0 6px; }
+.pack-preview img { width: 120px; height: 90px; object-fit: contain; background: var(--surface-2); border-radius: 8px; }
+.pack-kinds { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 10px; }
+.pack-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+#packs .card { margin-bottom: 16px; }
 .home-hover-tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; color: #fff; background: rgba(40, 36, 32, 0.78); }
 .home-tag.stale { opacity: 0.6; }
 .home-panel h2 { margin-bottom: 8px; }
