@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import random
@@ -887,17 +888,32 @@ class Runtime:
                 for tid, t in self.home.types.items()]
         rooms = [{"id": r["id"], "name": r["name"], "pieces": sum(1 for p in self.home.pieces or [] if p["room"] == r["id"])}
                  for r in self.home.rooms]
+        members = [{"id": p.id, "name": p.name, "enabled": p.enabled} for p in self.config.participants]
         return {"installed": packs.installed(self.store.data_dir), "mine": mine, "licenses": packs.LICENSES,
-                "pictures": packs.pictures(self.home), "rooms": rooms, "uses": packs.USES}
+                "pictures": packs.pictures(self.home), "rooms": rooms, "uses": packs.USES, "members": members}
 
     def pack_preview(self, data: bytes) -> dict:
         manifest, files = packs.open_pack(data)
         token = self.pack_staging.add(manifest, files)
         return {"token": token, **packs.preview(manifest, files, self.available_functions())}
 
-    def pack_install(self, token: str) -> dict:
+    async def pack_install(self, token: str, runs_on: dict | None = None) -> dict:
         manifest, files = self.pack_staging.take(token)
-        entry = packs.install(self.home, self.store.data_dir, manifest, files)
+        if manifest["kind"] == "member":  # a new member, disabled until the owner gives her an AI and a bot
+            settings = copy.deepcopy(self.settings)
+            ids = {p["id"] for p in settings["participants"]}
+            names = {p["name"] for p in settings["participants"]}
+            member = packs.member_settings(manifest, ids, names, runs_on or {})
+            settings["participants"].append(member)
+            await self.apply(settings)
+            if manifest["look"]:
+                self.home.looks[member["id"]] = dict(manifest["look"])
+                self.home.save()
+            entry = packs.install(self.home, self.store.data_dir, manifest, files)
+            entry["members"] = [member["id"]]
+            packs.note(self.store.data_dir, entry)
+        else:
+            entry = packs.install(self.home, self.store.data_dir, manifest, files)
         return {**self.packs_view(), "pack": entry}
 
     def pack_uninstall(self, uid: str) -> dict:
@@ -915,6 +931,11 @@ class Runtime:
             return packs.export_surfaces(self.home, self.store.data_dir, list(body.get("pictures") or []), body)
         if kind == "room":
             return packs.export_room(self.home, self.store.data_dir, str(body.get("room") or ""), body)
+        if kind == "member":
+            card = next((p for p in self.settings["participants"] if p["id"] == str(body.get("member") or "")), None)
+            if card is None:
+                raise PlacementError("没有这位家人")
+            return packs.export_member(card, self.home.looks.get(card["id"]), body)
         return packs.export_furniture(self.home, self.store.data_dir, list(body.get("types") or []), body, picture)
 
     def undo_change(self, cid: str) -> dict:

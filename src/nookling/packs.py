@@ -4,8 +4,9 @@ A pack is a ``.nookpack`` (a zip) holding only data: ``manifest.json``, an optio
 picture, ``models/*.glb`` and ``textures/*`` pictures. Nothing in it runs; anything else, too
 much of anything, or a manifest that does not check out, and the whole pack is refused.
 Installing makes copies (new ids, "（2）" on clashing names); a pack never connects tools.
-Three kinds so far: furniture, surface (pictures for floors, walls and frames) and room (a furnished
-room, carrying its own kinds and pictures).
+Four kinds: furniture, surface (pictures for floors, walls and frames), room (a furnished room,
+carrying its own kinds and pictures) and member (a family member's role card and look: never keys,
+accounts, which AI she runs on, memories or diary).
 """
 
 from __future__ import annotations
@@ -31,7 +32,10 @@ KINDS_MAX = 50  # kinds of furniture in one pack
 STAGED_FOR = 1800  # seconds a pack waits between preview and install
 LICENSES = {"CC0-1.0": "CC0（随便用）", "CC-BY-4.0": "CC BY 4.0（署名）", "CC-BY-SA-4.0": "CC BY-SA 4.0（署名、相同方式共享）",
             "all-rights-reserved": "保留所有权利"}
-PACK_KINDS = ("furniture", "surface", "room")  # member comes with 5c
+PACK_KINDS = ("furniture", "surface", "room", "member")
+# A member pack: her role card (as on the 成员 page) and nothing about which AI or account she runs on.
+MEMBER_TEXT = {"name": 20, "tagline": 120, "persona": 4000, "style": 2000, "relationships": 2000, "examples": 2000,
+               "appearance": 1000, "sleep": 40, "busy": 40, "busy_doing": 100, "proactive_topics": 300, "browse_topics": 300}
 SURFACES_MAX = 50  # pictures in one surface pack
 PIECES_MAX = 60  # pieces in one room
 USES = {"floor": "地板", "walls": "墙纸", "picture": "画", "any": "都行"}
@@ -120,7 +124,7 @@ def check_manifest(raw, files: dict[str, bytes]) -> dict:
     manifest = {"format": FORMAT, "kind": raw["kind"], "id": pid, "name": _text(raw.get("name"), 40, "包的名字", True),
                 "author": _text(raw.get("author"), 40, "作者"), "version": _text(raw.get("version") or "1", 20, "版本", True),
                 "license": license_, "description": _text(raw.get("description"), 500, "说明"), "needs": list(dict.fromkeys(needs)),
-                "preview": None, "furniture": [], "surfaces": [], "room": None}
+                "preview": None, "furniture": [], "surfaces": [], "room": None, "member": None, "look": None}
     preview = raw.get("preview")
     if preview is not None:
         if preview not in files or not preview.startswith("preview."):
@@ -179,10 +183,41 @@ def check_manifest(raw, files: dict[str, bytes]) -> dict:
                                          "tile": tile(s.get("tile"))})
     if raw["kind"] == "room":
         manifest["room"] = _check_room(raw.get("room"), len(manifest["furniture"]), picture, look)
+    if raw["kind"] == "member":
+        manifest["member"], manifest["look"] = _check_member(raw.get("member"), raw.get("look"))
     extra = set(files) - used
     if extra:
         raise PlacementError(f"包里有没用到的文件：{', '.join(sorted(extra))}")
     return manifest
+
+
+def _check_member(card, look) -> tuple[dict, dict | None]:
+    """A member pack's role card, field by field (nothing else is taken), and her look."""
+    from .home import ACCESSORIES
+
+    if not isinstance(card, dict):
+        raise PlacementError("家人包里要有 member")
+    out = {k: _text(card.get(k), n, k, k == "name") for k, n in MEMBER_TEXT.items()}
+    aliases = card.get("aliases") or []
+    if not isinstance(aliases, list) or len(aliases) > 8:
+        raise PlacementError("别名最多 8 个")
+    out["aliases"] = [_text(a, 20, "别名") for a in aliases if str(a or "").strip()]
+    activity = card.get("activity") or "normal"
+    if activity not in ("low", "normal", "high"):
+        raise PlacementError("activity 只能是 low、normal、high")
+    out["activity"] = activity
+    from .config import ConfigError
+    from .settings import normalize_participant
+    try:  # the same checks as the 成员 page (sleep and busy hours, ...), with a stand-in for what is not in a pack
+        normalize_participant({**out, "id": "pack-member", "kind": "claude_cli", "enabled": False})
+    except ConfigError as e:
+        raise PlacementError(str(e).replace("成员 pack-member ", "")) from None
+    if look is None:
+        return out, None
+    if not isinstance(look, dict) or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(look.get("color") or "")) \
+            or look.get("accessory") not in ACCESSORIES:
+        raise PlacementError("外形要有 #rrggbb 颜色和认识的配饰")
+    return out, {"color": look["color"].lower(), "accessory": look["accessory"]}
 
 
 def _check_room(room, kinds: int, picture, look) -> dict:
@@ -278,6 +313,9 @@ def preview(manifest: dict, files: dict[str, bytes], available: set[str]) -> dic
                            "model": len(files[k["model"]["file"]]) if k["model"] else 0} for k in manifest["furniture"]],
             "surfaces": [{"name": x["name"], "use": USES[x["use"]], "tile": x["tile"], "picture": _data_url(files[x["image"]])}
                          for x in manifest["surfaces"]],
+            "member": None if not manifest["member"] else {
+                **{k: manifest["member"][k] for k in ("name", "tagline", "appearance", "sleep", "busy", "busy_doing", "activity")},
+                "persona": manifest["member"]["persona"][:300], "look": manifest["look"]},
             "room": None if not manifest["room"] else {
                 "name": manifest["room"]["name"], "size": manifest["room"]["size"], "pieces": len(manifest["room"]["pieces"]),
                 "pictures": sum(1 for p in manifest["room"]["pieces"] if p.get("image"))
@@ -376,6 +414,11 @@ def install(home: Home, data_dir: Path, manifest: dict, files: dict[str, bytes])
     home.save()
     _save(data_dir, installed(data_dir) + [entry])
     return entry
+
+
+def note(data_dir: Path, entry: dict) -> None:
+    """Keep what more there is to say about an installed pack (a member pack: the member it made)."""
+    _save(data_dir, [entry if p["uid"] == entry["uid"] else p for p in installed(data_dir)])
 
 
 def _nearby(home: Home, piece: dict, room: dict, types: dict) -> dict:
@@ -578,3 +621,30 @@ def export_room(home: Home, data_dir: Path, rid: str, meta: dict) -> bytes:
                 "room": {"name": room["name"], "kind": room.get("kind", "room"), "size": room["size"], **looks, "pieces": pieces}}
     manifest["needs"] = sorted({f for p in pieces for f in p["functions"]} | {f for k in kinds for f in k["functions"]})
     return _write(manifest, files)
+
+
+def export_member(card: dict, look: dict | None, meta: dict) -> bytes:
+    """A member pack: her role card and look. Which AI she runs on, her account, keys, memories and diary stay home."""
+    member = {k: card.get(k, "") for k in MEMBER_TEXT} | {"aliases": list(card.get("aliases") or []),
+                                                           "activity": card.get("activity") or "normal"}
+    manifest = {**_head("member", meta, card.get("name") or "家人"), "furniture": [], "surfaces": [], "member": member,
+                "look": {"color": look["color"], "accessory": look["accessory"]} if look else None}
+    return _write(manifest, {})
+
+
+def member_settings(manifest: dict, taken_ids: set[str], taken_names: set[str], runs_on: dict) -> dict:
+    """The settings for a new, disabled member from a member pack, running on what the owner chose."""
+    from .config import KNOWN_KINDS
+
+    kind = str(runs_on.get("kind") or "")
+    if kind not in KNOWN_KINDS:
+        raise PlacementError("先选她用哪种 AI")
+    pid = "m-" + uuid.uuid4().hex[:6]
+    while pid in taken_ids:
+        pid = "m-" + uuid.uuid4().hex[:6]
+    name, n = manifest["member"]["name"], 2
+    while name in taken_names:
+        name, n = f"{manifest['member']['name']}{n}", n + 1
+    return {**manifest["member"], "id": pid, "name": name, "kind": kind, "enabled": False,
+            "provider": _text(runs_on.get("provider"), 30, "provider"), "model": _text(runs_on.get("model"), 80, "model"),
+            "effort": _text(runs_on.get("effort"), 20, "effort")}

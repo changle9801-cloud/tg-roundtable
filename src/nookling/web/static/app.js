@@ -2297,6 +2297,14 @@ function renderPacks() {
         h("b", {}, p.name), h("span", { class: "muted small" }, ` · 版本 ${p.version}${p.author ? " · " + p.author : ""}`),
         h("p", { class: "small" }, `许可证：${p.license_name}`),
         p.description ? h("p", { class: "small" }, p.description) : null)),
+      p.member ? h("div", { class: "pack-member" },
+        p.member.look ? h("span", { class: "pack-swatch", style: `background:${p.member.look.color}` }) : null,
+        h("div", {}, h("b", {}, p.member.name), p.member.tagline ? h("span", { class: "muted small" }, ` · ${p.member.tagline}`) : null,
+          p.member.persona ? h("p", { class: "small" }, p.member.persona + (p.member.persona.length >= 300 ? "…" : "")) : null,
+          h("p", { class: "muted small" }, [p.member.appearance && `外形：${p.member.appearance}`, p.member.sleep && `睡觉：${p.member.sleep}`,
+            p.member.busy && `忙：${p.member.busy}${p.member.busy_doing ? "（" + p.member.busy_doing + "）" : ""}`].filter(Boolean).join("；")),
+          h("p", { class: "small" }, "装上后是一位还没启用的新家人：没有 bot、没有记忆和日记。到「成员」页给她填好 bot，再启用。"),
+          field("她用哪种 AI", h("select", { id: "pack-runs-on" }, ...PRESETS.map((x, i) => h("option", { value: i }, `${x.label} · ${x.hint}`)))))) : null,
       p.room ? h("p", { class: "small" }, `一间房「${p.room.name}」（${p.room.size[0] / 2} × ${p.room.size[1] / 2} 米），${p.room.pieces} 件家具、${p.room.pictures} 张图；`
         + "装上后接在走廊边上、开好门，家具按原样摆，放不下的会跳过并告诉你。") : null,
       p.surfaces.length ? h("div", { class: "pack-pictures" }, ...p.surfaces.map((x) => h("figure", {},
@@ -2308,9 +2316,13 @@ function renderPacks() {
       h("div", { class: "row-gap" },
         h("button", { class: "primary", onclick: async () => {
           try {
-            const r = await api("POST", "/api/packs/install", { token: p.token });
+            const preset = p.member ? PRESETS[Number($("#pack-runs-on").value)] : null;
+            const runsOn = preset ? { kind: preset.m.kind, provider: preset.m.provider || "", model: preset.m.model || "", effort: preset.m.effort || "" } : null;
+            const r = await api("POST", "/api/packs/install", { token: p.token, runs_on: runsOn });
+            if (r.pack.kind === "member" && !settingsDirty()) await load(); // the 成员 page shows her
             packsData = r; packStaged = null;
-            const where = { room: "，房子里多了一间房", surface: "，图片在房间外观和画框的「从图片库选」里", furniture: "，在「家」的家具栏「我做的」里" };
+            const where = { room: "，房子里多了一间房", surface: "，图片在房间外观和画框的「从图片库选」里", furniture: "，在「家」的家具栏「我做的」里",
+                            member: "，是一位还没启用的新家人，到「成员」页给她填好 bot 再启用" };
             toast(`装好了：${r.pack.name}${where[r.pack.kind] || ""}${r.pack.moved?.length ? `；原来的位置被门占了，挪了一下：${r.pack.moved.join("、")}` : ""}`
               + `${r.pack.skipped?.length ? `；没摆上：${r.pack.skipped.join("；")}` : ""}`, !!r.pack.skipped?.length);
             renderPacks();
@@ -2330,7 +2342,10 @@ function renderPacks() {
   const about = h("textarea", { placeholder: "说明（可空）", maxlength: 500, rows: 2 });
   const pickedPictures = new Set();
   let pickedRoom = d.rooms.find((r) => r.pieces)?.id || d.rooms[0]?.id || "";
-  const modes = h("div", { class: "row-gap" }, ...[["furniture", "家具"], ["surface", "图片"], ["room", "一间房"]].map(([k, label]) =>
+  let pickedMember = d.members[0]?.id || "";
+  const memberSelect = h("select", { onchange: (e) => (pickedMember = e.target.value) },
+    ...d.members.map((m) => h("option", { value: m.id }, m.enabled ? m.name : `${m.name}（没启用）`)));
+  const modes = h("div", { class: "row-gap" }, ...[["furniture", "家具"], ["surface", "图片"], ["room", "一间房"], ["member", "家人"]].map(([k, label]) =>
     h("button", { class: packExporting === k ? "primary" : "", onclick: () => { packExporting = k; renderPacks(); } }, label)));
   const pictureBoxes = d.pictures.length ? h("div", { class: "pack-pictures" }, ...d.pictures.map((p) => h("label", { class: "check" },
     h("input", { type: "checkbox", onchange: (e) => (e.target.checked ? pickedPictures.add(p.file) : pickedPictures.delete(p.file)) }),
@@ -2349,12 +2364,13 @@ function renderPacks() {
         picture = await (await import("/static/home.js")).pictureOf(types[[...picked][0]]);
       } catch { /* no WebGL here: a pack without a picture */ }
       const res = await fetch("/api/packs/export", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: packExporting, types: [...picked], pictures: [...pickedPictures], room: pickedRoom,
+        body: JSON.stringify({ kind: packExporting, types: [...picked], pictures: [...pickedPictures], room: pickedRoom, member: pickedMember,
                                name: name.value, author: author.value, license: license.value, description: about.value, picture }) });
       if (!res.ok) { let e = {}; try { e = await res.json(); } catch { /* not JSON */ } throw new Error(e.error || `导出失败（HTTP ${res.status}）`); }
       const url = URL.createObjectURL(await res.blob());
       const fallback = { furniture: d.mine.find((k) => picked.has(k.id))?.name, room: d.rooms.find((r) => r.id === pickedRoom)?.name,
-                         surface: d.pictures.find((p) => pickedPictures.has(p.file))?.name }[packExporting];
+                         surface: d.pictures.find((p) => pickedPictures.has(p.file))?.name,
+                         member: d.members.find((m) => m.id === pickedMember)?.name }[packExporting];
       const a = h("a", { href: url, download: `${name.value.trim() || fallback || "pack"}.nookpack` });
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
@@ -2364,7 +2380,9 @@ function renderPacks() {
   } }, "导出");
   const what = { furniture: h("div", { class: "pack-kinds" }, ...boxes), surface: pictureBoxes,
                  room: h("div", {}, field("哪间房", roomSelect, "房间的大小、地板墙面、里面的家具和摆法；用到的自己做的家具和图片一起带上"),
-                   h("p", { class: "muted small" }, "楼梯和纸箱不带。")) }[packExporting];
+                   h("p", { class: "muted small" }, "楼梯和纸箱不带。")),
+                 member: h("div", {}, field("哪位家人", memberSelect, "她的角色卡（名字、介绍、性格、说话方式、对大家的看法、例句、外形、作息、喜好）和外形颜色配饰"),
+                   h("p", { class: "muted small" }, "不带：她用哪种 AI、bot、key、命令、记忆、日记、聊天记录。")) }[packExporting];
   const exportCard = h("div", { class: "card" }, h("h2", {}, "导出"), modes, what,
     field("包的名字", name), field("作者", author), field("许可证", license, "别人能怎么用"), field("说明", about), exportBtn);
 
@@ -2373,7 +2391,7 @@ function renderPacks() {
     h("div", {}, h("b", {}, p.name), h("span", { class: "muted small" },
       ` · 版本 ${p.version}${p.author ? " · " + p.author : ""} · ${d.licenses[p.license] || p.license} · ${new Date(p.installed_at * 1000).toLocaleDateString("zh-CN")} 装的`
       + (p.types.length ? ` · ${p.types.length} 种家具` : "") + ((p.pictures || []).length ? ` · ${p.pictures.length} 张图` : "")
-      + ((p.rooms || []).length ? ` · ${p.rooms.length} 间房（留在家里）` : ""))),
+      + ((p.rooms || []).length ? ` · ${p.rooms.length} 间房（留在家里）` : "") + ((p.members || []).length ? " · 一位家人（留在家里）" : ""))),
     h("button", { onclick: async () => {
       if (!confirm(`卸载「${p.name}」？它带来的、家里没在用的家具种类会去掉；正在用的留下。`)) return;
       try {

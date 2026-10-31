@@ -203,3 +203,58 @@ def test_a_piece_whose_place_is_taken_goes_by_the_same_wall(tmp_path):
     moved = packs._nearby(home, dict(desk), room, home.all_types())
     assert moved["at"][1] == 11 and moved["turn"] == 180  # still against the front wall, facing in
     home.place(moved)
+
+
+CARD = {"id": "lin", "name": "小林", "kind": "api", "provider": "openai", "model": "gpt-x", "bot_token": "123:secret",
+        "api_key": "sk-secret", "command": ["C:/tools/ai.exe"], "aliases": ["林林"], "tagline": "爱吐槽的室友",
+        "persona": "住在大阪，喜欢修东西。", "style": "短句，偶尔用颜文字", "relationships": "", "examples": "又坏了？我看看",
+        "activity": "high", "appearance": "短发、圆眼镜", "sleep": "01:00-09:00", "busy": "10:00-18:00", "busy_doing": "上班",
+        "browse_topics": "修理视频", "enabled": True}
+
+
+def test_a_member_goes_out_as_her_role_card_only():
+    data = packs.export_member(CARD, {"color": "#AA5500", "accessory": "hat"}, {"license": "CC-BY-4.0"})
+    manifest, files = packs.open_pack(data)
+    text = files["manifest.json"].decode("utf-8")
+    for secret in ("123:secret", "sk-secret", "ai.exe", "gpt-x", "openai", '"kind": "api"'):
+        assert secret not in text  # no keys, no account, no AI choice, no command
+    assert manifest["member"]["name"] == "小林" and manifest["member"]["aliases"] == ["林林"] and manifest["member"]["activity"] == "high"
+    assert manifest["look"] == {"color": "#aa5500", "accessory": "hat"}
+    seen = packs.preview(manifest, files, set())
+    assert seen["member"]["name"] == "小林" and seen["member"]["look"]["accessory"] == "hat"
+    made = packs.member_settings(manifest, {"lin"}, {"小林"}, {"kind": "claude_cli", "model": "sonnet"})
+    assert made["name"] == "小林2" and made["enabled"] is False and made["kind"] == "claude_cli" and made["id"].startswith("m-")
+    assert "bot_token" not in made and "api_key" not in made
+    with pytest.raises(PlacementError, match="哪种 AI"):
+        packs.member_settings(manifest, set(), set(), {"kind": "rocket"})
+
+
+def test_a_member_pack_that_does_not_check_out():
+    _, files = packs.open_pack(packs.export_member(CARD, None, {"license": "CC0-1.0"}))
+    manifest = json.loads(files["manifest.json"])
+    for why, change in {"activity": {"member": {**manifest["member"], "activity": "frantic"}},
+                        "太长": {"member": {**manifest["member"], "persona": "长" * 5000}},
+                        "配饰": {"look": {"color": "#112233", "accessory": "crown-of-thorns"}},
+                        "缺少": {"member": {**manifest["member"], "name": ""}},
+                        "忙碌时间格式": {"member": {**manifest["member"], "busy": "周一到周五 10-18"}}}.items():
+        with pytest.raises(PlacementError, match=why):
+            packs.open_pack(zipped({"manifest.json": {**manifest, **change}}))
+
+
+async def test_the_page_installs_a_member_disabled(admin):  # noqa: F811
+    await login(admin)
+    h = {"Origin": admin.origin}
+    data = packs.export_member(CARD, {"color": "#aa5500", "accessory": "hat"}, {"license": "CC-BY-4.0"})
+    seen = await (await admin.post("/api/packs/preview", data=data, headers=h)).json()
+    assert seen["kind"] == "member" and seen["member"]["tagline"] == "爱吐槽的室友"
+    refused = await admin.post("/api/packs/install", json={"token": seen["token"]}, headers=h)
+    assert refused.status == 400  # which AI she runs on is the owner's choice
+    seen = await (await admin.post("/api/packs/preview", data=data, headers=h)).json()
+    done = await admin.post("/api/packs/install", json={"token": seen["token"], "runs_on": {"kind": "claude_cli", "model": "sonnet"}}, headers=h)
+    assert done.status == 200
+    new = next(p for p in admin.runtime.settings["participants"] if p["name"] == "小林")
+    assert not new["enabled"] and new["kind"] == "claude_cli" and new["persona"] == "住在大阪，喜欢修东西。"
+    assert admin.runtime.home.looks[new["id"]] == {"color": "#aa5500", "accessory": "hat"}
+    assert (await done.json())["pack"]["members"] == [new["id"]]
+
+

@@ -208,7 +208,10 @@ def make_app(runtime: Runtime, token: str, port: int) -> web.Application:
 
     async def install_pack(request):
         body = await request.json()
-        return house(lambda: runtime.pack_install(str(body.get("token") or "")))
+        try:
+            return web.json_response(await runtime.pack_install(str(body.get("token") or ""), body.get("runs_on")))
+        except (PlacementError, models.ModelError) as e:
+            raise ConfigError(str(e)) from None
 
     async def uninstall_pack(request):
         return house(lambda: runtime.pack_uninstall(request.match_info["uid"]))
