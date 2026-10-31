@@ -451,6 +451,10 @@ body.home-mode main { max-width: none; padding: 0; }
 .home-wish-form input, .home-wish-form select { width: 100%; }
 .pack-preview { display: flex; gap: 12px; align-items: flex-start; margin: 12px 0 6px; }
 .pack-preview img { width: 120px; height: 90px; object-fit: contain; background: var(--surface-2); border-radius: 8px; }
+.pack-pictures { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.pack-pictures figure { margin: 0; width: 96px; }
+.pack-pictures img { width: 96px; height: 72px; object-fit: cover; border-radius: 6px; background: var(--surface-2); display: block; }
+.pack-pictures label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 110px; font-size: 12px; }
 .pack-kinds { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 10px; }
 .pack-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 #packs .card { margin-bottom: 16px; }

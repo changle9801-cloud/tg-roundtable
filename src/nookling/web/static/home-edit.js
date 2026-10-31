@@ -226,7 +226,8 @@ export function renderEditor(app) {
     if (["frame", "poster", "rug"].includes(type.template)) {
       pic = el("div", "home-look");
       const file = pickImage(async (name) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { image: name })));
-      pic.append(el("span", "muted small", piece.image ? "有图片" : "放一张图片"), file);
+      const library = libraryPicker(app, "picture", (p) => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { image: p.file })));
+      pic.append(...[el("span", "muted small", piece.image ? "有图片" : "放一张图片"), file, library].filter(Boolean));
       if (piece.image) {
         const off = el("button", "", "去掉图片");
         off.onclick = () => act(() => send("PUT", `/api/home/pieces/${piece.id}`, { image: null }));
@@ -424,6 +425,17 @@ function planPanel(app, d, act) {
 }
 
 // A file picker that uploads a picture (PNG, JPG, WebP) and hands back its saved name.
+// A picture from the library (picture packs), for floors and walls ("floor" / "walls") or frames ("picture").
+function libraryPicker(app, use, done) {
+  const fits = (app.data.pictures || []).filter((p) => p.use === use || p.use === "any");
+  if (!fits.length) return null;
+  const s = el("select");
+  s.append(el("option", "", "从图片库选…"));
+  for (const p of fits) { const o = el("option", "", p.name); o.value = p.file; s.append(o); }
+  s.onchange = () => { const p = fits.find((x) => x.file === s.value); if (p) done(p); };
+  return s;
+}
+
 function pickImage(done) {
   const file = el("input");
   file.type = "file";
@@ -453,8 +465,9 @@ function openRoomLook(app, room) {
       const reset = el("button", "", "用默认的");
       reset.onclick = () => { draft[key] = null; render(); };
       const row = el("div", "home-look");
-      row.append(el("span", "muted small", "颜色"), color, el("span", "muted small", "或图片"),
-        pickImage((name) => { draft[key] = { image: name, tile: look?.tile || 1 }; render(); }), reset);
+      const library = libraryPicker(app, key, (p) => { draft[key] = { image: p.file, tile: p.tile || 1 }; render(); });
+      row.append(...[el("span", "muted small", "颜色"), color, el("span", "muted small", "或图片"),
+        pickImage((name) => { draft[key] = { image: name, tile: look?.tile || 1 }; render(); }), library, reset].filter(Boolean));
       const now = look?.image ? `图片 ${look.image}` : look?.color ? `颜色 ${look.color}` : "默认";
       box.replaceChildren(el("h3", "", label), el("p", "muted small", `现在：${now}`), row);
       if (look?.image) {

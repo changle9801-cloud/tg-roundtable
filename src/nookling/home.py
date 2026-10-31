@@ -118,6 +118,7 @@ class Home:
         self.changes: list[dict] = []  # 家里的变化: who changed what, and how to undo it (docs/redecorate.md)
         self.redecorations: dict[str, list[float]] = {}  # member -> when she redecorated, for the weekly limit
         self.wishes: list[dict] = []  # 心愿单: what the family wants that needs the owner's yes (wishes.py)
+        self.pictures: list[dict] = []  # the picture library: {file, name, use, tile}, from picture packs (packs.py)
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -134,6 +135,7 @@ class Home:
                 self.changes = list(raw.get("changes") or [])
                 self.redecorations = {m: list(v) for m, v in (raw.get("redecorations") or {}).items()}
                 self.wishes = list(raw.get("wishes") or [])
+                self.pictures = list(raw.get("pictures") or [])
             except (ValueError, TypeError) as error:
                 # A broken file only loses positions and looks; start the house afresh but keep the file.
                 self.path.replace(self.path.with_suffix(".broken.json"))
@@ -149,7 +151,7 @@ class Home:
                                 "where": {m: asdict(p) for m, p in self.where.items()},
                                 "looks": self.looks, "diary_reads": self.diary_reads[-200:], "moves": self.moves,
                                 "changes": self.changes[-CHANGES_KEPT:], "redecorations": self.redecorations,
-                                "wishes": self.wishes})
+                                "wishes": self.wishes, "pictures": self.pictures})
 
     # ---- who lives here ----
 

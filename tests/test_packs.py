@@ -104,3 +104,102 @@ async def test_the_page_previews_installs_exports_and_uninstalls(admin):  # noqa
     assert off["removed"] == ["月亮灯（2）"] and off["installed"] == []
     refused = await admin.post("/api/packs/preview", data=b"not a zip", headers=h)
     assert refused.status == 400
+
+
+def dressed(home, data_dir):
+    """A bedroom with a wallpaper, a framed picture and one of the owner's own kinds (with a model)."""
+    paper = models.store_image(data_dir, PNG + b"paper")["file"]
+    photo = models.store_image(data_dir, PNG + b"photo")["file"]
+    home.dress_room("bed-codex", {"walls": {"image": paper, "tile": 2}})
+    lamp, _ = made_kinds(home, data_dir)
+    home.place({"type": lamp["id"], "room": "bed-codex", "at": [0, 8]})
+    home.place({"type": "base/frame", "room": "bed-codex", "wall": "left", "along": 2, "y": 1.2, "image": photo, "name": "全家福"})
+    return paper, photo
+
+
+def test_pictures_go_out_in_a_pack_and_land_in_the_library(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    mine = house(a)
+    paper, photo = dressed(mine, a)
+    found = {p["file"]: p for p in packs.pictures(mine)}
+    assert found[paper]["use"] == "walls" and found[paper]["tile"] == 2 and found[photo]["use"] == "picture"
+    data = packs.export_surfaces(mine, a, [paper, {"file": photo, "name": "合影"}], {"license": "CC0-1.0"})
+    manifest, files = packs.open_pack(data)
+    assert [s["name"] for s in manifest["surfaces"]] == ["Codex的卧室的墙", "合影"] and manifest["preview"].startswith("preview.")
+    seen = packs.preview(manifest, files, set())
+    assert seen["surfaces"][0]["picture"].startswith("data:image/png") and seen["surfaces"][0]["use"] == "墙纸"
+    theirs = house(b)
+    entry = packs.install(theirs, b, manifest, files)
+    assert [p["name"] for p in theirs.pictures] == ["Codex的卧室的墙", "合影"] and len(entry["pictures"]) == 2
+    assert models.image_path(b, theirs.pictures[0]["file"]) is not None
+    theirs.dress_room("living", {"floor": {"image": theirs.pictures[0]["file"]}})
+    gone = packs.uninstall(theirs, b, entry["uid"])
+    assert gone == {"removed": ["合影"], "kept": ["Codex的卧室的墙"]}
+
+
+def test_a_furnished_room_travels_whole(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    mine = house(a)
+    dressed(mine, a)
+    before = [p for p in mine.pieces if p["room"] == "bed-codex"]
+    data = packs.export_room(mine, a, "bed-codex", {"name": "Codex 的房间", "license": "CC-BY-4.0"})
+    manifest, files = packs.open_pack(data)
+    assert manifest["room"]["name"] == "Codex的卧室" and len(manifest["room"]["pieces"]) == len(before)
+    assert [k["name"] for k in manifest["furniture"]] == ["月亮灯"] and manifest["needs"] == ["video.watch"]
+    theirs = house(b)
+    entry = packs.install(theirs, b, manifest, files)
+    rid = entry["rooms"][0]
+    room = theirs.room(rid)
+    assert room["size"] == [10, 10] and room["walls"]["tile"] == 2 and models.image_path(b, room["walls"]["image"]) is not None
+    assert rid not in theirs.shut_rooms() and entry["skipped"] == []  # next to a hallway, with a door; all in place
+    placed = [p for p in theirs.pieces if p["room"] == rid]
+    assert sorted(p["type"] for p in placed if p["type"].startswith("base/")) == sorted(p["type"] for p in before if p["type"].startswith("base/"))
+    lamp = next(p for p in placed if p["type"].startswith("mine/"))
+    assert theirs.types[lamp["type"]]["name"] == "月亮灯" and lamp["at"] == [0, 8]
+    frame = next(p for p in placed if p["type"] == "base/frame")
+    assert frame["name"] == "全家福" and frame["wall"] == "left" and models.image_path(b, frame["image"]) is not None
+    packs.uninstall(theirs, b, entry["uid"])
+    assert rid in {r["id"] for r in theirs.rooms}  # the room is the owner's now
+    mine.rename_room("bed-codex", "Codex")
+    mine.room("bed-codex")["name"] = "Claude的卧室"  # as a bedroom is named: longer than a name typed in
+    again = packs.install(theirs, b, *packs.open_pack(packs.export_room(mine, a, "bed-codex", {"license": "CC0-1.0"})))
+    assert theirs.room(again["rooms"][0])["name"] == "Claude的卧"  # cut to fit
+
+
+def test_a_room_pack_that_does_not_check_out(tmp_path):
+    home = house(tmp_path)
+    good = packs.export_room(home, tmp_path, "study", {"license": "CC0-1.0"})
+    _, files = packs.open_pack(good)
+    manifest = json.loads(files["manifest.json"])
+    room = manifest["room"]
+    for why, change in {"不认识": {"type": "base/rocket"}, "不在包里": {"type": "pack/7"}, "放在哪": {"at": [1]},
+                        "不认识：base/stairs": {"type": "base/stairs"}}.items():
+        piece = {**room["pieces"][0], **change}
+        bad = {**manifest, "room": {**room, "pieces": [piece]}}
+        with pytest.raises(PlacementError, match=why.split("：")[0]):
+            packs.open_pack(zipped({**files, "manifest.json": bad}))
+    with pytest.raises(PlacementError, match="每边"):
+        packs.open_pack(zipped({**files, "manifest.json": {**manifest, "room": {**room, "size": [2, 200]}}}))
+
+
+async def test_the_page_exports_a_room(admin):  # noqa: F811
+    await login(admin)
+    admin.runtime.home.ensure(MEMBERS)
+    out = await admin.post("/api/packs/export", json={"kind": "room", "room": "study", "license": "CC-BY-4.0"},
+                           headers={"Origin": admin.origin})
+    assert out.status == 200
+    seen = await (await admin.post("/api/packs/preview", data=await out.read(), headers={"Origin": admin.origin})).json()
+    assert seen["kind"] == "room" and seen["room"]["name"] == "书房" and seen["room"]["pieces"] == 5
+    view = await (await admin.get("/api/packs")).json()
+    assert any(r["id"] == "study" for r in view["rooms"]) and view["uses"]["walls"] == "墙纸"
+
+
+def test_a_piece_whose_place_is_taken_goes_by_the_same_wall(tmp_path):
+    home = house(tmp_path)
+    room = home.checked_room("study")
+    desk = {"type": "base/writing-desk", "room": "study", "at": [7, 11], "turn": 180, "functions": [], "color": None, "name": None}
+    with pytest.raises(PlacementError, match="挡住门"):
+        home.place(dict(desk))  # right in front of the study's door
+    moved = packs._nearby(home, dict(desk), room, home.all_types())
+    assert moved["at"][1] == 11 and moved["turn"] == 180  # still against the front wall, facing in
+    home.place(moved)

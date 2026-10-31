@@ -877,14 +877,18 @@ class Runtime:
             if not m.from_user:
                 phone[m.speaker_id] = max(phone.get(m.speaker_id, 0.0), m.ts)
         return {**self.home.view(self._residents(), phone, self.available_functions()), "talk": self.home_talk_view(),
-                "said": self._recent_said(convo), "changes": redecorate.view(self.home), "wishes": wishes.view(self.home)}
+                "said": self._recent_said(convo), "changes": redecorate.view(self.home), "wishes": wishes.view(self.home),
+                "pictures": self.home.pictures}
 
     # ---- packs (docs/packs.md) ----
 
     def packs_view(self) -> dict:
         mine = [{"id": tid, "name": t["name"], "template": t["template"], "model": bool(t.get("model"))}
                 for tid, t in self.home.types.items()]
-        return {"installed": packs.installed(self.store.data_dir), "mine": mine, "licenses": packs.LICENSES}
+        rooms = [{"id": r["id"], "name": r["name"], "pieces": sum(1 for p in self.home.pieces or [] if p["room"] == r["id"])}
+                 for r in self.home.rooms]
+        return {"installed": packs.installed(self.store.data_dir), "mine": mine, "licenses": packs.LICENSES,
+                "pictures": packs.pictures(self.home), "rooms": rooms, "uses": packs.USES}
 
     def pack_preview(self, data: bytes) -> dict:
         manifest, files = packs.open_pack(data)
@@ -906,6 +910,11 @@ class Runtime:
         if url.startswith("data:image/") and ";base64," in url:
             import base64
             picture = base64.b64decode(url.split(",", 1)[1])
+        kind = body.get("kind") or "furniture"
+        if kind == "surface":
+            return packs.export_surfaces(self.home, self.store.data_dir, list(body.get("pictures") or []), body)
+        if kind == "room":
+            return packs.export_room(self.home, self.store.data_dir, str(body.get("room") or ""), body)
         return packs.export_furniture(self.home, self.store.data_dir, list(body.get("types") or []), body, picture)
 
     def undo_change(self, cid: str) -> dict:
